@@ -20,6 +20,9 @@ dist/
 /build-*/
 **/build/*.cc
 **/build/*.h
+*.typephp-cache
+*.parts.json
+*.rsp
 
 # ---------------------------------------------------------------------------
 # Test scratch — the POSIX kit recreates these on every run.
