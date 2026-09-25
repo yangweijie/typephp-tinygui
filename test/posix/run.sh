@@ -23,15 +23,20 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # standalone after being copied out. See resolve-root.sh.
 . "$HERE/resolve-root.sh"
 typephp_locate "$HERE"
+typephp_default_work "$HERE"
 SRC="$TP_SHIM_SRC"
-WORK="${WORK:-$HERE/.work}"
+WORK="${WORK:-$TP_WORK}"
 N_CALLS="${N_CALLS:-5}"
 BACKEND_APP="${BACKEND_APP:-$HERE/mock_backend.py}"
 
 SHIM="$WORK/backend_shell"
-SOCK="$WORK/app.sock"
 SLOG="$WORK/shim.log"
 LOUT="$WORK/launcher.out"
+
+# The socket needs a path short enough for sun_path, so it is chosen after the
+# scratch dir exists. typephp_socket_cleanup only has work to do in the rare
+# case where that had to move the socket elsewhere.
+trap typephp_socket_cleanup EXIT
 
 pass=0
 fail=0
@@ -85,6 +90,8 @@ echo " POSIX shim verification   (backend_shell.cpp @ $(uname -s))"
 echo "======================================================================"
 
 mkdir -p "$WORK"
+typephp_socket_path "$WORK"
+SOCK="$TP_SOCK"
 
 # -------------------------------------------------------------- fixtures ----
 echo "== [1/5] fixture self-test (mock launcher vs mock backend) =="

@@ -214,7 +214,7 @@ static void terminate_typephp_backend() {
   置于本机头之前；再补齐传递依赖头（`windows.storage.fileproperties.h`、
   `windows.storage.search.h`、`windows.devices.geolocation.h`、`windows.ui.input.h`、
   `windows.devices.input.h`、`windows.system.h` 等）。报错 41 → 0。
-- 命令：见 `../task_plan.md` Phase 5 或技能 `tinyjsapp-typephp-bridge`。
+- 命令：见 `planning/task_plan.md` Phase 5 或技能 `tinyjsapp-typephp-bridge`。
 
 ### 补丁修正：`--typephp` 的 argv 处理（重要）
 原补丁把整个 argv 左移一格，虽然去掉了 `--typephp` 标志，**但同时也吃掉了一个位置参数槽**，

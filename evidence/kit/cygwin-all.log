@@ -1,13 +1,20 @@
 ### POSIX-branch verification evidence — full kit
-### generated 2026-09-25T16:30:06Z  host=CYGWIN_NT-10.0-26100 3.5.3-1.x86_64
+### generated 2026-09-25T16:52:53Z  host=CYGWIN_NT-10.0-26100 3.5.3-1.x86_64
 ### backend_shell.cpp sha256: 43965883c430dc5ed5e7de44d269d4eaad5ff8452afb92fedc49b4f368d8cc6f
 ### g++: g++ (GCC) 11.4.0
 ### fixture oracle: /usr/bin/python3 Python 3.9.16
 ### PHP: /usr/bin/php
 
 ########## [0] host primitive probe ##########
-/usr/lib/gcc/x86_64-pc-cygwin/11/../../../../x86_64-pc-cygwin/bin/ld: cannot open output file /cygdrive/d/git/php/typephp-gui/test/posix/.work/host_probe.exe: No such file or directory
-collect2: error: ld returned 1 exit status
+  AF_UNIX bind+listen   : OK (sun_path=108)
+  fork+execv+dup2 child : OK (pid=1928)
+  accept()              : OK (new fd)
+  poll(0)+read frame    : OK (18 bytes: hello-from-client
+)  socket EOF (read==0)  : OK
+  signal(SIGPIPE,IGN)   : OK
+  waitpid reaps children: OK
+
+PROBE: ALL PRIMITIVES PRESENT
 PROBE_RC=0
 
 ########## [1] TIER 1: mock backend ##########
@@ -102,6 +109,7 @@ TIER2_RC=0
   [PASS] conf parsed and handed to the launcher in the right order
   [PASS] pump round-tripped 6 CALL / 6 RET
   [PASS] entry noticed the launcher going away
+  [PASS] endpoint is the derived exe-dir path (/cygdrive/d/git/php/typephp-gui/test/posix/.work/launch/app.sock)
   [PASS] socket file unlinked on exit
   [PASS] orphan check has a working positive control (it sees a live process)
   [PASS] no orphaned launcher/entry processes
@@ -109,7 +117,7 @@ TIER2_RC=0
 ----------------------------------------------------------------------
 frames: CALL=6 RET=6
 log: /cygdrive/d/git/php/typephp-gui/test/posix/.work/launch/shim.log
-RESULT: 13 passed, 0 failed
+RESULT: 14 passed, 0 failed
 PACKAGED-ENTRY (LAUNCH) MODE OK
 LAUNCH_RC=0
 
@@ -139,9 +147,9 @@ LAUNCH_RC=0
   [PASS] control: 1 decoy(s) WERE forwarded to the launcher — the exact opposite of run A's 0
 
 ----------------------------------------------------------------------
-run A log (synthetic): /cygdrive/d/git/php/typephp-gui/test/posix/.work-stderr/shim.a.log
-run C log (real PHP) : /cygdrive/d/git/php/typephp-gui/test/posix/.work-stderr/shim.c.log
-run B log (control)  : /cygdrive/d/git/php/typephp-gui/test/posix/.work-stderr/shim.b.log
+run A log (synthetic): /cygdrive/d/git/php/typephp-gui/test/posix/.work/shim.a.log
+run C log (real PHP) : /cygdrive/d/git/php/typephp-gui/test/posix/.work/shim.c.log
+run B log (control)  : /cygdrive/d/git/php/typephp-gui/test/posix/.work/shim.b.log
 RESULT: 15 passed, 0 failed, 0 skipped
 STDERR CHANNEL ISOLATION OK
 STDERR_RC=0

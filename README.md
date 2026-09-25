@@ -95,6 +95,7 @@ typephp-gui/
 │   └── src/frontend/index.html   页面，用 tiny.* 调后端
 ├── test/posix/               POSIX 验证套件（可独立拷出去用）
 ├── docs/                     调研、落地报告、补丁说明
+│   └── planning/             开发计划 + 踩坑记录（task_plan / findings / progress）
 ├── experiments/              历史探针（保留但不参与构建）
 ├── evidence/                 验证证据：e2e 截图/日志 + 套件日志
 ├── build/                    所有生成物，git 忽略
@@ -457,4 +458,5 @@ hunk 少且集中在几处，一般能 rebase。`xget.xi-xu.me` 是 GitHub 加�
 | `docs/aot-compiler-nano-fix.md` | `--nano` 编译缺陷的源码级根因与修法 |
 | `docs/landing-report.md` | 落地报告：实测结论、能力矩阵、体积现状 |
 | `docs/launcher-patch-notes.md` | launcher 补丁的逐 hunk 说明 |
+| `docs/planning/` | 开发计划与踩坑记录（`task_plan.md` 阶段表、`findings.md` 调研结论、`progress.md` 逐次 session 记录）。阶段编号 `16a`/`16b-1`/`16b-2` 被这三份文档与技能文档交叉引用，**不要重编号** |
 | `evidence/` | 验证证据（截图、帧日志、套件日志） |

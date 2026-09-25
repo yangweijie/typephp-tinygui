@@ -1,9 +1,9 @@
-[shell] launch mode conf=/cygdrive/d/git/php/typephp-gui/planb/posix-test/.work/launch/posixshim.conf html=frontend/index.html title=POSIX Launch Test size=800x600
-[shell] transport=unix-socket pipe=/cygdrive/d/git/php/typephp-gui/planb/posix-test/.work/launch/app.sock app=/cygdrive/d/git/php/typephp-gui/planb/posix-test/mock_backend.py cwd=/cygdrive/d/git/php/typephp-gui/planb/posix-test/.work/launch/
-[shell] spawned launcher /cygdrive/d/git/php/typephp-gui/planb/posix-test/.work/launch/mock_launcher
+[shell] launch mode conf=/cygdrive/d/git/php/typephp-gui/test/posix/.work/launch/posixshim.conf html=frontend/index.html title=POSIX Launch Test size=800x600
+[shell] transport=unix-socket pipe=/cygdrive/d/git/php/typephp-gui/test/posix/.work/launch/app.sock app=/cygdrive/d/git/php/typephp-gui/test/posix/mock_backend.py cwd=/cygdrive/d/git/php/typephp-gui/test/posix/.work/launch/
+[shell] spawned launcher /cygdrive/d/git/php/typephp-gui/test/posix/.work/launch/mock_launcher
 [shell] launcher connected
 [shell] P->L: READY
-[shell] L->P: SYS launch-argv html=/cygdrive/d/git/php/typephp-gui/planb/posix-test/.work/launch/frontend/index.html title=POSIX Launch Test size=800x600 ver=0.0.1
+[shell] L->P: SYS launch-argv html=/cygdrive/d/git/php/typephp-gui/test/posix/.work/launch/frontend/index.html title=POSIX Launch Test size=800x600 ver=0.0.1
 [shell] L->P: WINSTATE main {"fullscreen":false,"focused":true}
 [shell] L->P: SYS theme light
 [shell] L->P: CALL id00 ["{\"method\":\"ping\",\"params\":{}}","file://"]

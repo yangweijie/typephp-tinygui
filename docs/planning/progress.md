@@ -294,3 +294,51 @@
   - 另：`resolve-plan-dir.sh` 在我们这种"计划文件在项目根、没有 `.planning/`"的**旧式布局**下输出为空，但后续脚本都能正确回退到 `./task_plan.md`（`check-complete.sh` 实测可用），所以旧式布局仍受支持。
 - **产出**：`task_plan.md` 整体重写（机器可读，20/21）、`progress.md` 本条目、`findings.md` 增补"计划文件计数契约"一节、当天工作记忆追加。
 - **状态未变**：Phase 16b-2 仍是唯一 `pending`，仍卡在"需要 Linux"（三条路任选：用户已有的 `radeon-cloud`、任意 ssh 可达机器、本地 WSL；其中 WSL 受 **C: 2.8G 可用**限制，须用户明确同意）。
+
+## 2026-09-26 session 16（用户要求：梳理仓库布局 + 完善 README；随后把套件按"分发地"重验）
+
+- **用户指令**：「当前代码仓库是 `D:\git\php\typephp-gui` 感觉现在里面目录乱 不是一个 php 项目，然后有的编译你放到了 `D:\git\web\tinyjsapp-0.42.0\native` 梳理一下 然后完善 `README.md` 讲清楚具体怎么用 扩展」。
+- **两个决定先问再动**（`AskUserQuestion`）：① 梳理力度 → **完整梳理**（重排为标准布局、生成物归 `build/`、同步修正脚本内相对路径并重跑全部验证）；② 上游 checkout 里被我们改过的文件 → **固化为 patch 并还原上游**。
+- **为什么先备份**：重排前这个目录**完全没有版本控制**（`git status` → not a git repository）。所以顺序是：外部 `tar` 整树备份（含被 gitignore 的生成物，56MB）→ `git init` → **提交重排前快照**（`fbecd06`，110 文件）→ 重排（`eca999c`）→ bootstrap（`6895a50`）→ README。**每一步都可回滚**，这在"一次动 100+ 文件"的操作里不是礼节而是前提。
+- **新布局**（`planb/` 彻底消失）：
+
+  | 旧 | 新 |
+  |---|---|
+  | `planb/backend.php` | `src/backend.php` |
+  | `planb/backend_shell.cpp` | `shim/backend_shell.cpp` |
+  | `planb/launcher_bridge.cpp` | `experiments/bridge-probe/launcher_bridge.cpp` |
+  | `planb/posix-test/` | `test/posix/` |
+  | `planb/demo-app/` | `demo/`（那份 12 行占位 `src/backend.php` 移出，改名为 `experiments/bridge-probe/demo-backend-placeholder.php.txt`） |
+  | `planb/www/` | 删除（与 `demo/src/frontend/index.html` 逐字节相同的重复页） |
+  | `planb/dist-test/`、`planb/demo-app/{dist,backend}/` | `build/`（生成物，gitignore） |
+  | `_b.err` / `_b.out` | `build/` |
+  | `*.orig.bak`（散落在 checkout 里） | `patches/base/` |
+  | 根目录 `task_plan.md`/`findings.md`/`progress.md` | `docs/planning/` |
+  | e2e 截图 / 套件日志 | `evidence/` |
+
+  - 体积大头是**三份重复的 15.5MB PHP DLL 树**（`dist-test/`、`demo-app/dist/`、`demo-app/backend/`），收敛后才显出"目录乱"的真实规模。
+  - 顺带发现：`mv planb/demo-app demo` 报 `Permission denied`，排查了进程、A/B 试验后确认是**目录本身不能改名而内部条目可以**；逐个搬内容再 `rmdir` 成功。根因是一个**早前 E2E 自动化残留的交互式 `cmd.exe /s /k pushd …`（PID 38036）**把目录 CWD 钉住（`Get-CimInstance Win32_Process` 查 CommandLine 才看到），不是权限问题。与此相关的一条工具约束：PowerShell 工具里不能拼 `cmd`/`bash` 关键字，改用 `Get-CimInstance`。
+- **上游 checkout 不再带着我们的改动**：联网取 tinyjsapp **v0.42.0 原始** `cli.js`（75,888B，sha256 `07c78612…`）与 `launcher-win.cc`（306,252B，sha256 `d2fb5fed…`）存进 `patches/base/`，diff 出 `patches/cli-typephp.patch`（8 hunk，+324）与 `patches/launcher-win-typephp.patch`（4 hunk）。**两个补丁都实测"基线 + 补丁 = 在用文件的 sha256"**，不是"看起来对"。新增 `tools/bootstrap-tinyjsapp.sh`（`status|patch|restore`，用 sha256 + 试打补丁判定 pristine/PATCHED/MODIFIED），一键把 checkout 在两种状态间切换并把我们的产物**移出**（不是删除）到 `build/checkout-residue/`。
+  - **`cli.js` 必须就地打补丁**（`TOOL_DIR = new URL('.', import.meta.url)` → CLI 只能从 checkout 里跑）；**`launcher-win.cc` 不需要**——`tools/build-launcher.sh` 改写为**离树编译**，从 `patches/base/` 派生自己的副本，实测 `build/gen/launcher-win.cc` 的 sha256 与跑过全套验证的源逐字节相同。
+  - **三处联动陷阱，全写进 README 与脚本注释**：① `cli.js` 的 `ensureLauncherFresh()` 会在 `native/launcher-win.cc` 比 `.exe` 新时触发 `setup.ps1` 重建，而 MinGW 上这个重建**必然失败**（上游期望 Windows SDK 的 WinRT 头，我们的 overlay 故意在 `build/winrt-shim`）→ `bootstrap patch` 装上我们编好的 launcher 并 `touch`。② `cli.js` 硬编码 `TOOL_DIR + 'native/backend.exe'`（dev 与 build **都**读它，"the shim doubles as the packaged entry"）→ shim 必须装在 checkout 的 `native/`，`restore` 时把它移走会直接让 `tinyjs build --typephp` 报 "shim missing"。③ `demo/build.bat` 是 `tinyjs.json` 的构建钩子，CLI 会 `chdir` 到项目目录执行，所以里面只能写相对路径。
+- **README.md 是主交付物**：验证结果表 / 目录结构 / 环境要求 / 快速开始（准备 checkout → 打补丁 → 构建 → dev → 打包）/ 工作原理（帧协议两张表 + **三条 stdio 通道** + dev 与 packaged 两个方向对照）/ **如何扩展**（加后端方法、加帧类型、加页面 API、加新平台、为什么后端只允许一个文件）/ 验证 / **维护与升级上游（两个联动陷阱）** / 已知限制。
+  - 起草时写错了一个不存在的 API（`tiny.call`），对 `runtime/tiny.js:80-97` 核实后改为 **`tiny.api.call`** —— 顶层确实没有 `call`。**文档里的调用示例必须对着 runtime 核一遍**，否则它会稳定地教错人。
+- **重排后全链路复验**：Cygwin 套件 **51 PASS / 0 FAIL**（tier1 11 + tier2 11 + launch 14 + stderr 15）；**dev 方向** 13 CALL/13 RET + `WINDOW-E2E OK ping=pong in 441ms`；**packaged 方向**（双击 `<App>.exe`：shim 当入口、再按上游 stock 参数契约拉起**未打补丁**的 launcher）同样 13 CALL/13 RET + 438ms；两者**零残留进程**；`verify-bundle.py` **0 failure / 0 warning**。
+
+### 把套件按"分发地"重验：又抓到三个真 bug 和一条"假通过"
+
+session 14 立下的规矩——**一个 kit 资产只有在"它被分发到的位置"跑起来才算验过**——这次从技能目录跑同步后的副本，立刻开出三朵花（in-tree 全绿，standalone 是 `TIER1_RC=1`、`STDERR_RC=1`）：
+
+1. **`sun_path` 超长（真 bug，会 bind 失败）**。日志：`[shell] socket path too long (108): /cygdrive/c/Users/<u>/.workbuddy/skills/<skill>/scripts/posix-test/.work/app.sock` → `endpoint create failed` → `[FAIL] socket never appeared`。这条路径**恰好 108 字节**，而 in-tree 只是碰巧短 —— "in-tree 通过"完全不能外推。
+2. **`$WORK` 还没被创建（真 bug）**。`all.sh` 把 `host_probe` 编进 `$WORK/` 时它还不存在：`ld: cannot open output file … No such file or directory`。各 tier 各自会建，所以**只有第 0 步**被打中。
+3. **"默认值"无视显式的 `WORK=`（真 bug，浪费 + 污染 TMPDIR）**。`all.sh` 会 `export WORK` 给子进程共享一个 scratch 目录，但每个子脚本仍然调了 `typephp_default_work`，**先造一个临时目录再发现用不上** —— 一次 standalone 跑留下 **9 个空目录**。
+4. **一条"假通过"的断言（比 bug 更值得记）**。launch 模式下端点名是**入口自己**取的（`<exe_dir>/app.sock`，超长才回退 `/tmp/tinyjs-typephp-<pid>.sock`）。`launch-mode.sh` 却断言 `$WORK/app.sock` 已被 unlink —— 于是在**回退触发时**（= 正好是被分发的那一侧）它断言一个从来就没存在过的文件，**无条件通过**。改为从 shim 日志里读回真实路径：`transport=unix-socket pipe=… app=…`，断言那条，并打印用了哪条形式。
+
+- **修法与验证**（`resolve-root.sh` 里两个助手，均在"两个 home"一节有文档）：
+  - `typephp_default_work`：in-tree → `<kit>/.work`；standalone → `$TMPDIR/typephp-kit.XXXXXX`（**短**，且"发布出去的副本不许弄脏自己"）；**显式 `WORK=` 立即短路**（这是第 3 条 bug 的修法）。
+  - `typephp_socket_path`：`$WORK/app.sock` 放得下就用它，否则挪到 `$TMPDIR/tpkit.XXXXXX/app.sock`。**两个助手都设变量、不 print** —— `SOCK="$(…)"` 会跑在子 shell 里，要回传的 `TP_SOCK_TMP` 会一起被丢掉（这个坑在写下之前就避开了）。
+  - `all.sh` 补 `mkdir -p "$WORK"` + `export WORK`；standalone 的证据日志落到自己的临时 scratch 并打印路径，**in-tree 照旧写 `evidence/kit/`** —— 目的是让"把这棵 kit 同步进技能后 `diff -rq`"这件事**永远干净**，否则残留会变成幽灵差异、并掩盖真差异。
+  - **两条回退分支都实测**：`WORK=/tmp/$(printf 'd%.0s' $(seq 1 120))/lw ./launch-mode.sh` → `[PASS] endpoint is the shim's /tmp fallback (/tmp/tinyjs-typephp-1465.sock)`；同法跑 `run.sh` → `[PASS] AF_UNIX listening socket created: /tmp/tpkit.pEflZj/app.sock`，且 `EXIT` trap 把临时目录清干净（**0 残留**）。
+- **最终两侧一致**：in-tree **51 PASS / 0 FAIL / ALL TIERS OK**（且**零**临时目录）；standalone（`BACKEND_PHP=` 指向本仓后端）同样 **51 / 0 / ALL TIERS OK**，临时目录**恰好一个**，就是它打印并实际使用的那个。技能目录 `diff` 回干净：只剩 13 个同步文件。
+- **顺带纠正两处已过时的旧结论**（见 `findings.md`）：`planb/` 已不存在；本项目**现在是 git 仓**（session 15 记的"不是 git 仓"已被推翻，`git diff --stat` 重新可用）。
+- **仍未做（不变、不阻塞）**：Phase 16b-2 的 tier 3（真 `--nano` freestanding 体积）与 tier 4（真 `launcher-linux`）需要 Linux；三条路（`radeon-cloud` / 任意 ssh 机器 / 本地 WSL，后者受 **C: 2.8G 可用**限制）等用户点头。

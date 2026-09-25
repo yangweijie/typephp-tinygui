@@ -36,12 +36,18 @@ set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/resolve-root.sh"
 typephp_locate "$HERE"
+typephp_default_work "$HERE"
 SRC="$TP_SHIM_SRC"
-WORK="${WORK:-$HERE/.work-stderr}"
+# Its own scratch by default (scratch/stderr) because its shim logs are per-run
+# (a/b/c) and clearer when they are not mixed with run.sh's; all.sh shares one
+# scratch dir and relies on those distinct names not to collide.
+WORK="${WORK:-$TP_WORK/stderr}"
 N_CALLS="${N_CALLS:-4}"
 
 SHIM="$WORK/backend_shell"
-SOCK="$WORK/app.sock"
+
+# See run.sh: the socket path is picked once the scratch dir exists.
+trap typephp_socket_cleanup EXIT
 
 pass=0
 fail=0
@@ -70,6 +76,8 @@ echo " stderr channel isolation probe   (backend_shell.cpp @ $(uname -s))"
 echo "======================================================================"
 
 mkdir -p "$WORK"
+typephp_socket_path "$WORK"
+SOCK="$TP_SOCK"
 
 # ---------------------------------------------------------------- build -----
 echo "== [1/4] build the shim and the C client =="

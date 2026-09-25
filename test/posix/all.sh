@@ -14,7 +14,9 @@
 # Tiers 3 and 4 need a real `launcher-linux` build (GTK/WebKit) — tier 3 here is
 # the *packaged entry* path, not a GUI run. See README.md for the tier table.
 #
-# Usage:  ./all.sh          # -> posix-test/cygwin-all.log (or <host>-all.log)
+# Usage:  ./all.sh          # -> <repo>/evidence/kit/<host>-all.log (in-tree)
+#                             -> <temp work dir>/<host>-all.log   (standalone;
+#                                the path is printed when the run ends)
 #         LOG=... ./all.sh
 # Exit:   0 = every tier green, 1 = at least one failure, 2 = missing toolchain.
 
@@ -22,6 +24,7 @@ set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/resolve-root.sh"
 typephp_locate "$HERE"
+typephp_default_work "$HERE"
 
 case "$(uname -s)" in
   Linux | Darwin | CYGWIN*) ;;
@@ -30,19 +33,29 @@ case "$(uname -s)" in
     exit 2 ;;
 esac
 
-# Evidence lands in the repo's evidence/kit/ when the kit runs in-tree, so the
-# kit directory itself stays clean -- it is synced verbatim into a skill asset,
-# and a stray host log there would be shipped by accident. Standalone runs (no
-# composer.json above us) write next to the kit, as before.
-LOG_DIR="$HERE"
-if [ -n "$TP_ROOT" ]; then LOG_DIR="$TP_ROOT/evidence/kit"; mkdir -p "$LOG_DIR"; fi
+# Nothing this run produces may land in the kit directory: it is synced verbatim
+# into a skill asset, and the synced copy is diffed against the repo to prove the
+# two match — so a leftover log or scratch dir in there reads as a phantom
+# difference and hides a real one. Hence both of these are decided by
+# resolve-root.sh, not here:
+#   in-tree     evidence log -> <repo>/evidence/kit/, scratch -> <kit>/.work
+#   standalone  both         -> the disposable temp dir typephp_default_work made
+LOG_DIR="$TP_WORK"
+if [ -n "$TP_ROOT" ]; then LOG_DIR="$TP_ROOT/evidence/kit"; fi
+mkdir -p "$LOG_DIR"
 case "$(uname -s)" in
   Linux)  DEFAULT_LOG="$LOG_DIR/linux-all.log" ;;
   Darwin) DEFAULT_LOG="$LOG_DIR/macos-all.log" ;;
   *)      DEFAULT_LOG="$LOG_DIR/cygwin-all.log" ;;
 esac
 LOG="${LOG:-$DEFAULT_LOG}"
-WORK="${WORK:-$HERE/.work}"
+
+# One scratch dir for the whole run, exported so every tier below reuses it
+# instead of each resolving its own default (which, standalone, would be four
+# separate temp dirs, three of them never printed).
+WORK="${WORK:-$TP_WORK}"
+export WORK
+mkdir -p "$WORK"
 
 log() { printf '%s\n' "$*"; }
 

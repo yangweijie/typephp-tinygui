@@ -19,6 +19,8 @@
 
 将之前参考实现 `planb/launcher_bridge.cpp` 真正落地为对 tinyjsapp 真实 `native/launcher-win.cc` 的可编译补丁：让 C++ launcher 改为 spawn 由 aot-compiler 编出的 PHP 后端 `backend.exe`，并通过子进程 stdin/stdout 走 tinyjsapp 的 `CALL <id> <json>` / `RET` / `GOT` / `DLG` 帧协议完成窗口联调。
 
+> **路径已迁移（session 16）**：`planb/` 已不存在。本文件与 `progress.md`、`findings.md` 里的历史条目**保留旧路径不重写**（它们是当时的记录），对照关系见 `progress.md` session 16 的迁移表：参考实现现在是 `experiments/bridge-probe/launcher_bridge.cpp`，后端 `src/backend.php`，shim `shim/backend_shell.cpp`，套件 `test/posix/`，demo `demo/`。
+
 ## Current Phase
 
 **Phase 16b-2** —— 唯一 `pending` 的阶段（其余 20 个全部 `complete`）。它只包含**必须在 Linux 上跑**的两项：`--nano` freestanding 体积测量（tier 3）与真 `launcher-linux` 窗口端到端（tier 4）。**它不阻塞任何其他工作**，本地可验证的部分已于 Phase 16b-1 全部闭环。
@@ -205,6 +207,8 @@ headless 下 launcher spawn→命名管道→shim→PHP→`CALL/RET` 往返 PASS
 | 12 | POSIX 分支从来编不过 | `__STRICT_ANSI__` 隐藏 POSIX 声明，glibc 隐式注入 `_GNU_SOURCE` 而 newlib 不注入 → 源码自带 `#define _GNU_SOURCE`，且必须在所有 `#include` 之前 |
 | 13 | Cygwin 上"连上了但服务端说连接中止" | CPython `AF_UNIX` 与原生 `AF_UNIX` 不互通 → 客户端改用 C |
 | 14 | PHP 的诊断变成帧流里的畸形帧 | stderr 被并进 stdout（=帧通道）→ stderr 独立第三条管道，只进日志 |
+| 15 | 套件在技能目录里报 `socket never appeared`，in-tree 却全绿 | `$WORK/app.sock` 在技能目录下**恰好 108B** = `sun_path` 上限 → scratch 与 socket 改由 `typephp_default_work`/`typephp_socket_path` 决定位置 |
+| 16 | launch 档"端点已被 unlink"的断言在分发侧**恒真** | 断言写死了 `$WORK/app.sock`，而端点名由入口自取（超长回退 `/tmp`）→ 改为从 shim 日志读回 `pipe=` 再断言 |
 
 详细根因、复现与修法见 `progress.md` 对应 session 条目与 `findings.md`。
 

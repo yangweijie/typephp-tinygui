@@ -24,6 +24,7 @@ set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/resolve-root.sh"
 typephp_locate "$HERE"
+typephp_default_work "$HERE"
 PHP_EXE="${PHP_EXE:-}"
 
 # Auto-detect when the caller did not name an interpreter. Cygwin's own PHP is
@@ -81,7 +82,12 @@ echo "PHP backend interpreter: $PHP_EXE (PHP_VERSION_ID=$vid)"
 # Wrap in the caller's scratch dir, not the source tree: the earlier version
 # hardcoded $HERE/.work and so wrote into the kit directory even when WORK was
 # overridden (and left a stray .work/ behind in a checkout).
-WORK="${WORK:-$HERE/.work}"
+#
+# Exported on purpose: run.sh is invoked below and would otherwise resolve a
+# *different* default (a fresh temp dir in the standalone home), leaving the
+# wrapper in a directory nobody prints and nobody cleans up.
+WORK="${WORK:-$TP_WORK}"
+export WORK
 WRAPPER="$WORK/tier2_backend.php"
 mkdir -p "$WORK"
 

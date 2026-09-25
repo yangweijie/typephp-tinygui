@@ -27,8 +27,9 @@ set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/resolve-root.sh"
 typephp_locate "$HERE"
+typephp_default_work "$HERE"
 SRC="$TP_SHIM_SRC"
-WORK="${WORK:-$HERE/.work}/launch"
+WORK="${WORK:-$TP_WORK}/launch"
 N_CALLS="${N_CALLS:-6}"
 APP_NAME="${APP_NAME:-posixshim}"
 TITLE="POSIX Launch Test"
@@ -94,7 +95,7 @@ sed 's/^/       /' "$WORK/$APP_NAME.conf"
 
 # ------------------------------------------------------------------- run ----
 echo "== [3/4] run the entry with NO arguments (argc==1 => launch mode) =="
-rm -f "$WORK/shim.log" "$WORK/app.sock" "$WORK/entry.out"
+rm -f "$WORK/shim.log" "$WORK/entry.out"
 ( cd "$WORK" && MOCK_LAUNCHER_ARGV=launcher N_CALLS="$N_CALLS" \
     TYPEPHP_SHELL_LOG="$WORK/shim.log" "./$APP_NAME" >"$WORK/entry.out" 2>&1 ) &
 ENTRY_PID=$!
@@ -151,10 +152,30 @@ fi
 grep -q "launcher closed" "$SLOG" 2>/dev/null \
   && ok "entry noticed the launcher going away" \
   || bad "entry never logged 'launcher closed'"
-if [ -e "$WORK/app.sock" ]; then
-  bad "socket file left behind: $WORK/app.sock"
+
+# The endpoint name is the entry's business, not the test's: it derives
+# <exe_dir>/app.sock and falls back to /tmp/tinyjs-typephp-<pid>.sock when that
+# would overflow sun_path — which is what happens whenever this kit runs from a
+# deep path, e.g. the skill asset's own directory. So read the chosen path back
+# out of the log. Hard-coding $WORK/app.sock made this check pass *vacuously*
+# exactly when the fallback fired, i.e. it was blind in the one home the kit is
+# published into. (The derived-path branch is covered by the in-tree run.)
+sock_path="$(sed -n 's/.*transport=unix-socket pipe=\(.*\) app=.*/\1/p' "$SLOG" 2>/dev/null | head -1)"
+if [ -z "$sock_path" ]; then
+  bad "could not read the endpoint path back from the shim log"
 else
-  ok "socket file unlinked on exit"
+  case "$sock_path" in
+    "$WORK"/*) ok "endpoint is the derived exe-dir path ($sock_path)" ;;
+    /tmp/*)    ok "endpoint is the shim's /tmp fallback ($sock_path)"
+               echo "       (the staged exe dir is too deep for sun_path; the" \
+                    "derived-path branch is covered by the in-tree run)" ;;
+    *)         ok "endpoint at $sock_path" ;;
+  esac
+  if [ -e "$sock_path" ]; then
+    bad "socket file left behind: $sock_path"
+  else
+    ok "socket file unlinked on exit"
+  fi
 fi
 
 # --- orphan check, WITH a positive control -----------------------------------

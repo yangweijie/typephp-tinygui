@@ -545,13 +545,57 @@ Notes、示例行。第一版改写时连踩两次：
 所以决定：**保留历史编号不重编号**（`16a`/`16b-1`/`16b-2` 被三份文档 + 技能全面交叉引用，
 改号会让历史记录全部失效），这三个阶段的 Status 手工改；`check-complete.sh` 不受影响。
 
-### 旧式布局（计划文件在项目根）仍受支持
+### 旧式布局（计划文件在项目根）仍受支持 —— 但本仓已经不这么放了
 `resolve-plan-dir.sh` 在没有 `.planning/` 时**输出为空**，但下游脚本都会回退到 `./task_plan.md`，
 实测 `check-complete.sh` 能正确读到根目录的计划。所以不必为了用这套工具去建 `.planning/`。
 
-### 顺带确认：本项目不是 git 仓
-`git status` → `fatal: not a git repository`。所以"用 `git diff --stat` 核对实际改动"这条
-技能流程在这里**不可用**；代替手段是**文件 mtime + 证据日志里的 sha256**
-（`posix-test/cygwin-all.log` 头部记了当次验证对应的 `backend_shell.cpp` sha256，
-与当前源码一比即可确认那份 50 PASS 证据没有过期）。**这也是为什么每个证据日志都该把自己的
-被测源码 hash 写在头部。**
+**本仓现状（session 16 起）**：三份文件已从仓库根移到 `docs/planning/` —— 根目录此前"不像一个
+PHP 项目"，而这三份是最后几个一眼看不出归属的非工程文件。所以那套工具脚本要**在 `docs/planning/`
+里跑**（它们的回退是相对 cwd 的 `./task_plan.md`），不是从仓库根跑。
+
+### 已推翻：本项目现在是 git 仓（session 15 的结论已过期）
+session 15 记的是 `git status` → `fatal: not a git repository`，所以当时只能用
+**文件 mtime + 证据日志里的 sha256** 交叉验证。session 16 先做了外部 `tar` 备份再 `git init`，
+现在 `git diff --stat` 已可用。（那条替代手段仍然值得保留：**每个证据日志都该把自己被测源码的
+hash 写在头部** —— `cygwin-all.log` 一直这么做，所以即使没有 git 也能判断证据有没有过期。）
+
+## 分布形态的测试套件：发布出去的副本不许弄脏自己（session 16）
+
+### 起点：一次"整齐"的重排，把两个 bug 藏进了更短的路径里
+把仓库从"什么都在 `planb/`"重排为 `src/ bin/ shim/ patches/ tools/ demo/ test/ docs/
+experiments/ evidence/ build/` 之后，in-tree 全绿（51 PASS / 0 FAIL）。但这不是结论 ——
+**同一份 kit 被同步进了技能目录**（它会随技能一起被分发），从**那里**跑，结果立刻变脸：
+`TIER1_RC=1`、`STDERR_RC=1`。三个 bug 全部**只在更长的路径下显形**：
+
+| # | 症状 | 根因 |
+|---|---|---|
+| 1 | `[FAIL] socket never appeared` + `socket path too long (108)` | `$WORK/app.sock` 在技能目录下**恰好 108 字节** = `sun_path` 上限。in-tree 只是碰巧短。 |
+| 2 | `ld: cannot open output file …/host_probe.exe: No such file or directory` | `all.sh` 把 probe 编进 `$WORK/` 时没人建过它；各 tier 自己会建，所以只有第 0 步中招。 |
+| 3 | 一次 standalone 跑留下 **9 个空临时目录** | `all.sh` 已 `export WORK` 给子进程共享，但子脚本仍各调一次"求默认值"的函数，**先造目录再发现用不上**。 |
+
+**可复用结论**：`sun_path` 这类**长度上限**是典型的"本地短、分发地长"陷阱。凡是被复制出去
+运行的东西，scratch 目录要么由环境显式给定，要么**由它自己挑一个短而可抛弃的位置** ——
+不要沿用调用方的相对路径。这也是 `typephp_default_work` 存在的全部理由。
+
+### 比 bug 更值得记：一条**无条件通过**的断言
+launch 模式（packaged 入口）下，端点名是**入口自己**取的：`<exe_dir>/app.sock`，
+超长才回退 `/tmp/tinyjs-typephp-<pid>.sock`。`launch-mode.sh` 却断言"`$WORK/app.sock` 已被
+unlink"。于是在**回退触发时**（＝正好是被分发的那一侧），它断言的是一份**从未存在过的文件**，
+于是**无条件通过**。它只会在另一侧正确地亮灯 —— 与"零残留进程"那条孤儿断言（session 13）
+是同一类错误：**断言某一侧的状态，却不去确认那一侧确实被触达**。
+
+修法不是"放宽断言"，而是**把被测对象的事实读回来**：从 shim 自己的日志行
+`[shell] transport=unix-socket pipe=<name> app=<...> cwd=<...>` 取出真实端点名，断言它，
+并打印走了哪条形式（derived / `/tmp` fallback）。**顺带白拿一条覆盖**：两条分支现在都有实测
+——derived 在 in-tree，fallback 用 `WORK=/tmp/dddd…(120 个 d)/lw` 逼出来。
+
+### 与 session 14 的规矩合并：一句话
+**一个资产只有在它被分发到的位置跑起来，才算验过。** session 14 靠它发现了两个
+"kit 假设了不该假设的路径"的问题；session 16 又靠它发现了三个，外加一条假通过 ——
+其中最有价值的那个（sun_path）**恰好是"in-tree 全绿"最容易掩盖的那种**：路径长度不是代码
+属性，是**部署属性**，所以它永远不会在开发目录里失败。
+
+### 收尾的工程习惯：让"同步是否一致"永远可判
+因为发布物不许弄脏自己，in-tree 的证据日志写 `evidence/kit/`、standalone 的写自己的临时
+scratch 并把路径打印出来。这样"把 kit 同步进技能后 `diff -rq` 两边"这句话**永远成立**，
+不会被残留文件变成幽灵差异 —— 而幽灵差异会掩盖真差异，这正是这份资产最需要的一种可判性。

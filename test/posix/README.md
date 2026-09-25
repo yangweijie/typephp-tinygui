@@ -187,6 +187,55 @@ root). If it finds one you get the in-tree paths; if not, the standalone ones. I
 sets three variables: `TP_ROOT` (empty when standalone), `TP_SHIM_SRC`, and
 `TP_BACKEND_DEF`. Reorganising the repo therefore does **not** break the kit.
 
+#### …and everything else that depends on which home it is (`resolve-root.sh`, cont.)
+
+Finding the sources was only half of it. Two more answers differ per home, and
+both were wrong in ways that **only show up in the standalone copy** — which is
+the copy that gets published, so they were the interesting ones:
+
+| | in-tree | standalone | why |
+|---|---|---|---|
+| scratch | `<kit>/.work` | `$TMPDIR/typephp-kit.XXXXXX` | the kit ships *inside* a skill directory, and the synced copy is diffed against the repo to prove the two match. A run that writes into the kit directory turns that diff into noise, which is how a stale copy hid on the first attempt. Every script prints the path it used. |
+| socket | `$WORK/app.sock` | same — unless `WORK` is long, then `$TMPDIR/tpkit.XXXXXX/app.sock` | `sun_path` is ~108 bytes (104 on macOS). `$WORK/app.sock` was 108 chars *exactly* under the skill directory: `bind()` failed and `run.sh` reported the unhelpful `socket never appeared`, while the identical kit passed in-tree purely because `/d/git/php/typephp-gui` is shorter. |
+
+`typephp_default_work` and `typephp_socket_path` both **set variables**, they do
+not print — `SOCK="$(typephp_socket_path …)"` would run in a subshell and the
+`TP_SOCK_TMP` it needs to hand back would be discarded with it. An explicit
+`WORK=` always wins over both defaults.
+
+Three further traps the standalone home exposed, all now fixed:
+
+- **`$WORK` did not exist yet.** `all.sh` compiled `host_probe` into `$WORK/`
+  before anything created it (`ld: cannot open output file … No such file or
+  directory`). Each tier created it for itself, so only step `[0]` was hit.
+- **A "default" that ignored `WORK=` made nine empty temp dirs.** `all.sh`
+  exports `WORK` to its children so they all share one scratch dir; each child
+  then called `typephp_default_work` anyway, which made a temp dir *before*
+  discovering it had no use for it. Five or six abandoned directories per
+  standalone run. `typephp_default_work` now returns early when `WORK` is set.
+- **A hard-coded socket path made an assertion blind.** In launch mode the
+  *entry* names the endpoint (`<exe_dir>/app.sock`, or the shim's own
+  `/tmp/tinyjs-typephp-<pid>.sock` fallback when that would overflow `sun_path`).
+  `launch-mode.sh` asserted on `$WORK/app.sock`, so its "socket file unlinked on
+  exit" check passed **vacuously** in exactly the case where the fallback fired —
+  i.e. in the shipped home. It now reads the chosen path back out of the shim log
+  (`transport=unix-socket pipe=…`) and asserts on that, and says which of the two
+  forms was used. Both branches are covered: the derived one in-tree, and the
+  fallback by pointing `WORK=` at a deep directory:
+
+  ```bash
+  # a work dir whose app.sock exceeds sun_path, so the shim must fall back
+  LONG=/tmp/$(printf 'd%.0s' $(seq 1 120))
+  WORK=$LONG/lw ./launch-mode.sh
+  #   [PASS] endpoint is the shim's /tmp fallback (/tmp/tinyjs-typephp-1234.sock)
+  #   [PASS] socket file unlinked on exit
+  WORK=$LONG/rw ./run.sh
+  #   [PASS] AF_UNIX listening socket created: /tmp/tpkit.XXXXXXXX/app.sock
+  ```
+
+  Those two runs are also what exercises `typephp_socket_path`'s own temp dir, and
+  the `EXIT` trap that removes it.
+
 `tier2.sh` generates a wrapper the shim can exec (`execv` is called with **zero
 arguments**, so the backend must be directly runnable — on POSIX a shebang'd script
 qualifies, on Windows it would have to be a real `.exe`):
@@ -331,11 +380,16 @@ one), hence `xvfb-run`.
   ```bash
   python3 selftest_fixtures.py     # → FIXTURES OK
   ```
-- Evidence from the local Cygwin run: `cygwin-all.log` (host probe + tier 1 + tier 2
-  + launch mode + stderr probe, **50 PASS / 0 FAIL**), `tier2-shim.log` (raw shim log
-  — shows the real backend turning `WINSTATE`/`SYS theme` into `EVAL@*` pushes and
-  answering `ping` with `"pong"`), `launch-mode-shim.log` (packaged-entry frames).
+- Evidence from the local Cygwin run: `<repo>/evidence/kit/cygwin-all.log` (host
+  probe + tier 1 + tier 2 + launch mode + stderr probe, **50 PASS / 0 FAIL**),
+  `tier2-shim.log` (raw shim log — shows the real backend turning
+  `WINSTATE`/`SYS theme` into `EVAL@*` pushes and answering `ping` with `"pong"`),
+  `launch-mode-shim.log` (packaged-entry frames). The in-tree run writes there
+  rather than next to the kit, so the kit directory stays exactly what is synced
+  into the skill; a standalone run writes to its temp work dir and prints the path.
 - `.work/` — scratch: `backend_shell`, `mock_launcher`, `shim.log`, `launcher.out`,
   `build.log`, `cc.log`, `fixtures.out`, `tier2_backend.php`, `launch/` (staged
-  portable folder). `.work-stderr/` is `stderr-channel.sh`'s own scratch (its shim
-  logs for runs a/b/c). Safe to delete; every script rebuilds what it needs.
+  portable folder), `stderr/` (`stderr-channel.sh`'s own shim logs for runs a/b/c,
+  kept out of the way because they are per-run). Safe to delete; every script
+  rebuilds what it needs. Standalone, the same layout appears under
+  `$TMPDIR/typephp-kit.XXXXXX/` instead — see `typephp_default_work` above.
