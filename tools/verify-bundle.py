@@ -8,12 +8,14 @@ itself, all of which have been wrong at least once:
     console window for the app's whole lifetime when double-clicked.
   * does the ENTRY carry an icon resource? `icon=` in the .conf only covers the
     runtime window/taskbar icon; Explorer reads the exe resources.
-  * is dist/launcher.exe still byte-for-byte the stock upstream launcher? That is
-    a deliberate design property (the packaged direction needs no launcher patch).
+  * is dist/launcher.exe byte-for-byte the launcher it was copied from? The
+    packaged direction drives the launcher through its STOCK argument contract
+    (`<html> <endpoint> [title] [WxH] [version]`), so packaging must not modify
+    it. Pass the source with --launcher; without it this check is skipped.
   * are app.exe, its six PHP runtime DLLs, the conf and the frontend all present?
 
 Usage:
-    python verify-bundle.py <dist-dir> [--launcher <stock-launcher.exe>]
+    python verify-bundle.py <dist-dir> [--launcher <the launcher dist/ was copied from>]
 Exit: 0 = all good, 1 = a problem that will bite a user, 2 = usage error.
 """
 import ctypes
@@ -142,7 +144,7 @@ def main():
         fail("launcher.exe missing — the entry spawns it")
     elif stock and os.path.exists(stock):
         if sha256(launcher) == sha256(stock):
-            ok("byte-for-byte the stock upstream launcher")
+            ok("byte-for-byte the launcher it was copied from")
         else:
             warn("launcher.exe differs from %s — the packaged direction is meant "
                  "to ship an unmodified launcher" % os.path.basename(stock))

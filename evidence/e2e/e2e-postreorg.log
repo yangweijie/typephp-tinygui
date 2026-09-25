@@ -1,0 +1,51 @@
+[shell] transport=named-pipe pipe=\\.\pipe\tinyjs-typephp-39052 app=D:\git\php\typephp-gui\demo/backend/app.exe cwd=D:\git\php\typephp-gui\demo
+[shell] launcher connected
+[shell] P->L: READY
+[shell] L->P: WINSTATE main {"fullscreen":false,"maximized":false,"minimized":false,"focused":true}
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"window-state","data":{"win":"main","fullscreen":false,"maximized":false,"minimized":false,"focused":true}})
+[shell] L->P: SYS theme light
+[shell] L->P: NAV {"window":"main","kind":"start","url":"file:///D:/git/php/typephp-gui/demo/src/frontend/index.html"}
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"theme","data":{"dark":false}})
+[shell] L->P: NAV {"window":"main","kind":"commit","url":"file:///D:/git/php/typephp-gui/demo/src/frontend/index.html"}
+[shell] L->P: CALL 6bb1f6c2cced6536436427c2403c86be ["{\"method\":\"client.hello\"}","file://"]
+[shell] L->P: CALL f4a73c22a6e1bebb33524a5709d22374 ["{\"method\":\"menu.set\",\"params\":{\"menus\":[{\"title\":\"文件\",\"items\":[{\"id\":\"open\",\"label\":\"打开文件…\",\"key\":\"o\"},{\"id\":\"pick\",\"label\":\"选择文件夹…\"},{\"separator\":true},{\"id\":\"quit\",\"label\":\"退出\",\"key\":\"q\"}]},{\"title\":\"帮助\",\"items\":[{\"id\":\"about\",\"label\":\"关于 TypePHP\"}]}]}}","file://"]
+[shell] L->P: CALL be6421fa9ee21e4c8ddf8a9c182e9304 ["{\"method\":\"ping\",\"params\":{}}","file://"]
+[shell] P->L: RET 6bb1f6c2cced6536436427c2403c86be 0 true
+[shell] P->L: MENUBEGIN
+[shell] P->L: MENU 文件
+[shell] P->L: ITEM open	打开文件…	o	
+[shell] P->L: ITEM pick	选择文件夹…		
+[shell] P->L: SEP
+[shell] P->L: ITEM quit	退出	q	
+[shell] P->L: MENU 帮助
+[shell] P->L: ITEM about	关于 TypePHP		
+[shell] P->L: MENUEND
+[shell] P->L: RET f4a73c22a6e1bebb33524a5709d22374 0 true
+[shell] P->L: RET be6421fa9ee21e4c8ddf8a9c182e9304 0 "pong"
+[shell] L->P: NAV {"window":"main","kind":"finish","url":"file:///D:/git/php/typephp-gui/demo/src/frontend/index.html"}
+[shell] L->P: CALL 59ce3440af2ffd1783fa75a4628617b3 ["{\"method\":\"sysinfo\",\"params\":{}}","file://"]
+[shell] P->L: RET 59ce3440af2ffd1783fa75a4628617b3 0 {"runtime":"PHP 8.5.11","host":"DESKTOP-KO73F8K","cpu":"AMD64","pid":33756,"cwd":"D:\\git\\php\\typephp-gui\\demo","home":"C:\\Users\\Administrator","os":"Windows","backend":"aot-compiler (tpc) AOT native"}
+[shell] L->P: CALL 879891bd3a784eb0a6561fa84f155274 ["{\"method\":\"api.fib\",\"params\":{\"n\":40}}","file://"]
+[shell] P->L: RET 879891bd3a784eb0a6561fa84f155274 0 102334155
+[shell] L->P: CALL eefe010442ffb6c5b73c583da19994f4 ["{\"method\":\"api.version\",\"params\":{}}","file://"]
+[shell] P->L: RET eefe010442ffb6c5b73c583da19994f4 0 {"php":"8.5.11","backend":"tpc-AOT"}
+[shell] L->P: CALL e59ace53a8b60510da41f4d243c3903a ["{\"method\":\"api.sha256\",\"params\":{\"text\":\"tinyjs\"}}","file://"]
+[shell] P->L: RET e59ace53a8b60510da41f4d243c3903a 0 "a817a2f26510d52ecfdfdab9d5a2e96952fd01f87e31b907fd5bb12ff67bd731"
+[shell] L->P: CALL 6aaa246b2d42b8b132f294b5ac979c83 ["{\"method\":\"api.sum\",\"params\":{\"n1\":1,\"n2\":2,\"n3\":3,\"n4\":4,\"n5\":5,\"n6\":6,\"n7\":7,\"n8\":8,\"n9\":9,\"n10\":10,\"n11\":11,\"n12\":12,\"n13\":13,\"n14\":14,\"n15\":15,\"n16\":16,\"n17\":17,\"n18\":18,\"n19\":19,\"n20\":20,\"n21\":21,\"n22\":22,\"n23\":23,\"n24\":24,\"n25\":25,\"n26\":26,\"n27\":27,\"n28\":28,\"n29\":29,\"n30\":30,\"n31\":31,\"n32\":32,\"n33\":33,\"n34\":34,\"n35\":35,\"n36\":36,\"n37\":37,\"n38\":38,\"n39\":39,\"n40\":40,\"n41\":41,\"n42\":42,\"n43\":43,\"n44\":44,\"n45\":45,\"n46\":46,\"n47\":47,\"n48\":48,\"n49\":49,\"n50\":50,\"n51\":51,\"n52\":52,\"n53\":53,\"n54\":54,\"n55\":55,\"n56\":56,\"n57\":57,\"n58\":58,\"n59\":59,\"n60\":60,\"n61\":61,\"n62\":62,\"n63\":63,\"n64\":64,\"n65\":65,\"n66\":66,\"n67\":67,\"n68\":68,\"n69\":69,\"n70\":70,\"n71\":71,\"n72\":72,\"n73\":73,\"n74\":74,\"n75\":75,\"n76\":76,\"n77\":77,\"n78\":78,\"n79\":79,\"n80\":80,\"n81\":81,\"n82\":82,\"n83\":83,\"n84\":84,\"n85\":85,\"n86\":86,\"n87\":87,\"n88\":88,\"n89\":89,\"n90\":90,\"n91\":91,\"n92\":92,\"n93\":93,\"n94\":94,\"n95\":95,\"n96\":96,\"n97\":97,\"n98\":98,\"n99\":99,\"n100\":100}}","file://"]
+[shell] P->L: RET 6aaa246b2d42b8b132f294b5ac979c83 0 5050
+[shell] L->P: CALL fc65ba6c5797bd5b252274d660fa03b1 ["{\"method\":\"listDir\",\"params\":{\"path\":\"D:\\\\git\\\\php\\\\typephp-gui\\\\demo\"}}","file://"]
+[shell] L->P: CALL 775db7f788a10772f6eefaee58de1ac4 ["{\"method\":\"theme.get\",\"params\":{}}","file://"]
+[shell] P->L: RET fc65ba6c5797bd5b252274d660fa03b1 0 {"path":"D:\\git\\php\\typephp-gui\\demo","entries":[{"name":"backend","isDir":true},{"name":"dist","isDir":true},{"name":"src","isDir":true},{"name":"build.bat","isDir":false},{"name":"icon.png","isDir":false},{"name":"tinyjs.json","isDir":false}]}
+[shell] P->L: RET 775db7f788a10772f6eefaee58de1ac4 0 {"dark":false}
+[shell] L->P: CALL 4d32432d616ef7a4f4d10bac1a3dce1f ["{\"method\":\"system.locale\",\"params\":{}}","file://"]
+[shell] P->L: RET 4d32432d616ef7a4f4d10bac1a3dce1f 0 null
+[shell] L->P: CALL 0a8705182510d476f10aa2a0e88ea4d7 ["{\"method\":\"win.getState\",\"params\":{}}","file://"]
+[shell] P->L: RET 0a8705182510d476f10aa2a0e88ea4d7 0 {"win":"main","fullscreen":false,"maximized":false,"minimized":false,"focused":true}
+[shell] L->P: CALL 284bf0c00fddd2ec26c64e95e27d89c4 ["{\"method\":\"log\",\"params\":{\"msg\":\"WINDOW-E2E OK ping=pong in 441ms\"}}","file://"]
+[shell] P->L: RET 284bf0c00fddd2ec26c64e95e27d89c4 0 true
+[shell] backend stderr: [php-backend] "WINDOW-E2E OK ping=pong in 441ms"
+[shell] L->P: WINSTATE main {"fullscreen":false,"maximized":false,"minimized":false,"focused":false}
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"window-state","data":{"win":"main","fullscreen":false,"maximized":false,"minimized":false,"focused":false}})
+[shell] launcher closed
+[shell] closing
+[shell] done
