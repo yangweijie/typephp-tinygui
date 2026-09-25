@@ -1,0 +1,12 @@
+launcher: navigate file:///D:/git/php/typephp-gui/planb/www/index.html
+launcher: CALL 711983a6573e01a4919ee51c5f028d6e ["{\"method\":\"client.hello\"}","file://"]
+launcher: CALL 7f066366761191d473f55f3dc34316f0 ["{\"method\":\"ping\",\"params\":{}}","file://"]
+launcher: CALL 28cc6dedf46a16c78e495b2b303e73d2 ["{\"method\":\"sysinfo\",\"params\":{}}","file://"]
+launcher: CALL f9a9c8648a8d41aa81bb45654a697793 ["{\"method\":\"api.fib\",\"params\":{\"n\":40}}","file://"]
+launcher: CALL 10e25fdd1671db49bb448cc9d2c65e8d ["{\"method\":\"api.version\",\"params\":{}}","file://"]
+launcher: CALL e07f36cf20d2156921bf8768f71ac7d4 ["{\"method\":\"api.sha256\",\"params\":{\"text\":\"tinyjs\"}}","file://"]
+launcher: CALL f0e5961670fb6ab85f125d28d025618e ["{\"method\":\"api.sum\",\"params\":{\"n1\":1,\"n2\":2,\"n3\":3,\"n4\":4,\"n5\":5,\"n6\":6,\"n7\":7,\"n8\":8,\"n9\":9,\"n10\":10,\"n11\":11,\"n12\":12,\"n13\":13,\"n14\":14,\"n15\":15,\"n16\":16,\"n17\":17,\"n18\":18,\"n19\":19,\"n20\":20,\"n21\":21,\"n22\":22,\"n23\":23,\"n24\":24,\"n25\":25,\"n26\":26,\"n27\":27,\"n28\":28,\"n29\":29,\"n30\":30,\"n31\":31,\"n32\":32,\"n33\":33,\"n34\":34,\"n35\":35,\"n36\":36,\"n37\":37,\"n38\":38,\"n39\":39,\"n40\":40,\"n41\":41,\"n42\":42,\"n43\":43,\"n44\":44,\"n45\":45,\"n46\":46,\"n47\":47,\"n48\":48,\"n49\":49,\"n50\":50,\"n51\":51,\"n52\":52,\"n53\":53,\"n54\":54,\"n55\":55,\"n56\":56,\"n57\":57,\"n58\":58,\"n59\":59,\"n60\":60,\"n61\":61,\"n62\":62,\"n63\":63,\"n64\":64,\"n65\":65,\"n66\":66,\"n67\":67,\"n68\":68,\"n69\":69,\"n70\":70,\"n71\":71,\"n72\":72,\"n73\":73,\"n74\":74,\"n75\":75,\"n76\":76,\"n77\":77,\"n78\":78,\"n79\":79,\"n80\":80,\"n81\":81,\"n82\":82,\"n83\":83,\"n84\":84,\"n85\":85,\"n86\":86,\"n87\":87,\"n88\":88,\"n89\":89,\"n90\":90,\"n91\":91,\"n92\":92,\"n93\":93,\"n94\":94,\"n95\":95,\"n96\":96,\"n97\":97,\"n98\":98,\"n99\":99,\"n100\":100}}","file://"]
+launcher: CALL 8b6fba0fd0d0053bc6d6642c7dba488b ["{\"method\":\"listDir\",\"params\":{\"path\":\"D:\\\\Temp\"}}","file://"]
+launcher: CALL 76b7a8826edc2aee5fb37efbfd82878b ["{\"method\":\"log\",\"params\":{\"msg\":\"WINDOW-E2E OK ping=pong in 257ms\"}}","file://"]
+launcher: CALL 173c980358c01122e26d444dbd5c3dba ["{\"method\":\"win.setTitle\",\"params\":{\"title\":\"TypePHP 已接管标题\"}}","file://"]
+launcher: CALL 18837678d90368707854df0b4dd69fe2 ["{\"method\":\"win.setSize\",\"params\":{\"width\":1200,\"height\":800}}","file://"]

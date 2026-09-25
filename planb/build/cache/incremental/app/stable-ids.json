@@ -1,0 +1,80 @@
+{
+    "schema": 2,
+    "domains": {
+        "literal": {
+            "b:c3RvcmUuZ2V0": 0,
+            "b:a2V5": 1,
+            "b:": 2,
+            "b:c3RvcmUuc2V0": 3,
+            "b:dmFsdWU=": 4,
+            "b:c3RvcmUuZGVsZXRl": 5,
+            "b:c3RvcmUuYWxs": 6,
+            "b:ZmV0Y2g=": 7,
+            "b:ZXJyb3JfcmVwb3J0aW5n": 8,
+            "b:ZmlsZV9nZXRfY29udGVudHM=": 9,
+            "b:dXJs": 10,
+            "b:YXBwLnB1c2g=": 11,
+            "b:cHVzaGVk": 12,
+            "b:YXBpLg==": 13,
+            "b:ZWNobw==": 14,
+            "b:dmVyc2lvbg==": 15,
+            "b:c3Vt": 16,
+            "b:YXJyYXlfc3Vt": 17,
+            "b:UnVudGltZUV4Y2VwdGlvbg==": 18,
+            "b:dHJpbQ==": 19,
+            "b:aGFuZGxlRnJhbWU=": 20,
+            "b:P3N0cmluZw==": 21,
+            "b:R09UIA==": 22,
+            "b:ZndyaXRl": 23,
+            "b:U1RERVJS": 24,
+            "b:Tk9URTog": 25,
+            "b:Cg==": 26,
+            "b:Q0FMTCA=": 27,
+            "b:QkFERlJBTUU6IA==": 28,
+            "b:IA==": 29,
+            "b:c3Vic3Ry": 30,
+            "b:bWV0aG9k": 31,
+            "b:b2s=": 32,
+            "b:bWFsZm9ybWVkIGZyYW1l": 33,
+            "b:ZXJyb3I=": 34,
+            "b:ZGlzcGF0Y2g=": 35,
+            "b:cGFyYW1z": 36,
+            "b:cmVzdWx0": 37,
+            "b:VGhyb3dhYmxl": 38,
+            "b:Z2V0TWVzc2FnZQ==": 39,
+            "b:UkVUIA==": 40,
+            "b:U1RET1VU": 41,
+            "b:ZmZsdXNo": 42,
+            "b:UkVBRFkK": 43,
+            "b:ZnJlYWQ=": 44,
+            "b:U1RESU4=": 45,
+            "b:ZW1pdA==": 46,
+            "b:cw==": 47,
+            "b:c3RyaW5n": 48,
+            "b:cmF3": 49
+        },
+        "persistent-function": {
+            "b:ZXJyb3JfcmVwb3J0aW5n": 0,
+            "b:ZmlsZV9nZXRfY29udGVudHM=": 1,
+            "b:YXJyYXlfc3Vt": 2,
+            "b:dHJpbQ==": 3,
+            "b:ZndyaXRl": 4,
+            "b:c3Vic3Ry": 5,
+            "b:ZmZsdXNo": 6,
+            "b:ZnJlYWQ=": 7
+        },
+        "persistent-class": {
+            "b:cnVudGltZWV4Y2VwdGlvbg==": 0,
+            "b:dGhyb3dhYmxl": 1
+        },
+        "method-call": {
+            "b:Ym9keQBEOi9naXQvcGhwL3R5cGVwaHAtZ3VpL3BsYW5iL2JhY2tlbmQucGhwAAAAaGFuZGxlZnJhbWUAADA=": 0
+        }
+    },
+    "nextIds": {
+        "literal": 50,
+        "persistent-function": 8,
+        "persistent-class": 2,
+        "method-call": 1
+    }
+}

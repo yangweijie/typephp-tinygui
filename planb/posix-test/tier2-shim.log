@@ -1,0 +1,78 @@
+[shell] transport=unix-socket pipe=/cygdrive/d/git/php/typephp-gui/planb/posix-test/.work/app.sock app=D:/git/php/typephp-gui/planb/posix-test/.work/tier2_backend.php cwd=(inherit)
+[shell] launcher connected
+[shell] P->L: READY
+[shell] L->P: WINSTATE main {"fullscreen":false,"focused":true}
+[shell] L->P: SYS theme light
+[shell] L->P: CALL id00 ["{\"method\":\"ping\",\"params\":{}}","file://"]
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"window-state","data":{"win":"main","fullscreen":false,"focused":true}})
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"theme","data":{"dark":false}})
+[shell] P->L: RET id00 0 "pong"
+[shell] L->P: WINSTATE main {"fullscreen":false,"focused":true}
+[shell] L->P: SYS theme light
+[shell] L->P: CALL id01 ["{\"method\":\"ping\",\"params\":{}}","file://"]
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"window-state","data":{"win":"main","fullscreen":false,"focused":true}})
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"theme","data":{"dark":false}})
+[shell] P->L: RET id01 0 "pong"
+[shell] L->P: WINSTATE main {"fullscreen":false,"focused":true}
+[shell] L->P: SYS theme light
+[shell] L->P: CALL id02 ["{\"method\":\"ping\",\"params\":{}}","file://"]
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"window-state","data":{"win":"main","fullscreen":false,"focused":true}})
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"theme","data":{"dark":false}})
+[shell] P->L: RET id02 0 "pong"
+[shell] L->P: WINSTATE main {"fullscreen":false,"focused":true}
+[shell] L->P: SYS theme light
+[shell] L->P: CALL id03 ["{\"method\":\"ping\",\"params\":{}}","file://"]
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"window-state","data":{"win":"main","fullscreen":false,"focused":true}})
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"theme","data":{"dark":false}})
+[shell] P->L: RET id03 0 "pong"
+[shell] L->P: WINSTATE main {"fullscreen":false,"focused":true}
+[shell] L->P: SYS theme light
+[shell] L->P: CALL id04 ["{\"method\":\"ping\",\"params\":{}}","file://"]
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"window-state","data":{"win":"main","fullscreen":false,"focused":true}})
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"theme","data":{"dark":false}})
+[shell] P->L: RET id04 0 "pong"
+[shell] L->P: WINSTATE main {"fullscreen":false,"focused":true}
+[shell] L->P: SYS theme light
+[shell] L->P: CALL id05 ["{\"method\":\"ping\",\"params\":{}}","file://"]
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"window-state","data":{"win":"main","fullscreen":false,"focused":true}})
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"theme","data":{"dark":false}})
+[shell] P->L: RET id05 0 "pong"
+[shell] L->P: WINSTATE main {"fullscreen":false,"focused":true}
+[shell] L->P: SYS theme light
+[shell] L->P: CALL id06 ["{\"method\":\"ping\",\"params\":{}}","file://"]
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"window-state","data":{"win":"main","fullscreen":false,"focused":true}})
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"theme","data":{"dark":false}})
+[shell] P->L: RET id06 0 "pong"
+[shell] L->P: WINSTATE main {"fullscreen":false,"focused":true}
+[shell] L->P: SYS theme light
+[shell] L->P: CALL id07 ["{\"method\":\"ping\",\"params\":{}}","file://"]
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"window-state","data":{"win":"main","fullscreen":false,"focused":true}})
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"theme","data":{"dark":false}})
+[shell] P->L: RET id07 0 "pong"
+[shell] L->P: WINSTATE main {"fullscreen":false,"focused":true}
+[shell] L->P: SYS theme light
+[shell] L->P: CALL id08 ["{\"method\":\"ping\",\"params\":{}}","file://"]
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"window-state","data":{"win":"main","fullscreen":false,"focused":true}})
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"theme","data":{"dark":false}})
+[shell] P->L: RET id08 0 "pong"
+[shell] L->P: WINSTATE main {"fullscreen":false,"focused":true}
+[shell] L->P: SYS theme light
+[shell] L->P: CALL id09 ["{\"method\":\"ping\",\"params\":{}}","file://"]
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"window-state","data":{"win":"main","fullscreen":false,"focused":true}})
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"theme","data":{"dark":false}})
+[shell] P->L: RET id09 0 "pong"
+[shell] L->P: WINSTATE main {"fullscreen":false,"focused":true}
+[shell] L->P: SYS theme light
+[shell] L->P: CALL id10 ["{\"method\":\"ping\",\"params\":{}}","file://"]
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"window-state","data":{"win":"main","fullscreen":false,"focused":true}})
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"theme","data":{"dark":false}})
+[shell] P->L: RET id10 0 "pong"
+[shell] L->P: WINSTATE main {"fullscreen":false,"focused":true}
+[shell] L->P: SYS theme light
+[shell] L->P: CALL id11 ["{\"method\":\"ping\",\"params\":{}}","file://"]
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"window-state","data":{"win":"main","fullscreen":false,"focused":true}})
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"theme","data":{"dark":false}})
+[shell] P->L: RET id11 0 "pong"
+[shell] launcher closed
+[shell] closing
+[shell] done

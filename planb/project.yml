@@ -1,0 +1,6 @@
+name: tinyjsapp_backend
+mode: bin
+sources:
+  - backend.php
+output: backend
+cxx-std: c++17

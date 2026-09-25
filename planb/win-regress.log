@@ -1,0 +1,53 @@
+[shell] launch mode conf=D:\git\php\typephp-gui\planb\demo-app\dist\TypePHP Demo.conf html=frontend/index.html title=TypePHP Demo size=1100x760
+[shell] transport=named-pipe pipe=\\.\pipe\tinyjs-typephp-31524 app=D:\git\php\typephp-gui\planb\demo-app\dist\app.exe cwd=D:\git\php\typephp-gui\planb\demo-app\dist\
+[shell] spawned launcher D:\git\php\typephp-gui\planb\demo-app\dist\launcher.exe
+[shell] launcher connected
+[shell] P->L: READY
+[shell] L->P: WINSTATE main {"fullscreen":false,"maximized":false,"minimized":false,"focused":true}
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"window-state","data":{"win":"main","fullscreen":false,"maximized":false,"minimized":false,"focused":true}})
+[shell] L->P: SYS theme light
+[shell] L->P: NAV {"window":"main","kind":"start","url":"file:///D:/git/php/typephp-gui/planb/demo-app/dist/frontend/index.html"}
+[shell] L->P: NAV {"window":"main","kind":"commit","url":"file:///D:/git/php/typephp-gui/planb/demo-app/dist/frontend/index.html"}
+[shell] L->P: CALL 1b35af479c495c1483891efae9fc80f2 ["{\"method\":\"client.hello\"}","file://"]
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"theme","data":{"dark":false}})
+[shell] L->P: CALL b9b1263380edff9268ca94dfd16fe388 ["{\"method\":\"menu.set\",\"params\":{\"menus\":[{\"title\":\"文件\",\"items\":[{\"id\":\"open\",\"label\":\"打开文件…\",\"key\":\"o\"},{\"id\":\"pick\",\"label\":\"选择文件夹…\"},{\"separator\":true},{\"id\":\"quit\",\"label\":\"退出\",\"key\":\"q\"}]},{\"title\":\"帮助\",\"items\":[{\"id\":\"about\",\"label\":\"关于 TypePHP\"}]}]}}","file://"]
+[shell] L->P: CALL 1e0deec5cfeb4e685c031d04517f6781 ["{\"method\":\"ping\",\"params\":{}}","file://"]
+[shell] P->L: RET 1b35af479c495c1483891efae9fc80f2 0 true
+[shell] P->L: MENUBEGIN
+[shell] P->L: MENU 文件
+[shell] P->L: ITEM open	打开文件…	o	
+[shell] P->L: ITEM pick	选择文件夹…		
+[shell] P->L: SEP
+[shell] P->L: ITEM quit	退出	q	
+[shell] P->L: MENU 帮助
+[shell] P->L: ITEM about	关于 TypePHP		
+[shell] P->L: MENUEND
+[shell] P->L: RET b9b1263380edff9268ca94dfd16fe388 0 true
+[shell] P->L: RET 1e0deec5cfeb4e685c031d04517f6781 0 "pong"
+[shell] L->P: NAV {"window":"main","kind":"finish","url":"file:///D:/git/php/typephp-gui/planb/demo-app/dist/frontend/index.html"}
+[shell] L->P: CALL 5eaf5e8e9b5f39ff90632197fb7e6a52 ["{\"method\":\"sysinfo\",\"params\":{}}","file://"]
+[shell] P->L: RET 5eaf5e8e9b5f39ff90632197fb7e6a52 0 {"runtime":"PHP 8.5.11","host":"DESKTOP-KO73F8K","cpu":"AMD64","pid":15428,"cwd":"D:\\git\\php\\typephp-gui\\planb\\demo-app\\dist","home":"C:\\Users\\Administrator","os":"Windows","backend":"aot-compiler (tpc) AOT native"}
+[shell] L->P: CALL 1d1b0171f052377ffc0f8e9b4826b44e ["{\"method\":\"api.fib\",\"params\":{\"n\":40}}","file://"]
+[shell] P->L: RET 1d1b0171f052377ffc0f8e9b4826b44e 0 102334155
+[shell] L->P: CALL de6c8e0d7282452f52eac560cee0aa9c ["{\"method\":\"api.version\",\"params\":{}}","file://"]
+[shell] P->L: RET de6c8e0d7282452f52eac560cee0aa9c 0 {"php":"8.5.11","backend":"tpc-AOT"}
+[shell] L->P: CALL f7c1b40f9fe3d7d442257a3c35a7f638 ["{\"method\":\"api.sha256\",\"params\":{\"text\":\"tinyjs\"}}","file://"]
+[shell] P->L: RET f7c1b40f9fe3d7d442257a3c35a7f638 0 "a817a2f26510d52ecfdfdab9d5a2e96952fd01f87e31b907fd5bb12ff67bd731"
+[shell] L->P: CALL 254c564b08d940f55752be2df56668f8 ["{\"method\":\"api.sum\",\"params\":{\"n1\":1,\"n2\":2,\"n3\":3,\"n4\":4,\"n5\":5,\"n6\":6,\"n7\":7,\"n8\":8,\"n9\":9,\"n10\":10,\"n11\":11,\"n12\":12,\"n13\":13,\"n14\":14,\"n15\":15,\"n16\":16,\"n17\":17,\"n18\":18,\"n19\":19,\"n20\":20,\"n21\":21,\"n22\":22,\"n23\":23,\"n24\":24,\"n25\":25,\"n26\":26,\"n27\":27,\"n28\":28,\"n29\":29,\"n30\":30,\"n31\":31,\"n32\":32,\"n33\":33,\"n34\":34,\"n35\":35,\"n36\":36,\"n37\":37,\"n38\":38,\"n39\":39,\"n40\":40,\"n41\":41,\"n42\":42,\"n43\":43,\"n44\":44,\"n45\":45,\"n46\":46,\"n47\":47,\"n48\":48,\"n49\":49,\"n50\":50,\"n51\":51,\"n52\":52,\"n53\":53,\"n54\":54,\"n55\":55,\"n56\":56,\"n57\":57,\"n58\":58,\"n59\":59,\"n60\":60,\"n61\":61,\"n62\":62,\"n63\":63,\"n64\":64,\"n65\":65,\"n66\":66,\"n67\":67,\"n68\":68,\"n69\":69,\"n70\":70,\"n71\":71,\"n72\":72,\"n73\":73,\"n74\":74,\"n75\":75,\"n76\":76,\"n77\":77,\"n78\":78,\"n79\":79,\"n80\":80,\"n81\":81,\"n82\":82,\"n83\":83,\"n84\":84,\"n85\":85,\"n86\":86,\"n87\":87,\"n88\":88,\"n89\":89,\"n90\":90,\"n91\":91,\"n92\":92,\"n93\":93,\"n94\":94,\"n95\":95,\"n96\":96,\"n97\":97,\"n98\":98,\"n99\":99,\"n100\":100}}","file://"]
+[shell] P->L: RET 254c564b08d940f55752be2df56668f8 0 5050
+[shell] L->P: CALL ba17dd7551897ce6db8ee9f197402900 ["{\"method\":\"listDir\",\"params\":{\"path\":\"D:\\\\git\\\\php\\\\typephp-gui\\\\planb\\\\demo-app\\\\dist\"}}","file://"]
+[shell] L->P: CALL 63f5e00dc599db0468d29cf35174cae1 ["{\"method\":\"theme.get\",\"params\":{}}","file://"]
+[shell] P->L: RET ba17dd7551897ce6db8ee9f197402900 0 {"path":"D:\\git\\php\\typephp-gui\\planb\\demo-app\\dist","entries":[{"name":"frontend","isDir":true},{"name":"TypePHP Demo.conf","isDir":false},{"name":"TypePHP Demo.exe","isDir":false},{"name":"app.exe","isDir":false},{"name":"gmp-10.dll","isDir":false},{"name":"icon.png","isDir":false},{"name":"launcher.exe","isDir":false},{"name":"libmpdec++-4.0.1.dll","isDir":false},{"name":"libmpdec-4.0.1.dll","isDir":false},{"name":"mpfr-6.dll","isDir":false},{"name":"php8ts.dll","isDir":false},{"name":"phpx.dll","isDir":false}]}
+[shell] P->L: RET 63f5e00dc599db0468d29cf35174cae1 0 {"dark":false}
+[shell] L->P: CALL 42a60bf49d3a1e255d34ad55104e1c1e ["{\"method\":\"system.locale\",\"params\":{}}","file://"]
+[shell] P->L: RET 42a60bf49d3a1e255d34ad55104e1c1e 0 null
+[shell] L->P: CALL 7b9e177c98511bc18224eba53c07df49 ["{\"method\":\"win.getState\",\"params\":{}}","file://"]
+[shell] P->L: RET 7b9e177c98511bc18224eba53c07df49 0 {"win":"main","fullscreen":false,"maximized":false,"minimized":false,"focused":true}
+[shell] L->P: CALL 1b4a3db65cc72aa3cd679e8f138d73f7 ["{\"method\":\"log\",\"params\":{\"msg\":\"WINDOW-E2E OK ping=pong in 386ms\"}}","file://"]
+[shell] P->L: RET 1b4a3db65cc72aa3cd679e8f138d73f7 0 true
+[shell] backend stderr: [php-backend] "WINDOW-E2E OK ping=pong in 386ms"
+[shell] L->P: WINSTATE main {"fullscreen":false,"maximized":false,"minimized":false,"focused":false}
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"window-state","data":{"win":"main","fullscreen":false,"maximized":false,"minimized":false,"focused":false}})
+[shell] launcher closed
+[shell] closing
+[shell] done

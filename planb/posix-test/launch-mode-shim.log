@@ -1,0 +1,39 @@
+[shell] launch mode conf=/cygdrive/d/git/php/typephp-gui/planb/posix-test/.work/launch/posixshim.conf html=frontend/index.html title=POSIX Launch Test size=800x600
+[shell] transport=unix-socket pipe=/cygdrive/d/git/php/typephp-gui/planb/posix-test/.work/launch/app.sock app=/cygdrive/d/git/php/typephp-gui/planb/posix-test/mock_backend.py cwd=/cygdrive/d/git/php/typephp-gui/planb/posix-test/.work/launch/
+[shell] spawned launcher /cygdrive/d/git/php/typephp-gui/planb/posix-test/.work/launch/mock_launcher
+[shell] launcher connected
+[shell] P->L: READY
+[shell] L->P: SYS launch-argv html=/cygdrive/d/git/php/typephp-gui/planb/posix-test/.work/launch/frontend/index.html title=POSIX Launch Test size=800x600 ver=0.0.1
+[shell] L->P: WINSTATE main {"fullscreen":false,"focused":true}
+[shell] L->P: SYS theme light
+[shell] L->P: CALL id00 ["{\"method\":\"ping\",\"params\":{}}","file://"]
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"mock","data":{"id":"id00"}})
+[shell] P->L: RET id00 0 {"ok":true,"id":"id00"}
+[shell] L->P: WINSTATE main {"fullscreen":false,"focused":true}
+[shell] L->P: SYS theme light
+[shell] L->P: CALL id01 ["{\"method\":\"ping\",\"params\":{}}","file://"]
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"mock","data":{"id":"id01"}})
+[shell] P->L: RET id01 0 {"ok":true,"id":"id01"}
+[shell] L->P: WINSTATE main {"fullscreen":false,"focused":true}
+[shell] L->P: SYS theme light
+[shell] L->P: CALL id02 ["{\"method\":\"ping\",\"params\":{}}","file://"]
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"mock","data":{"id":"id02"}})
+[shell] P->L: RET id02 0 {"ok":true,"id":"id02"}
+[shell] L->P: WINSTATE main {"fullscreen":false,"focused":true}
+[shell] L->P: SYS theme light
+[shell] L->P: CALL id03 ["{\"method\":\"ping\",\"params\":{}}","file://"]
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"mock","data":{"id":"id03"}})
+[shell] P->L: RET id03 0 {"ok":true,"id":"id03"}
+[shell] L->P: WINSTATE main {"fullscreen":false,"focused":true}
+[shell] L->P: SYS theme light
+[shell] L->P: CALL id04 ["{\"method\":\"ping\",\"params\":{}}","file://"]
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"mock","data":{"id":"id04"}})
+[shell] P->L: RET id04 0 {"ok":true,"id":"id04"}
+[shell] L->P: WINSTATE main {"fullscreen":false,"focused":true}
+[shell] L->P: SYS theme light
+[shell] L->P: CALL id05 ["{\"method\":\"ping\",\"params\":{}}","file://"]
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"mock","data":{"id":"id05"}})
+[shell] P->L: RET id05 0 {"ok":true,"id":"id05"}
+[shell] launcher closed
+[shell] closing
+[shell] done

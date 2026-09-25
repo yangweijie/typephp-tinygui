@@ -1,0 +1,9 @@
+CALL 1 {"method":"api.version","params":{}}
+CALL 2 {"method":"store.set","params":{"key":"name","value":"tinyjsapp"}}
+CALL 3 {"method":"store.get","params":{"key":"name"}}
+CALL 4 {"method":"api.sum","params":{"a":1,"b":2,"c":3}}
+CALL 5 {"method":"api.echo","params":{"hello":"world"}}
+CALL 6 {"method":"app.push","params":{"title":"hi"}}
+GOT 99 {"event":"ping"}
+CALL 7 {"method":"store.all","params":{}}
+CALL 8 {"method":"api.nope","params":{}}

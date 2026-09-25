@@ -1,0 +1,10 @@
+CALL 1 ["{\"method\":\"dialog.alert\",\"params\":{\"message\":\"hello world\",\"detail\":\"line one\"}}","file://"]
+CALL 2 ["{\"method\":\"dialog.confirm\",\"params\":{\"message\":\"Proceed?\",\"ok\":\"Yes\",\"cancel\":\"No\"}}","file://"]
+CALL 3 ["{\"method\":\"dialog.prompt\",\"params\":{\"message\":\"Name?\",\"default\":\"tiny\"}}","file://"]
+CALL 4 ["{\"method\":\"dialog.openFile\",\"params\":{\"types\":[\".png\",\"jpg\",\"  .Toml \",\"bad type!\"]}}","file://"]
+CALL 5 ["{\"method\":\"dialog.pickFolder\",\"params\":{}}","file://"]
+CALL 6 ["{\"method\":\"menu.set\",\"params\":{\"menus\":[{\"title\":\"File\",\"items\":[{\"id\":\"open\",\"label\":\"Open File...\",\"key\":\"o\"},{\"separator\":true},{\"id\":\"quit\",\"label\":\"Quit\",\"key\":\"q\"}]},{\"title\":\"Help\",\"items\":[{\"id\":\"about\",\"label\":\"About\",\"checked\":true}]}]}}","file://"]
+MENU open
+MENU about
+TRAYCLICK
+CALL 7 ["{\"method\":\"ping\"}","file://"]

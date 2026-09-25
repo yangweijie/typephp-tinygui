@@ -1,0 +1,84 @@
+[shell] pipe=\\.\pipe\tinyjs-typephp-31624 app=D:\git\web\tinyjsapp-0.42.0\native\app.exe
+[shell] spawned backend pid=24776
+[shell] ConnectNamedPipe rc=1 err=0
+[shell] launcher connected
+[shell] P->L: READY
+[shell] L->P: WINSTATE main {"fullscreen":false,"maximized":false,"minimized":false,"focused":false}
+[shell] L->P: SYS theme light
+[shell] L->P: NAV {"window":"main","kind":"start","url":"file:///D:/git/php/typephp-gui/planb/www/index.html"}
+[shell] L->P: NAV {"window":"main","kind":"commit","url":"file:///D:/git/php/typephp-gui/planb/www/index.html"}
+[shell] L->P: CALL e57ecad559df36b1bb969f0e9bb92d4f ["{\"method\":\"client.hello\"}","file://"]
+[shell] L->P: CALL 7b0243ac950335909b751d7e71690c19 ["{\"method\":\"menu.set\",\"params\":{\"menus\":[{\"title\":\"文件\",\"items\":[{\"id\":\"open\",\"label\":\"打开文件…\",\"key\":\"o\"},{\"id\":\"pick\",\"label\":\"选择文件夹…\"},{\"separator\":true},{\"id\":\"quit\",\"label\":\"退出\",\"key\":\"q\"}]},{\"title\":\"帮助\",\"items\":[{\"id\":\"about\",\"label\":\"关于 TypePHP\"}]}]}}","file://"]
+[shell] L->P: CALL 08d16b2f90906ef6da661832df4356f7 ["{\"method\":\"ping\",\"params\":{}}","file://"]
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"window-state","data":{"win":"main","fullscreen":false,"maximized":false,"minimized":false,"focused":false}})
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"theme","data":{"dark":false}})
+[shell] P->L: RET e57ecad559df36b1bb969f0e9bb92d4f 0 true
+[shell] P->L: MENUBEGIN
+[shell] P->L: MENU 文件
+[shell] P->L: ITEM open	打开文件…	o	
+[shell] P->L: ITEM pick	选择文件夹…		
+[shell] P->L: SEP
+[shell] P->L: ITEM quit	退出	q	
+[shell] P->L: MENU 帮助
+[shell] P->L: ITEM about	关于 TypePHP		
+[shell] P->L: MENUEND
+[shell] P->L: RET 7b0243ac950335909b751d7e71690c19 0 true
+[shell] P->L: RET 08d16b2f90906ef6da661832df4356f7 0 "pong"
+[shell] L->P: NAV {"window":"main","kind":"finish","url":"file:///D:/git/php/typephp-gui/planb/www/index.html"}
+[shell] L->P: CALL 84360e3dcc78882dd7ee285bd1849e97 ["{\"method\":\"sysinfo\",\"params\":{}}","file://"]
+[shell] P->L: RET 84360e3dcc78882dd7ee285bd1849e97 0 {"runtime":"PHP 8.5.11","host":"DESKTOP-KO73F8K","cpu":"AMD64","pid":24776,"cwd":"D:\\Temp","home":"C:\\Users\\Administrator","os":"Windows","backend":"aot-compiler (tpc) AOT native"}
+[shell] L->P: CALL cc2569bf4dc0f529f023156b04dee827 ["{\"method\":\"api.fib\",\"params\":{\"n\":40}}","file://"]
+[shell] P->L: RET cc2569bf4dc0f529f023156b04dee827 0 102334155
+[shell] L->P: CALL a128da9877645cef5799660b0e507498 ["{\"method\":\"api.version\",\"params\":{}}","file://"]
+[shell] P->L: RET a128da9877645cef5799660b0e507498 0 {"php":"8.5.11","backend":"tpc-AOT"}
+[shell] L->P: CALL 6e9e5586f9346ae2aaed443cfed1088b ["{\"method\":\"api.sha256\",\"params\":{\"text\":\"tinyjs\"}}","file://"]
+[shell] P->L: RET 6e9e5586f9346ae2aaed443cfed1088b 0 "a817a2f26510d52ecfdfdab9d5a2e96952fd01f87e31b907fd5bb12ff67bd731"
+[shell] L->P: CALL deae925c9b561e06343c1080f2501f0c ["{\"method\":\"api.sum\",\"params\":{\"n1\":1,\"n2\":2,\"n3\":3,\"n4\":4,\"n5\":5,\"n6\":6,\"n7\":7,\"n8\":8,\"n9\":9,\"n10\":10,\"n11\":11,\"n12\":12,\"n13\":13,\"n14\":14,\"n15\":15,\"n16\":16,\"n17\":17,\"n18\":18,\"n19\":19,\"n20\":20,\"n21\":21,\"n22\":22,\"n23\":23,\"n24\":24,\"n25\":25,\"n26\":26,\"n27\":27,\"n28\":28,\"n29\":29,\"n30\":30,\"n31\":31,\"n32\":32,\"n33\":33,\"n34\":34,\"n35\":35,\"n36\":36,\"n37\":37,\"n38\":38,\"n39\":39,\"n40\":40,\"n41\":41,\"n42\":42,\"n43\":43,\"n44\":44,\"n45\":45,\"n46\":46,\"n47\":47,\"n48\":48,\"n49\":49,\"n50\":50,\"n51\":51,\"n52\":52,\"n53\":53,\"n54\":54,\"n55\":55,\"n56\":56,\"n57\":57,\"n58\":58,\"n59\":59,\"n60\":60,\"n61\":61,\"n62\":62,\"n63\":63,\"n64\":64,\"n65\":65,\"n66\":66,\"n67\":67,\"n68\":68,\"n69\":69,\"n70\":70,\"n71\":71,\"n72\":72,\"n73\":73,\"n74\":74,\"n75\":75,\"n76\":76,\"n77\":77,\"n78\":78,\"n79\":79,\"n80\":80,\"n81\":81,\"n82\":82,\"n83\":83,\"n84\":84,\"n85\":85,\"n86\":86,\"n87\":87,\"n88\":88,\"n89\":89,\"n90\":90,\"n91\":91,\"n92\":92,\"n93\":93,\"n94\":94,\"n95\":95,\"n96\":96,\"n97\":97,\"n98\":98,\"n99\":99,\"n100\":100}}","file://"]
+[shell] P->L: RET deae925c9b561e06343c1080f2501f0c 0 5050
+[shell] L->P: CALL e121e704afac1d7f7966cc487e280983 ["{\"method\":\"listDir\",\"params\":{\"path\":\"D:\\\\Temp\"}}","file://"]
+[shell] L->P: CALL 4b07ced706aedd21ff0eb6781e500ac7 ["{\"method\":\"theme.get\",\"params\":{}}","file://"]
+[shell] P->L: RET e121e704afac1d7f7966cc487e280983 0 {"path":"D:\\Temp","entries":[{"name":"Tencent","isDir":true},{"name":"Thunder Network","isDir":true},{"name":"WinGet","isDir":true},{"name":"codebuddy-Administrator","isDir":true},{"name":"codebuddy-marketplace-install-ezahD9","isDir":true},{"name":"codebuddy-marketplace-install-tJjZaT","isDir":true},{"name":"e4j9C71.tmp_dir1790303704","isDir":true},{"name":"genie-file-history-trackers","isDir":true},{"name":"hsperfdata_Administrator","isDir":true},{"name":"jna-146731693","isDir":true},{"name":"kccsdkbak","isDir":true},{"name":"msdtadmin","isDir":true},{"name":"node-compile-cache","isDir":true},{"name":"smartgit3288564640445922261","isDir":true},{"name":"system-commandline-sentinel-files","isDir":true},{"name":"vscode-typescript","isDir":true},{"name":"wb","isDir":true},{"name":"wmpf_files","isDir":true},{"name":"workbuddy-conversation-product-2pf4MK","isDir":true},{"name":"workbuddy-editor-sdk-sandbox","isDir":true},{"name":"workbuddy-host-cli","isDir":true},{"name":"workbuddy-product-spill-632Tw8","isDir":true},{"name":"workbuddy-product-spill-FzddZf","isDir":true},{"name":"workbuddy-product-spill-JnHOZp","isDir":true},{"name":"workbuddy-product-spill-QyGlA7","isDir":true},{"name":"workbuddy-product-spill-arFVHF","isDir":true},{"name":"workbuddy-product-spill-b1lqt7","isDir":true},{"name":"workbuddy-product-spill-ebU36g","isDir":true},{"name":"workbuddy-product-spill-gWkM52","isDir":true},{"name":"workbuddy-product-spill-oQp6WZ","isDir":true},{"name":"workbuddy-prompt-vars","isDir":true},{"name":"workbuddy-update-x64","isDir":true},{"name":"wps","isDir":true},{"name":"wv2","isDir":true},{"name":".ses","isDir":false},{"name":"0a3ae34c-46f1-4090-97eb-1e3234878458.tmp","isDir":false},{"name":"0b8d8219-0ae6-44ea-9b8a-bd6eff2f72fb.tmp","isDir":false},{"name":"0c377010-2ce4-48ea-9106-c2a49a0160f4.tmp","isDir":false},{"name":"0cc67256-c2f7-45de-a847-32f50393fc0c.tmp","isDir":false},{"name":"15893b7f-30af-4597-9e4a-23f421b8ca4b.tmp","isDir":false},{"name":"161d9893-7f83-4637-9881-d850cf3fd6ac.tmp","isDir":false},{"name":"1970d409-9299-4061-b77c-9f46a2546e31.tmp","isDir":false},{"name":"1ae29294-7931-4f9f-bb56-2da0cc873783.tmp","isDir":false},{"name":"1b7960bb-60c2-4e90-9d0a-970cf24f6ba0.tmp","isDir":false},{"name":"1d7ccfde-2326-439c-b706-9af765a76045.tmp","isDir":false},{"name":"1e37f7fa-0614-42f0-bdc2-ef1693b5cc5c.tmp","isDir":false},{"name":"27cf38fa-7c06-4ced-ab05-5150ed3c288c.tmp","isDir":false},{"name":"283d9d08-033a-42d4-8b8a-bf1dbb34a0c3.tmp","isDir":false},{"name":"3189f04e-137c-401c-826b-f37113ce6343.tmp","isDir":false},{"name":"3bf9f7d6-e1cd-4aed-9836-f9f7aea2ce62.tmp","isDir":false},{"name":"43bc94b5-276a-4f9f-91cf-dc60f97826f0.tmp","isDir":false},{"name":"474732a568e0d4de6e8962e7bb0a2933_3_0.0.0.0_24_24_e5dee7f0286f908f3f1a42c5116dd7a0.png","isDir":false},{"name":"476d3820-f998-4f21-bc01-42ea32f089d7.tmp","isDir":false},{"name":"51bbb444-f511-4712-8a93-33674341158c.tmp","isDir":false},{"name":"5217399d-2708-44e1-9433-b3fd8e8d60c7.tmp","isDir":false},{"name":"5b0efb8d-5ab0-4c1b-8db6-8b8ff6a001f2.tmp","isDir":false},{"name":"60ba2766-c02d-4c28-88bd-9144a91eabdb.tmp","isDir":false},{"name":"613774e9-c7bd-4f11-bb09-e4568a03afb9.tmp","isDir":false},{"name":"63822784-5df7-4461-9021-91fcc79fe2bb.tmp","isDir":false},{"name":"6777307e-c292-41f4-9f64-a8a998e3ffc1.tmp","isDir":false},{"name":"6b4f9ee2-fb27-49ff-90e7-3730c0cbc5bf.tmp","isDir":false},{"name":"6c3cf1a1-5968-4d58-8f9e-70e4eecbbae9.tmp","isDir":false},{"name":"6dccbc93-4bc7-473a-9efe-423ca4a38414.tmp","isDir":false},{"name":"72240ba0-f63f-484f-a6ff-969ced6457e2.tmp","isDir":false},{"name":"75a5635b-4c02-44ef-babe-2dc4bdf8e0c9.tmp","isDir":false},{"name":"7859a2bd-bb4c-414e-bd0d-345c36907e77.tmp","isDir":false},{"name":"7e2486fd-5644-4285-ae04-e3ee3ed068b2.tmp","isDir":false},{"name":"803217d6-33ba-4496-a189-38ff8f0f8cd5.tmp","isDir":false},{"name":"865a59dc-e2bd-44da-a190-4109f2517cbd.tmp","isDir":false},{"name":"925a6dec-95f5-418c-9d84-8e42f8783fb2.tmp","isDir":false},{"name":"944403ad-f699-4b8e-aa9f-f757a652ad91.tmp","isDir":false},{"name":"992c8684-ad77-4657-9251-57d3913378a6.tmp","isDir":false},{"name":"9d7c5cfd-4059-4b70-8d01-377b7a0d47ba.tmp","isDir":false},{"name":"_check.cc","isDir":false},{"name":"a.err","isDir":false},{"name":"a3c474cc-04c9-4c9f-ae46-f6586a5ed71a.tmp","isDir":false},{"name":"a6918e5d-605d-41bd-9405-d405c4b9ab75.tmp","isDir":false},{"name":"a8a333c9-40de-4b94-8814-fc65e165a3e8.tmp","isDir":false},{"name":"ad5ecbde-5d6f-464a-bdba-948e68152407.tmp","isDir":false},{"name":"app.err","isDir":false},{"name":"b2.err","isDir":false},{"name":"b26f3fd0-2bae-4b0c-9f66-cca136c0f5c3.tmp","isDir":false},{"name":"b3.err","isDir":false},{"name":"b3ebc6dc-7975-4179-b259-c02c386ca5f2.tmp","isDir":false},{"name":"bd9920ea-93eb-4df1-9f75-f6c0a14b89f0.tmp","isDir":false},{"name":"bf2f2370-4e35-41ea-aac8-46836a4f3ab8.tmp","isDir":false},{"name":"check_sign_test.log","isDir":false},{"name":"cv_debug.log","isDir":false},{"name":"d.err","isDir":false},{"name":"d71ea6e8-4e99-4e09-8046-7a43179adb6d.tmp","isDir":false},{"name":"dnscache.json","isDir":false},{"name":"e0e4b182-1110-4dec-a6a8-b5e8d0d52856.tmp","isDir":false},{"name":"e1b16b75-e3b1-4dce-bec7-9d889179bd05.tmp","isDir":false},{"name":"e7c6097c-46d3-4700-85a8-9be237a12233.tmp","isDir":false},{"name":"edc9ee66-fc11-41a5-94b2-9739f1da1f74.tmp","isDir":false},{"name":"f5a77604-fbac-4aef-a87b-af4e2dd1f262.tmp","isDir":false},{"name":"f6dccab0-83fd-4ee3-8bab-1bd099d4e588.tmp","isDir":false},{"name":"fafb887f-6028-4ac7-9490-9dfc4fb6f2a4.tmp","isDir":false},{"name":"fd20eb38-f5b6-4ce9-ad64-5e44a6d21573.tmp","isDir":false},{"name":"fe73f48e-ae9a-48a4-a922-85954d1af2c4.tmp","isDir":false},{"name":"jb.station.ij.9912.sock","isDir":false},{"name":"jetbrainsd-41b90f246ee5b0850d3da497634021d3","isDir":false},{"name":"pcmastertray-log-2026-9-25.log","isDir":false},{"name":"php_backend.err","isDir":false},{"name":"sendMyDeviceReport","isDir":false},{"name":"sf_proc_00.err","isDir":false},{"name":"sf_proc_00.err.lock","isDir":false},{"name":"sf_proc_00.out","isDir":false},{"name":"sf_proc_00.out.lock","isDir":false},{"name":"tj_LICENSE","isDir":false},{"name":"tj_LICENSE.md","isDir":false},{"name":"tj_cli.js","isDir":false},{"name":"tj_native_launcher-macos.cc","isDir":false},{"name":"tj_native_launcher-win.cc","isDir":false},{"name":"tj_readme.md","isDir":false},{"name":"tj_runtime_tiny.js","isDir":false},{"name":"wct16D7.tmp","isDir":false},{"name":"workbuddy-sandbox-cli-gc-da98fb295864b6e3.pid","isDir":false},{"name":"zerotier-tray-icon.ico","isDir":false}]}
+[shell] P->L: RET 4b07ced706aedd21ff0eb6781e500ac7 0 {"dark":false}
+[shell] L->P: CALL fb3924e59fa3f397b8c3cf42b13ce88d ["{\"method\":\"system.locale\",\"params\":{}}","file://"]
+[shell] P->L: RET fb3924e59fa3f397b8c3cf42b13ce88d 0 null
+[shell] L->P: CALL ca5684288fc0de97d784a23990d6b181 ["{\"method\":\"win.getState\",\"params\":{}}","file://"]
+[shell] P->L: RET ca5684288fc0de97d784a23990d6b181 0 {"win":"main","fullscreen":false,"maximized":false,"minimized":false,"focused":false}
+[shell] L->P: CALL 3af74c5574180c317c9954653313b8a9 ["{\"method\":\"log\",\"params\":{\"msg\":\"WINDOW-E2E OK ping=pong in 423ms\"}}","file://"]
+[shell] P->L: [php-backend] "WINDOW-E2E OK ping=pong in 423ms"
+[shell] P->L: RET 3af74c5574180c317c9954653313b8a9 0 true
+[shell] L->P: CALL 37dcef0c27cf4b27fff6aa58b2460a4d ["{\"method\":\"win.setSize\",\"params\":{\"width\":1200,\"height\":800}}","file://"]
+[shell] P->L: SIZE 1200 800
+[shell] P->L: RET 37dcef0c27cf4b27fff6aa58b2460a4d 0 true
+[shell] L->P: WINSTATE main {"fullscreen":false,"maximized":false,"minimized":false,"focused":true}
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"window-state","data":{"win":"main","fullscreen":false,"maximized":false,"minimized":false,"focused":true}})
+[shell] L->P: CALL 99bbffda1b40c4c886c4b247ba967a5c ["{\"method\":\"win.setSize\",\"params\":{\"width\":960,\"height\":640}}","file://"]
+[shell] P->L: SIZE 960 640
+[shell] P->L: RET 99bbffda1b40c4c886c4b247ba967a5c 0 true
+[shell] L->P: MENU about
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"menu","data":{"id":"about"}})
+[shell] L->P: CALL 35592867065766d6bb011c198c4c08d1 ["{\"method\":\"dialog.alert\",\"params\":{\"message\":\"TypePHP × tinyjsapp\",\"detail\":\"后端 = aot-compiler 编出的 PHP 原生程序\"}}","file://"]
+[shell] P->L: DLG 35592867065766d6bb011c198c4c08d1 alert	TypePHP × tinyjsapp	后端 = aot-compiler 编出的 PHP 原生程序	OK
+[shell] L->P: WINSTATE main {"fullscreen":false,"maximized":false,"minimized":false,"focused":false}
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"window-state","data":{"win":"main","fullscreen":false,"maximized":false,"minimized":false,"focused":false}})
+[shell] L->P: WINSTATE main {"fullscreen":false,"maximized":false,"minimized":false,"focused":true}
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"window-state","data":{"win":"main","fullscreen":false,"maximized":false,"minimized":false,"focused":true}})
+[shell] L->P: MENU open
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"menu","data":{"id":"open"}})
+[shell] L->P: CALL 86cea2fcb19e426f7f84accba6a9074c ["{\"method\":\"dialog.openFile\",\"params\":{\"types\":[\"png\",\"jpg\",\"md\",\"txt\"]}}","file://"]
+[shell] P->L: DLG 86cea2fcb19e426f7f84accba6a9074c open	png,jpg,md,txt
+[shell] L->P: WINSTATE main {"fullscreen":false,"maximized":false,"minimized":false,"focused":false}
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"window-state","data":{"win":"main","fullscreen":false,"maximized":false,"minimized":false,"focused":false}})
+[shell] L->P: WINSTATE main {"fullscreen":false,"maximized":false,"minimized":false,"focused":true}
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"window-state","data":{"win":"main","fullscreen":false,"maximized":false,"minimized":false,"focused":true}})
+[shell] L->P: CALL 43ce4dc8abee87ff0320a6354232e540 ["{\"method\":\"dialog.confirm\",\"params\":{\"message\":\"继续吗？\",\"ok\":\"继续\",\"cancel\":\"算了\"}}","file://"]
+[shell] P->L: DLG 43ce4dc8abee87ff0320a6354232e540 confirm	继续吗？		继续	算了
+[shell] L->P: WINSTATE main {"fullscreen":false,"maximized":false,"minimized":false,"focused":false}
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"window-state","data":{"win":"main","fullscreen":false,"maximized":false,"minimized":false,"focused":false}})
+[shell] L->P: WINSTATE main {"fullscreen":false,"maximized":false,"minimized":false,"focused":true}
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"window-state","data":{"win":"main","fullscreen":false,"maximized":false,"minimized":false,"focused":true}})
+[shell] L->P: CALL 6aabaa8ce9ec37e8846295aa0449ad48 ["{\"method\":\"dialog.prompt\",\"params\":{\"message\":\"输入点什么\",\"default\":\"tiny\"}}","file://"]
+[shell] P->L: DLG 6aabaa8ce9ec37e8846295aa0449ad48 prompt	输入点什么	tiny	OK	Cancel
+[shell] L->P: WINSTATE main {"fullscreen":false,"maximized":false,"minimized":false,"focused":false}
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"window-state","data":{"win":"main","fullscreen":false,"maximized":false,"minimized":false,"focused":false}})
+[shell] L->P: WINSTATE main {"fullscreen":false,"maximized":false,"minimized":false,"focused":true}
+[shell] P->L: EVAL@* window.__emit && window.__emit({"event":"window-state","data":{"win":"main","fullscreen":false,"maximized":false,"minimized":false,"focused":true}})

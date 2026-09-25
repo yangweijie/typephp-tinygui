@@ -1,0 +1,3 @@
+CALL 1 ["{\"method\":\"ping\",\"params\":{}}"]
+CALL 2 ["{\"method\":\"sysinfo\",\"params\":{}}"]
+CALL 3 ["{\"method\":\"api.fib\",\"params\":{\"n\":40}}"]
