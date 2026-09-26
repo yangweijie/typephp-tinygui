@@ -102,23 +102,26 @@ tools/build-all.bat           Windows：编 shim + PHP 后端 → build/
  开发方向 (tgui dev)                      打包方向 (tgui build → 双击 <App>.exe)
  ┌────────────────────┐                 ┌────────────────────┐
  │ launcher-win.exe   │                 │ <App>.exe (=shim)  │ ← 双击入口
- │ (gui/host/src 编出) │                 │ 自身为端点服务端   │
- └─────────┬──────────┘                 └─────────┬──────────┘
-           │ --typephp <html> <title>             │ 拉起 STOCK launcher
-           │   <size> <ver>                       │ <html> <endpoint> ...
-           ▼                                      ▼
- ┌────────────────────┐                 ┌────────────────────┐
- │ shim (C++ 代理)    │                 │ launcher.exe       │
- │ 帧泵 + stderr 分道 │                 └─────────┬──────────┘
- └─────────┬──────────┘                           │ 匿名管道
-           │ stdio（行分隔帧）                     ▼
- ┌─────────▼──────────┐                 ┌────────────────────┐
- │ app.exe (PHP AOT)  │◄────────────────│ shim → app.exe     │
- │ 跑 Gui::serve()    │                 │ (PHP 后端)         │
+ │ (gui/host/src 编出) │                 │ 自建端点服务端 +    │
+ └─────────┬──────────┘                 │ 读 <App>.conf      │
+           │ --typephp <html> <title>   └─────────┬──────────┘
+           │   <size> <ver>                       │ 同时 spawn 两个子进程
+           ▼                                      ├──────────────┐
+ ┌────────────────────┐                          ▼              ▼
+ │ shim (C++ 代理)    │                 ┌──────────────┐ ┌──────────────┐
+ │ 帧泵 + stderr 分道 │                 │ launcher.exe  │ │ php.exe       │
+ └─────────┬──────────┘                 │ (STOCK 宿主， │ │ (PHP AOT 后端)│
+           │ stdio（行分隔帧）           │  连端点)      │ │ 跑 Gui::serve │
+           ▼                             └──────┬───────┘ └──────┬───────┘
+ ┌─────────▼──────────┐                        │ 匿名管道(端点) │
+ │ app.exe (PHP AOT)  │                        │ ◄──────────────┘
+ │ 跑 Gui::serve()    │                        │ (shim 在两端互转帧)
  └────────────────────┘                 └────────────────────┘
 ```
 
 `tgui dev` 做的事：解析 `tinyjs.json` → 设置 `TYPEPHP_BACKEND` / `TYPEPHP_APP` / `TYPEPHP_CWD` / `TINYJS_ICON` → 拉起 `launcher --typephp <html> <title> <size> <ver>`。宿主在 `--typephp` 模式下 spawn shim，shim 再 spawn `app.exe`，三者用 stdio 帧对话。
+
+`tgui build` 产出的 `<App>.exe` 就是 shim 本身（它读同名 `<App>.conf` 决定 HTML / PHP 后端 / launcher 路径），因此**双击入口 = shim**；它反过来拉起 `launcher.exe`（STOCK 宿主，连到 shim 自建的端点）和 `php.exe`（PHP AOT 后端）。注意 shim 与 `php.exe` 是**两个不同文件**——shim 是 C++ 代理入口，`php.exe` 才是编译后的 PHP 后端，二者不能同名（否则互相覆盖）。
 
 ### 2.3 框架组件（创新核心）
 
@@ -207,7 +210,7 @@ $d = \Tiny\Gui\Gui::defaultDispatcher($s);   // 内置 Core/Win/Menu/Store/DemoA
 | 命令             | 作用                                                                                      |
 | -------------- | --------------------------------------------------------------------------------------- |
 | `tgui dev`     | 拉起宿主 + shim + PHP 后端跑当前项目                                                               |
-| `tgui build`   | 组装可移植 `dist/`（`shim`→`<App>.exe`、`launcher.exe`、`app.exe`、6 个 DLL、`frontend/`、`*.conf`） |
+| `tgui build`   | 组装可移植 `dist/`（`shim`→`<App>.exe`（入口）、`launcher.exe`、`php.exe`（PHP 后端）、8 个 DLL（6 个 PHP 运行时 + 2 个 MinGW 运行时）、`frontend/`、`*.conf`） |
 | `tgui publish` | 把 `dist/` 压成 zip（带回退 tar.gz）                                                            |
 | `tgui init`    | 在当前目录脚手架 `tinyjs.json` + `src/frontend/index.html`                                      |
 | `tgui status`  | 打印已解析的 launcher / shim / app 路径                                                         |
@@ -262,7 +265,7 @@ cd demo && bash ../gui/bin/tgui dev
 
 | PHP 协议框架 headless 冒烟（`gui/php/test/smoke.php`） | **12 PASS / 0 FAIL**（ping / api.fib / win.setTitle / menu.set / dialog / SYS·SYSLOCALE·WINSTATE 通知 / win.getState 缓存 / 未知方法报错 / store 往返 / 空行忽略） |  
 | Windows 开发方向（`tgui dev`） | 窗口正常，13 CALL / 13 RET，`WINDOW-E2E OK ping=pong`（历史结论保留） |  
-| Windows 打包方向（双击 `dist\<App>.exe`） | 窗口正常，13 CALL / 13 RET（历史结论保留） |  
+| Windows 打包方向（双击 `dist\<App>.exe`） | 已真机验证：窗口正常、WINDOW-E2E OK（ping=pong ~400ms）、13 类 CALL 全通过 |  
 | 打包产物校验（`tools/verify-bundle.py`） | 0 failure / 0 warning（历史结论保留） |
 
 > 注意：本环境无法跑 Windows GUI 实时验证（缺 WebView2 + MSVC 工具链）。上面 Windows 两项为迁移**前**已通过的历史结论；融合后代码路径未触碰线格式，故兼容性由 `smoke.php` 的逐字节断言 + 宿主源码不变来保证。
@@ -272,7 +275,7 @@ cd demo && bash ../gui/bin/tgui dev
 ## 7. 已知限制
 
 - **`--typephp` 目前仅 Windows**：只有 `launcher-win.cc` 并入 `--typephp`；`launcher-linux.cc` / `launcher-macos.cc` 是 pristine vendor，tgui 在非 Windows 会拒绝启动（与上游一致）。
-- **分发体积** ≈ `shim(128KB) + app.exe(~180KB) + 6 个 PHP DLL(~15.5MB)` ≈ **18.6MB**，不是 tinyjsapp 那种 ~6MB 单文件。换来单进程自包含、目标机不装 PHP。
+- **分发体积** ≈ `shim(128KB) + php.exe(~180KB) + 8 个 DLL（6 个 PHP 运行时 ~15.5MB + 2 个 MinGW 运行时 libgcc/libstdc++ ~2.4MB）` ≈ **18.6MB**，不是 tinyjsapp 那种 ~6MB 单文件。换来单进程自包含、目标机不装 PHP。MinGW 运行时是 launcher / shim 都依赖的，必须一并随包分发。
 - **`app.exe` 不自带运行时**：DLL 必须同目录（Windows 先在 exe 目录找非 KnownDLL）。
 - **后端单文件**：`tpc` 编译的是单个入口；框架代码通过 `bootstrap.php` 顺序 require 并入同一编译单元，`composer.json` 因此不设 `autoload`。
 - **shim 在三种情形都省不掉**：Windows 缺 `pipe://` transport、POSIX 真 nano 无 socket API、POSIX bin 模式虽能服务 socket 但已不"小巧"。"又小又免 shim"的组合不存在。
