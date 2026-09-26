@@ -15,7 +15,7 @@ final class DemoApiHandler implements HandlerInterface
     public function methods(): array
     {
         return [
-            'api.version', 'api.sum', 'api.sha256', 'api.fib', 'api.now',
+            'api.version', 'api.sum', 'api.sha256', 'api.fib', 'api.now', 'api.echo',
             // Any 'app.*' method is also accepted via the prefix registration in
             // bootstrap.php, falling back to this handler for forward-compat.
         ];
@@ -33,6 +33,7 @@ final class DemoApiHandler implements HandlerInterface
                 'epoch'   => time(),
                 'caller'  => $req->callerWin,
             ]),
+            'api.echo'    => Response::ok($req->params),
             default       => null,
         };
     }

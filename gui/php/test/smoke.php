@@ -8,12 +8,18 @@
 
 declare(strict_types=1);
 
-use Tiny\Gui\{Backend, Dispatcher, Gui, Protocol, State};
+use Tiny\Gui\{AppRoot, Backend, Dispatcher, Gui, Protocol, Response, State};
 
 require __DIR__ . '/../src/Tiny/Gui/bootstrap.php';
 
+$sandbox = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'tgui-smoke-' . bin2hex(random_bytes(4));
+mkdir($sandbox);
+file_put_contents($sandbox . DIRECTORY_SEPARATOR . 'hello.txt', "hi\n");
+putenv('TYPEPHP_APP_ROOT=' . $sandbox);
+
 $s = new State();
-$d = Gui::defaultDispatcher($s);
+$d = Gui::demoDispatcher($s, new AppRoot((string)realpath($sandbox)));
+$d->on('test.nan', fn() => Response::ok(NAN));
 
 $fail = 0;
 $pass = 0;
@@ -82,6 +88,44 @@ check('store set/get', $out === 'RET 10 0 {"a":1}' . "\n", (string)$out);
 
 // 10. empty line ignored (null)
 check('empty line ignored', Backend::processLine('', $d, $s) === null);
+
+// 11. malformed CALL with id still RETs an error (does not hang the launcher)
+$out = Backend::processLine('CALL 11 not-json', $d, $s);
+check('bad CALL payload -> RET status 1', str_starts_with($out ?? '', 'RET 11 1 '), (string)$out);
+
+$out = Backend::processLine($call('12', ''), $d, $s);
+check('empty method -> RET status 1', str_starts_with($out ?? '', 'RET 12 1 '), (string)$out);
+
+// 12. unencodable RET becomes status 1, never the literal false
+$out = Backend::processLine($call('13', 'test.nan'), $d, $s);
+check('NAN result -> json encode error RET', str_starts_with($out ?? '', 'RET 13 1 ') && !str_contains((string)$out, 'false'), (string)$out);
+
+// 13. listDir / fs sandbox
+$out = Backend::processLine($call('14', 'listDir', ['path' => '.']), $d, $s);
+check('listDir . inside sandbox', str_starts_with($out ?? '', 'RET 14 0 ') && str_contains((string)$out, 'hello.txt'), (string)$out);
+
+$out = Backend::processLine($call('15', 'listDir', ['path' => '..']), $d, $s);
+check('listDir .. rejected', str_starts_with($out ?? '', 'RET 15 1 '), (string)$out);
+
+$out = Backend::processLine($call('16', 'fs.readText', ['path' => 'hello.txt']), $d, $s);
+check('fs.readText hello.txt', $out === "RET 16 0 \"hi\\n\"\n", (string)$out);
+
+$out = Backend::processLine($call('17', 'fs.writeText', ['path' => 'out.txt', 'content' => 'ok']), $d, $s);
+check('fs.writeText out.txt', $out === "RET 17 0 true\n", (string)$out);
+check('fs.writeText landed', is_file($sandbox . DIRECTORY_SEPARATOR . 'out.txt') && file_get_contents($sandbox . DIRECTORY_SEPARATOR . 'out.txt') === 'ok');
+
+$out = Backend::processLine($call('18', 'fs.exists', ['path' => 'hello.txt']), $d, $s);
+check('fs.exists true', $out === "RET 18 0 true\n", (string)$out);
+
+$out = Backend::processLine($call('19', 'store.set', []), $d, $s);
+check('store.set missing key -> error', str_starts_with($out ?? '', 'RET 19 1 '), (string)$out);
+
+$out = Backend::processLine($call('20', 'api.echo', ['x' => 1]), $d, $s);
+check('api.echo', $out === "RET 20 0 {\"x\":1}\n", (string)$out);
+
+$empty = Gui::defaultDispatcher($s, new AppRoot((string)realpath($sandbox)));
+$out = Backend::processLine($call('21', 'api.fib', ['n' => 10]), $empty, $s);
+check('empty app has no api.fib', str_starts_with($out ?? '', 'RET 21 1 '), (string)$out);
 
 echo "\n$pass passed, $fail failed\n";
 exit($fail === 0 ? 0 : 1);

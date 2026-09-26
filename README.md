@@ -5,12 +5,9 @@
 WebView2 窗口、`window.tiny.*` 页面 API、`CALL`/`RET` 帧协议**全部沿用上游原样**——换掉的只有"谁来应答这些帧"：从 JS 换成 [aot-compiler](https://github.com/layterz/aot-compiler)（`tpc`）编出来的 PHP 单文件 exe。
 
 ```php
-// src/backend.php —— 这段代码最终是 app.exe 里的原生机器码，而不是解释执行的脚本
-case 'api.fib':
-    $n = max(0, (int)($params['n'] ?? 30));
-    $a = 0; $b = 1;
-    for ($i = 0; $i < $n; $i++) { [$a, $b] = [$b, $a + $b]; }
-    return [$a, []];
+// src/backend.php —— 演示入口；tpc 编成 app.exe 里的原生机器码
+require __DIR__ . '/../gui/php/src/Tiny/Gui/bootstrap.php';
+\Tiny\Gui\Gui::serveDemo();   // 空应用请用 Gui::serve()（不含 api.*）
 ```
 
 | 验证项 | 结果 |
@@ -88,11 +85,11 @@ typephp-gui/
 │   │   └── script/gen-client.sh   把 runtime/tiny.js 嵌进 tiny_client.h
 │   ├── runtime/tiny.js         window.tiny 客户端 shim（vendor）
 │   ├── php/src/Tiny/Gui/        ★ PHP 原生协议框架（融合的核心创新）
-│   │   ├── Protocol / Dispatcher / Backend / State / Gui（facade）
-│   │   └── Handlers/              Core / Win / Menu / Store / DemoApi
+│   │   ├── Protocol / Dispatcher / Backend / State / AppRoot / Gui
+│   │   └── Handlers/              Core / Win / Menu / Store；DemoApi 仅演示集
 │   └── bin/tgui                 dev/build/publish/init/status CLI
 │                             （替代上游 cli.js，不再需要 checkout）
-├── src/backend.php           PHP 后端入口（薄封装，加载 gui/php 框架）
+├── src/backend.php           演示入口：Gui::serveDemo()
 ├── bin/run-backend.php       用系统 PHP 直接跑同一份逻辑（不编译也能调试）
 ├── shim/backend_shell.cpp    C++ 代理。Windows + POSIX 同一份源码
 ├── tools/
@@ -108,7 +105,8 @@ typephp-gui/
 ├── experiments/              历史探针（保留但不参与构建）
 ├── evidence/                 验证证据：e2e 截图/日志 + 套件日志
 ├── build/                    所有生成物，git 忽略
-└── composer.json             包元数据 + 快捷脚本
+├── composer.json             type=project 模板（非 Packagist 库）；PSR-4 + php smoke
+└── .monkeycode/docs/         DeepWiki 风格架构/接口/开发者指南
 ```
 
 `build/` 里有什么：
@@ -146,6 +144,7 @@ TPC_HOME=D:\git\php\tpc_v0.9.3_windows_x64   # tpc 发行包
 TINYGUI_LAUNCHER=$PWD/build/runtime/launcher-win.exe   # 可选，覆盖 launcher 路径
 TYPEPHP_BACKEND=$PWD/build/backend_shell.exe           # 可选，覆盖 shim 路径
 TYPEPHP_APP=$PWD/build/app.exe                        # 可选，覆盖 PHP 后端
+TYPEPHP_APP_ROOT=$PWD                                 # 可选，listDir/fs.* 沙箱根（默认 getcwd）
 VCVARS="D:\...\VC\Auxiliary\Build\vcvars64.bat"
 ```
 
@@ -219,22 +218,23 @@ bash ../gui/bin/tgui init       # → tinyjs.json + src/frontend/index.html
 
 | 帧 | 含义 |
 |---|---|
-| `CALL <id> ["<payload>","<origin>"]` | 页面调后端。`payload` 是 `{"method":...,"params":{...}}` |
-| `WINSTATE <win> <json>` | 窗口状态变化（通知，无需应答） |
-| `NAV <json>` / `SYS <json>` / `SYSLOCALE <json>` | 导航、系统、语言变更通知 |
-| `MENU <json>` / `TRAY <json>` / `TRAYCLICK <json>` / `GOT <json>` | 菜单、托盘、异步回调 |
+| `CALL <id> ["<payload>","<origin>"]` | 页面调后端。`payload` 是 `{"method":...,"params":{...}}`。能解析出 `id` 但 payload 非法时仍回 `RET <id> 1`，避免对端挂起 |
+| `WINSTATE <win> <json>` | 窗口状态（通知）；后端缓存后 `EVAL` 推页面 |
+| `SYS theme light\|dark` / `SYS <kind>` / `SYSLOCALE <json>` | 主题、睡眠等、语言 |
+| `MENU <id>` / `TRAY <id>` / `TRAYCLICK` | 菜单、托盘点击 |
+| `NAV` / `DROP` / `HOTKEY` / `GOT` / … | 核心框架忽略 |
 
 **backend → launcher**
 
 | 帧 | 含义 |
 |---|---|
-| `RET <id> <status> <json>` | 应答，`status` 0=ok 非 0=错误 |
+| `RET <id> <status> <json>` | 应答，`status` 0=ok 非 0=错误。`json_encode` 失败时改为 status 1，不会把字面量 `false` 写进帧 |
 | `TITLE <text>` / `SIZE <w> <h>` / `QUIT` | 窗口控制。**必须在 `RET` 之前发** |
 | `EVAL <js>` / `EVAL@<win> <js>` | 在页面里跑 JS（事件推送就走这条） |
 | `DLG <id> <op>\t<args>` | 原生对话框 |
 | `MENUBEGIN … MENU/ITEM/SEP/SUB … MENUEND` | 整块声明菜单栏 |
 
-关键区别：`DLG` 和 `MENU*` 是 **launcher 原生的帧，后端不发 `RET`**（和 `bridge.js` 里 `if (dlg) { send(...); return; }` 一致）。正因为这个，shim 不能做成严格的一问一答泵，必须是**非阻塞双向轮询**。
+关键区别：`dialog.*` 只发 **`DLG`、不发 `RET`**（和 `bridge.js` 里 `if (dlg) { send(...); return; }` 一致）。`menu.set` 先发 `MENU*` 块，**再发 `RET`**。因此 shim 不能做成严格的一问一答泵，必须是**非阻塞双向轮询**。
 
 ### 三条 stdio 通道，不是两条
 
@@ -273,12 +273,15 @@ use Tiny\Gui\{Gui, State, Dispatcher, Response, Request};
 require __DIR__ . '/../gui/php/src/Tiny/Gui/bootstrap.php';
 
 $s = new State();
-$d = Gui::defaultDispatcher($s);          // 内置 Core/Win/Menu/Store/DemoApi
+$d = Gui::defaultDispatcher($s);          // 空应用：Core/Win/Menu/Store（不含 DemoApi）
 $d->on('demo.greet', function (Request $req): Response {
     $who = (string)($req->params['name'] ?? 'world');
     return Response::ok("hello, {$who}");   // 结果会被 Protocol::jenc 进 RET
 });
 Gui::serveWith($d, $s);
+
+// 演示 API（api.fib / api.echo / …）不要放进空应用：
+// Gui::serveDemo();  或  Gui::demoDispatcher($s)
 ```
 
 想一次认领多个方法，实现 `Tiny\Gui\HandlerInterface`（`methods()` 返回方法名数组，`handle()` 返回 `Response`，返回 `null` 则放行给下一个 handler）。
@@ -324,7 +327,9 @@ $d->on('demo.progress', function (Request $req): Response {
 
 ### 给后端加状态 / 文件访问
 
-框架的 `StoreHandler`（`store.get` / `store.set` / `store.all`）用的是进程内数组（演示用途）。要持久化就自己接 SQLite / 文件——**注意**真 nano 模式下 `getenv` / `gethostname` 都不可用（`backend.php` 里只有 `sysinfo` 用到它们，已经标注），别用。
+框架的 `StoreHandler`（`store.get` / `store.set` / `store.all`）用的是进程内数组（演示用途）。`store.set` **必须带非空 `key`**，否则 RET status 1，不会写入空键。要持久化就自己接 SQLite / 文件——**注意**真 nano 模式下 `getenv` / `gethostname` 都不可用，别用。
+
+`listDir` / `fs.list` / `fs.readText` / `fs.writeText` / `fs.exists` / `fs.stat` / `app.root` 走 **`AppRoot` 沙箱**：根目录为 `TYPEPHP_APP_ROOT`，未设置则 `getcwd()`。路径必须等于根或位于其下，`..` 越界拒绝。`fs.writeText` 的父目录必须已在沙箱内存在。这些方法在**空应用默认集**里（CoreHandler），与 DemoApi 无关。
 
 ### 支持一个新平台（Linux / macOS）
 
@@ -349,7 +354,7 @@ $d->on('demo.progress', function (Request $req): Response {
 
 `tpc` 编译的是**单个入口文件**：`main()` 由编译器自动调用（所以系统 PHP 下要 `bin/run-backend.php` 手动调一次）。早期 `src/backend.php` 是过程式单文件；融合后它变成薄入口，逻辑拆进了 `gui/php/src/Tiny/Gui/*` 一整套类。这些类通过 `bootstrap.php` 的 `require` 被拉进同一个编译单元——**已验证 tpc 会跟着 `require` 递归编译**，所以现在既是清晰的多文件框架，又仍能编成单个 `app.exe`。
 
-`composer.json` 因此**故意没有 `autoload`**——框架靠 `bootstrap.php` 顺序 `require` 装载，不走 Composer 自动加载。
+`tpc` 仍然只认入口文件的 `require`：框架靠 `bootstrap.php` 顺序装载。`composer.json` 另有 PSR-4 `Tiny\\Gui\\`，方便系统 PHP / IDE；**AOT 路径不要只靠 autoload**。本仓库是 **`type: project` 应用模板**，不是可 `composer require` 的库。
 
 ---
 
@@ -358,7 +363,8 @@ $d->on('demo.progress', function (Request $req): Response {
 ### POSIX 套件（一条命令，一份证据）
 
 ```bash
-bash test/posix/all.sh          # 或 composer run tiers
+php gui/php/test/smoke.php      # 或 composer test / composer smoke（Windows 可用）
+bash test/posix/all.sh          # POSIX 套件（bash；未挂到 composer）
 ```
 
 它在 Cygwin / Linux 上依次跑：宿主原语探测 → tier1（shim 对 mock 后端）→ tier2（对**真 PHP 后端**）→ 启动模式 → stderr 隔离。全部通过的输出是：
@@ -447,7 +453,7 @@ bash tools/build-launcher.sh && php gui/php/test/smoke.php
 - **Windows 上 `--nano` 是死路。** 它不是真 nano，而是 `bin` 策略包装：`NanoBuildBackend::forHost('Windows')` 硬编码返回 `WINDOWS_DLL`，所以链接的不是 freestanding php-nano，而是完整 PHP/PHPX DLL。实测产物依赖与 bin 版**完全相同**（15.5MB），体积只小 1.5%，而且 teardown **必定 SIGSEGV(139)**。小巧路线只在非 Windows 存在，且要先去 `getenv`/`gethostname`。
 - **分发体积** ≈ `shim(128KB) + php.exe(≈180KB) + launcher(≈1.9MB) + 8 个 DLL(6 个 PHP ≈15.5MB + 2 个 MinGW ≈2.4MB)` ≈ **20.7MB（实测）**，不是 tinyjsapp 那种 ~6MB 单文件。换来的是单进程自包含、目标机不需要装 PHP。
 - **`php.exe` 不自身包含运行时**，DLL 必须和它同目录（Windows 先在自己的 exe 目录找非 KnownDLL，所以同目录能钉住版本、也不依赖 PATH）。MinGW 运行时（libgcc/libstdc++）是 launcher 与 shim 都依赖的，同样必须随包分发。
-- **后端单文件**（理由见上）；`composer.json` 因此没有 `autoload`。
+- **后端单文件**（理由见上）；tpc 走 `bootstrap.php`。Composer 有 PSR-4 但不替代 require 链。
 - **`dev` 下后端是 exe 不是脚本**：shim 调 `execv` 时**不传参数**，所以后端必须能直接执行。POSIX 上有 shebang 的脚本可以，Windows 上必须是真 `.exe`。
 
 ---
@@ -456,6 +462,7 @@ bash tools/build-launcher.sh && php gui/php/test/smoke.php
 
 | 文档 | 内容 |
 |---|---|
+| `.monkeycode/docs/INDEX.md` | DeepWiki：架构、接口、开发者指南、专有概念 |
 | `docs/GUI_FUSION_DESIGN.md` | 融合设计：迁移范围/目标、模块划分、集成方式、兼容策略、开发者友好设计 |
 | `gui/README.md` | `gui/` 模块说明：布局、与上游的差异、构建、扩展、兼容 |
 | `test/posix/README.md` | 套件每一档在测什么、两条路径规则、怎么拿出去独立用 |

@@ -49,10 +49,13 @@ final class Protocol
 
     // ---- text escaping (mirror of bridge.js / launcher wire_unescape) ------
 
-    /** One-line JSON. */
+    /**
+     * One-line JSON. Throws JsonException on failure so the frame pump can turn
+     * it into RET status=1 instead of emitting the literal "false".
+     */
     public static function jenc(mixed $v): string
     {
-        return json_encode($v, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        return json_encode($v, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
     }
 
     /** \ -> \\, tab/CR/LF -> \t/\r/\n (frame fields may not contain raw newlines). */
@@ -128,7 +131,8 @@ final class Protocol
      * Decode one inbound frame line.
      *
      * @return array{type:'call', request:Request}
-     *               |array{type:'notification', event:string, data:mixed, frame:string}
+     *               |array{type:'bad_call', id:string, error:string}
+     *               |array{type:'notification', event:string, data:mixed}
      *               |array{type:'ignore'}
      */
     public static function decode(string $raw): array
@@ -146,6 +150,9 @@ final class Protocol
             return ['type' => 'ignore'];
         }
         $id = substr($line, 5, $sp - 5);
+        if ($id === '') {
+            return ['type' => 'ignore'];
+        }
         $body = substr($line, $sp + 1);
 
         $callerWin = str_contains($id, ':')
@@ -163,8 +170,8 @@ final class Protocol
             $origin = null;
             $msg = $args;
         }
-        if (!is_array($msg) || !isset($msg['method'])) {
-            return ['type' => 'ignore'];
+        if (!is_array($msg) || !isset($msg['method']) || !is_string($msg['method']) || $msg['method'] === '') {
+            return ['type' => 'bad_call', 'id' => $id, 'error' => 'invalid CALL payload'];
         }
         $req = new Request(
             $id,
@@ -187,8 +194,7 @@ final class Protocol
             $win = substr($line, 9, $sp - 9);
             $st = json_decode(substr($line, $sp + 1), true);
             $data = ['win' => $win] + (is_array($st) ? $st : []);
-            return ['type' => 'notification', 'event' => 'window-state', 'data' => $data,
-                    'frame' => self::event('window-state', $data)];
+            return ['type' => 'notification', 'event' => 'window-state', 'data' => $data];
         }
         // SYS theme <light|dark> ; SYS sleep|wake
         if (str_starts_with($line, 'SYS ')) {
@@ -196,11 +202,9 @@ final class Protocol
             $kind = $parts[0] ?? '';
             if ($kind === 'theme') {
                 $data = ['dark' => ($parts[1] ?? '') === 'dark'];
-                return ['type' => 'notification', 'event' => 'theme', 'data' => $data,
-                        'frame' => self::event('theme', $data)];
+                return ['type' => 'notification', 'event' => 'theme', 'data' => $data];
             }
-            return ['type' => 'notification', 'event' => $kind, 'data' => [],
-                    'frame' => self::event($kind, [])];
+            return ['type' => 'notification', 'event' => $kind, 'data' => []];
         }
         // SYSLOCALE <json>
         if (str_starts_with($line, 'SYSLOCALE ')) {
@@ -208,22 +212,18 @@ final class Protocol
             if (!is_array($info)) {
                 return ['type' => 'ignore'];
             }
-            return ['type' => 'notification', 'event' => 'locale', 'data' => $info,
-                    'frame' => self::event('locale', $info)];
+            return ['type' => 'notification', 'event' => 'locale', 'data' => $info];
         }
         if (str_starts_with($line, 'MENU ')) {
             $id = substr($line, 5);
-            return ['type' => 'notification', 'event' => 'menu', 'data' => ['id' => $id],
-                    'frame' => self::event('menu', ['id' => $id])];
+            return ['type' => 'notification', 'event' => 'menu', 'data' => ['id' => $id]];
         }
         if (str_starts_with($line, 'TRAY ')) {
             $id = substr($line, 5);
-            return ['type' => 'notification', 'event' => 'tray', 'data' => ['id' => $id],
-                    'frame' => self::event('tray', ['id' => $id])];
+            return ['type' => 'notification', 'event' => 'tray', 'data' => ['id' => $id]];
         }
         if ($line === 'TRAYCLICK') {
-            return ['type' => 'notification', 'event' => 'trayclick', 'data' => [],
-                    'frame' => self::event('trayclick', [])];
+            return ['type' => 'notification', 'event' => 'trayclick', 'data' => []];
         }
         // NAV / DROP / HOTKEY / GOT / … — not consumed by the core; ignore.
         return ['type' => 'ignore'];

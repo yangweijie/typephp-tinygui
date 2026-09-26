@@ -72,7 +72,7 @@ use Tiny\Gui\{Gui, State, Dispatcher, Response, Request};
 require __DIR__ . '/../gui/php/src/Tiny/Gui/bootstrap.php';
 
 $s = new State();
-$d = Gui::defaultDispatcher($s);          // core + win + menu + store + demo API
+$d = Gui::defaultDispatcher($s);          // core + win + menu + store（不含 demo API）
 $d->on('demo.greet', function (Request $req): Response {
     return Response::ok('hello ' . ($req->params['name'] ?? 'world'));
 });

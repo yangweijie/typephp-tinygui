@@ -12,6 +12,7 @@ namespace Tiny\Gui;
 require_once __DIR__ . '/Request.php';
 require_once __DIR__ . '/Response.php';
 require_once __DIR__ . '/HandlerInterface.php';
+require_once __DIR__ . '/AppRoot.php';
 require_once __DIR__ . '/Protocol.php';
 require_once __DIR__ . '/State.php';
 require_once __DIR__ . '/Dispatcher.php';

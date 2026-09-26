@@ -192,7 +192,7 @@ $d->onPrefix('admin.', fn(Request $r): Response =>
 // 门面：三步起服务
 require 'gui/php/src/Tiny/Gui/bootstrap.php';
 $s = new \Tiny\Gui\State();
-$d = \Tiny\Gui\Gui::defaultDispatcher($s);   // 内置 Core/Win/Menu/Store/DemoApi
+$d = \Tiny\Gui\Gui::defaultDispatcher($s);   // 空应用：Core/Win/Menu/Store（DemoApi 用 demoDispatcher）
 \Tiny\Gui\Gui::serveWith($d, $s);
 ```
 

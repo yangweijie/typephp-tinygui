@@ -50,7 +50,15 @@ Thumbs.db
 .env.local
 toolchain.local.sh
 
+# Composer install output (this repo is type=project; do not commit vendor/)
+/vendor/
+
 # ---------------------------------------------------------------------------
-# Diagnostic evidence — E2E screenshots / shell logs. Not source.
+# Evidence: keep tracked kit/e2e artifacts (evidence/e2e/e2e-*, evidence/kit/).
+# Ignore local scratch dumps from TYPEPHP_SHELL_LOG / ad-hoc runs.
 # ---------------------------------------------------------------------------
-evidence/
+evidence/e2e/dev*.log
+evidence/e2e/direct.log
+evidence/e2e/manual_shim.log
+evidence/e2e/tgui_env.log
+evidence/e2e/pub_real*.log

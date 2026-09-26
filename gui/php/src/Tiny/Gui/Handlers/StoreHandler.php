@@ -33,6 +33,9 @@ final class StoreHandler implements HandlerInterface
 
     private function set(Request $req): Response
     {
+        if (!array_key_exists('key', $req->params) || $req->params['key'] === null || $req->params['key'] === '') {
+            return Response::error('store.set requires a non-empty key');
+        }
         $this->store[(string)$req->params['key']] = $req->params['value'] ?? null;
         return Response::ok(true);
     }

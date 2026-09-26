@@ -1,6 +1,6 @@
 {
     "name": "yangweijie/typephp-gui",
-    "description": "TypePHP GUI: run desktop WebView2 apps on a compiled PHP backend (aot-compiler / TypePHP), with the tinyjsapp GUI host fused in-tree (no external checkout, no patch step).",
+    "description": "TypePHP GUI application template (not a Packagist library): compiled PHP backend + in-tree tinyjsapp host. Consume via bootstrap.php or the PSR-4 autoload below; do not require this as a reusable Composer package.",
     "type": "project",
     "license": "MIT",
     "keywords": [
@@ -16,15 +16,22 @@
     "require": {
         "php": ">=8.1"
     },
+    "autoload": {
+        "psr-4": {
+            "Tiny\\Gui\\": "gui/php/src/Tiny/Gui/"
+        }
+    },
     "config": {
         "sort-packages": true
     },
     "scripts": {
-        "tiers": "bash test/posix/all.sh",
+        "test": "php gui/php/test/smoke.php",
+        "smoke": "php gui/php/test/smoke.php",
         "verify": "python tools/verify-bundle.py"
     },
     "scripts-descriptions": {
-        "tiers": "Run the POSIX verification kit (host probe + tiers 1-2 + launch mode + stderr isolation).",
-        "verify": "Verify a packaged dist/ bundle: launcher subsystem, bundled launcher, DLL set."
+        "test": "Headless protocol smoke tests (Windows-safe: php, not bash).",
+        "smoke": "Same as test.",
+        "verify": "Verify a packaged dist/ bundle: launcher subsystem, bundled launcher, DLL set. POSIX host-probe kit remains test/posix/all.sh (bash)."
     }
 }

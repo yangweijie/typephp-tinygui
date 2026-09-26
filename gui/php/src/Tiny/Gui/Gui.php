@@ -3,7 +3,8 @@
  * Facade: build the default dispatcher (all built-in handlers) and serve.
  *
  *   require '…/bootstrap.php';
- *   \Tiny\Gui\Gui::serve();                       // built-ins only
+ *   \Tiny\Gui\Gui::serve();                       // empty app: Core/Win/Menu/Store
+ *   \Tiny\Gui\Gui::serveDemo();                   // plus DemoApiHandler (api.*)
  *
  *   // or extend before serving:
  *   $s = new \Tiny\Gui\State();
@@ -18,13 +19,21 @@ namespace Tiny\Gui;
 
 final class Gui
 {
-    public static function defaultDispatcher(State $s): Dispatcher
+    public static function defaultDispatcher(State $s, ?AppRoot $root = null): Dispatcher
     {
+        $root ??= AppRoot::fromEnv();
         $d = new Dispatcher();
-        $d->add(new Handlers\CoreHandler($s));
+        $d->add(new Handlers\CoreHandler($s, $root));
         $d->add(new Handlers\WinHandler());
         $d->add(new Handlers\MenuHandler());
         $d->add(new Handlers\StoreHandler());
+        return $d;
+    }
+
+    /** Same as defaultDispatcher, plus DemoApiHandler (`api.fib` / `api.echo` / …). */
+    public static function demoDispatcher(State $s, ?AppRoot $root = null): Dispatcher
+    {
+        $d = self::defaultDispatcher($s, $root);
         $d->add(new Handlers\DemoApiHandler());
         return $d;
     }
@@ -33,6 +42,12 @@ final class Gui
     {
         $s = new State();
         self::serveWith(self::defaultDispatcher($s), $s);
+    }
+
+    public static function serveDemo(): void
+    {
+        $s = new State();
+        self::serveWith(self::demoDispatcher($s), $s);
     }
 
     public static function serveWith(Dispatcher $d, ?State $s = null): void

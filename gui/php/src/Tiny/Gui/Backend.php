@@ -27,9 +27,18 @@ final class Backend
             return null;
         }
 
+        if ($dec['type'] === 'bad_call') {
+            return self::safeRet($dec['id'], 1, $dec['error']);
+        }
+
         if ($dec['type'] === 'notification') {
             $s->apply($dec['event'], $dec['data']);
-            return $dec['frame'] . "\n";
+            try {
+                return Protocol::event($dec['event'], $dec['data']) . "\n";
+            } catch (\JsonException $e) {
+                fwrite(STDERR, '[php-backend] notification encode failed: ' . $e->getMessage() . "\n");
+                return null;
+            }
         }
 
         $req = $dec['request'];
@@ -51,7 +60,7 @@ final class Backend
         foreach ($resp->frames as $f) {
             $out .= $f . "\n";
         }
-        $out .= Protocol::ret($req->id, $resp->status, $resp->result) . "\n";
+        $out .= self::safeRet($req->id, $resp->status, $resp->result);
         return $out;
     }
 
@@ -92,5 +101,19 @@ final class Backend
     {
         fwrite(STDOUT, $s);
         fflush(STDOUT);
+    }
+
+    /** RET that never emits a broken frame if the result cannot be JSON-encoded. */
+    private static function safeRet(string $id, int $status, mixed $result): string
+    {
+        try {
+            return Protocol::ret($id, $status, $result) . "\n";
+        } catch (\JsonException $e) {
+            try {
+                return Protocol::ret($id, 1, 'json encode failed: ' . $e->getMessage()) . "\n";
+            } catch (\JsonException) {
+                return 'RET ' . $id . " 1 \"json encode failed\"\n";
+            }
+        }
     }
 }
