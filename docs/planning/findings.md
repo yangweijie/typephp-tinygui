@@ -599,3 +599,19 @@ unlink"。于是在**回退触发时**（＝正好是被分发的那一侧），
 因为发布物不许弄脏自己，in-tree 的证据日志写 `evidence/kit/`、standalone 的写自己的临时
 scratch 并把路径打印出来。这样"把 kit 同步进技能后 `diff -rq` 两边"这句话**永远成立**，
 不会被残留文件变成幽灵差异 —— 而幽灵差异会掩盖真差异，这正是这份资产最需要的一种可判性。
+
+### 融合 CLI 与旧 cli.js `build` 的功能对齐清单（session 17）
+
+换掉一个构建工具时，**它隐含做的事**最容易丢。旧 `tinyjs build --typephp` 的完整职责，融合
+`tgui build` 必须逐项对齐（本次就是漏了后两项才出的回归）：
+
+| 职责 | 旧 cli.js | 融合 tgui build |
+|---|---|---|
+| 组装 dist（入口/launcher/后端/DLL/frontend/conf） | ✓ | ✓（布局改为：入口 `<App>.exe`=shim、后端 `php.exe` 分名、8 DLL） |
+| DLL 集 | 6 个 PHP 运行时 | **8 个**：6 PHP + 2 MinGW（libgcc/libstdc++，launcher 与 shim 都依赖） |
+| 图标刻进入口 PE 资源（`launcher --embed-icon`） | ✓ `embedIcon()` | ✓（接回） |
+| PE `Subsystem` console→GUI（双击不挂黑框，bug #10） | ✓ `forceGuiSubsystem()`，**最后一步** | ✓（php 内联改 `peOff+24+68`，接回，顺序不变） |
+| publish 压包 | zip（钉 bsdtar 验魔数） | zip 优先，回退 tar.gz |
+
+下游工具盘点：`tools/verify-bundle.py` 是"产物布局"的镜像——**布局一变它必须同步变**，否则
+校验器对正确产物误报、对缺项漏报（本次它还在查 `app.exe` + 6 DLL）。

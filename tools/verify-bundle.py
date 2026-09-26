@@ -12,7 +12,8 @@ itself, all of which have been wrong at least once:
     packaged direction drives the launcher through its STOCK argument contract
     (`<html> <endpoint> [title] [WxH] [version]`), so packaging must not modify
     it. Pass the source with --launcher; without it this check is skipped.
-  * are app.exe, its six PHP runtime DLLs, the conf and the frontend all present?
+  * are php.exe (the compiled PHP backend), the eight runtime DLLs (six PHP +
+    two MinGW), the conf and the frontend all present?
 
 Usage:
     python verify-bundle.py <dist-dir> [--launcher <the launcher dist/ was copied from>]
@@ -31,6 +32,10 @@ PHP_RUNTIME_DLLS = [
     "php8ts.dll", "phpx.dll", "libmpdec-4.0.1.dll", "libmpdec++-4.0.1.dll",
     "gmp-10.dll", "mpfr-6.dll",
 ]
+# libgcc/libstdc++: imported by BOTH the shim entry and the (MinGW-built)
+# launcher. Missing them means the dist fails to load at all, not just on
+# clean machines — so they are required, not optional.
+MINGW_RUNTIME_DLLS = ["libgcc_s_seh-1.dll", "libstdc++-6.dll"]
 
 failures = []
 warnings = []
@@ -100,16 +105,16 @@ def main():
         print("not a directory: " + dist)
         return 2
 
-    # The entry is <name>.exe, and cmdBuildTypephp writes a matching <name>.conf
+    # The entry is <name>.exe, and tgui build writes a matching <name>.conf
     # beside it — use that linkage rather than guessing from the .exe list (which
-    # also contains app.exe).
+    # also contains php.exe and launcher.exe).
     confs_all = [f for f in os.listdir(dist) if f.endswith(".conf")]
     entries = [os.path.splitext(c)[0] + ".exe" for c in confs_all
                if os.path.exists(os.path.join(dist, os.path.splitext(c)[0] + ".exe"))]
     if not entries:
         entries = [f for f in os.listdir(dist)
                    if f.lower().endswith(".exe")
-                   and f.lower() not in ("launcher.exe", "app.exe")]
+                   and f.lower() not in ("launcher.exe", "php.exe", "app.exe")]
     if len(entries) != 1:
         fail("could not identify a single entry exe, found %d (%s)"
              % (len(entries), ", ".join(entries) or "none"))
@@ -152,17 +157,20 @@ def main():
         ok("launcher.exe present")
 
     print("== PHP backend + runtime ==")
-    app = os.path.join(dist, "app.exe")
-    if not os.path.exists(app):
-        fail("app.exe missing")
+    php = os.path.join(dist, "php.exe")
+    if not os.path.exists(php):
+        fail("php.exe missing — the compiled PHP backend (tgui build copies it "
+             "under this name; the ENTRY <name>.exe is the shim, not the backend)")
     else:
-        ok("app.exe present (%d bytes)" % os.path.getsize(app))
-    missing = [d for d in PHP_RUNTIME_DLLS if not os.path.exists(os.path.join(dist, d))]
+        ok("php.exe present (%d bytes)" % os.path.getsize(php))
+    required = PHP_RUNTIME_DLLS + MINGW_RUNTIME_DLLS
+    missing = [d for d in required if not os.path.exists(os.path.join(dist, d))]
     if missing:
-        fail("missing PHP runtime DLLs: %s — app.exe works on a machine with a "
-             "PHP runtime on PATH and fails on a clean one" % ", ".join(missing))
+        fail("missing runtime DLLs: %s — php.exe / launcher.exe / the shim work "
+             "on a machine with those on PATH and fail on a clean one"
+             % ", ".join(missing))
     else:
-        ok("all %d PHP runtime DLLs present" % len(PHP_RUNTIME_DLLS))
+        ok("all %d runtime DLLs present (6 PHP + 2 MinGW)" % len(required))
 
     print("== conf + frontend ==")
     confs = [f for f in os.listdir(dist) if f.endswith(".conf")]

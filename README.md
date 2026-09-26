@@ -16,9 +16,9 @@ case 'api.fib':
 | 验证项 | 结果 |
 |---|---|
 | POSIX 套件（host probe + tier1/2 + 启动模式 + stderr 隔离） | **50 PASS / 0 FAIL** |
-| Windows 开发方向（`tgui dev`） | 窗口正常，**13 CALL / 13 RET**，`WINDOW-E2E OK ping=pong in 441ms` |
-| Windows 打包方向（双击 `dist\<App>.exe`） | 窗口正常，**13 CALL / 13 RET**，`WINDOW-E2E OK ping=pong in 438ms` |
-| 打包产物校验 | **0 failure / 0 warning** |
+| Windows 开发方向（`tgui dev`） | 窗口正常，**13 CALL / 13 RET**，`WINDOW-E2E OK ping=pong in 406ms`（融合后真机复验） |
+| Windows 打包方向（双击 `dist\<App>.exe`） | 窗口正常，**13 CALL / 13 RET**，`WINDOW-E2E OK ping=pong in 430ms`（融合后真机复验，含 PE 补丁后的入口） |
+| 打包产物校验 | **0 failure / 0 warning**（融合后复验，`php.exe` + 8 DLL 口径） |
 
 ---
 
@@ -68,6 +68,8 @@ tinyjsapp 的结构是：**C++ launcher 宿主 WebView2，后端在另一侧应�
         └───────────────────┘
 ```
 
+> 打包方向里 PHP 后端在 `dist/` 中叫 **`php.exe`**——`tgui build` 特意让它与入口 `<App>.exe`（= shim）**不同名**，否则两者互相覆盖、配置里的 `app=` 还会指回 shim 自己。上图中的 `app.exe` 是 `build/` 目录里的同一份二进制。
+>
 > `shim/backend_shell.cpp` 头部注释里有更详细的三种通道说明；`docs/` 下有完整的调研与落地记录。
 
 ---
@@ -117,7 +119,7 @@ build/
 ├── app.exe             PHP 后端（tpc 编出来）
 ├── *.dll               app.exe 依赖的 6 个 PHP 运行时 DLL（约 15.5MB）
 ├── launcher-win.exe    原生宿主（从 gui/host/src 编，已含 --typephp）
-├── runtime/            launcher + backend.exe + app.exe 三件套，可直接跑
+├── runtime/            launcher + backend.exe + app.exe + 2 个 MinGW 运行时 DLL，可直接跑
 ├── gen/                staging 出的 launcher-win.cc、tiny_client.h
 └── winrt-shim/ include/ 下载的构建依赖，跨次缓存
 ```
@@ -195,7 +197,7 @@ python ../tools/verify-bundle.py dist \
        --launcher ../build/runtime/launcher-win.exe
 ```
 
-产物：`dist/<App>.exe`（= shim，双击入口，已置 GUI 子系统并嵌图标）、`launcher.exe`、`app.exe`、6 个 DLL、`frontend/`、`dist/<App>.conf`。
+产物：`dist/<App>.exe`（= shim，双击入口；`tgui build` 会自动用 `launcher --embed-icon` 把图标刻进 PE 资源、并把 PE `Subsystem` console→GUI，双击不挂黑框——这两步是旧 cli.js 的出货级修法 #10，融合 CLI 已接回）、`launcher.exe`、`php.exe`（PHP 后端，与入口不同名）、8 个 DLL（6 个 PHP 运行时 + 2 个 MinGW 运行时）、`frontend/`、`dist/<App>.conf`。
 
 ### 4. 新建一个项目
 
@@ -383,7 +385,10 @@ ALL TIERS OK
 # 开发方向
 cd demo && TYPEPHP_SHELL_LOG=../evidence/e2e/dev.log bash ../gui/bin/tgui dev
 # 打包方向
-cd demo/dist && TYPEPHP_SHELL_LOG=.../packaged.log "./TypePHP Demo.exe"
+cd demo/dist && TYPEPHP_SHELL_LOG=D:/abs/path/packaged.log "./TypePHP-Demo.exe"
+#   ^ 两个坑：name 含空格会被 tgui 净化成连字符（TypePHP-Demo.exe，无空格）；
+#     TYPEPHP_SHELL_LOG 必须是原生 Windows 路径（D:/...）——原生 shim 解析不了
+#     Git-Bash 的 /d/... 形式，fopen 失败时日志静默为空。
 ```
 
 判定依据（都在 shim 日志里）：
@@ -399,7 +404,7 @@ cd demo/dist && TYPEPHP_SHELL_LOG=.../packaged.log "./TypePHP Demo.exe"
 python tools/verify-bundle.py demo/dist --launcher build/runtime/launcher-win.exe
 ```
 
-查四件 `tinyjs build --typephp` 自己不会告诉你、但每件都出过错的事：入口是不是 **GUI 子系统**（CUI 会让双击后一直挂个黑框）、入口有没有**图标资源**（`.conf` 里的 `icon=` 只管运行时窗口/任务栏）、`dist/launcher.exe` 是否和拷来的那份逐字节一致、`app.exe` + 6 个 DLL + conf + frontend 是否齐全。
+查四件 `tgui build` 自己不会告诉你、但每件都出过错的事：入口是不是 **GUI 子系统**（CUI 会让双击后一直挂个黑框）、入口有没有**图标资源**（`.conf` 里的 `icon=` 只管运行时窗口/任务栏）、`dist/launcher.exe` 是否和拷来的那份逐字节一致、`php.exe` + 8 个 DLL（6 个 PHP 运行时 + 2 个 MinGW 运行时）+ conf + frontend 是否齐全。
 
 ---
 
@@ -440,8 +445,8 @@ bash tools/build-launcher.sh && php gui/php/test/smoke.php
 
 - **`--typephp` 目前只有 Windows。** 只有 `launcher-win.cc` 含 `--typephp`（已并入自有源码），`tgui dev` 在非 Windows 上因找不到 `launcher-win.exe` 而无法启动完整 GUI。见"支持一个新平台"。
 - **Windows 上 `--nano` 是死路。** 它不是真 nano，而是 `bin` 策略包装：`NanoBuildBackend::forHost('Windows')` 硬编码返回 `WINDOWS_DLL`，所以链接的不是 freestanding php-nano，而是完整 PHP/PHPX DLL。实测产物依赖与 bin 版**完全相同**（15.5MB），体积只小 1.5%，而且 teardown **必定 SIGSEGV(139)**。小巧路线只在非 Windows 存在，且要先去 `getenv`/`gethostname`。
-- **分发体积** ≈ `shim(128KB) + app.exe(≈180KB) + 6 个 PHP DLL(≈15.5MB)` ≈ **18.6MB**，不是 tinyjsapp 那种 ~6MB 单文件。换来的是单进程自包含、目标机不需要装 PHP。
-- **`app.exe` 不自身包含运行时**，DLL 必须和它同目录（Windows 先在自己的 exe 目录找非 KnownDLL，所以同目录能钉住版本、也不依赖 PATH）。
+- **分发体积** ≈ `shim(128KB) + php.exe(≈180KB) + launcher(≈1.9MB) + 8 个 DLL(6 个 PHP ≈15.5MB + 2 个 MinGW ≈2.4MB)` ≈ **20.7MB（实测）**，不是 tinyjsapp 那种 ~6MB 单文件。换来的是单进程自包含、目标机不需要装 PHP。
+- **`php.exe` 不自身包含运行时**，DLL 必须和它同目录（Windows 先在自己的 exe 目录找非 KnownDLL，所以同目录能钉住版本、也不依赖 PATH）。MinGW 运行时（libgcc/libstdc++）是 launcher 与 shim 都依赖的，同样必须随包分发。
 - **后端单文件**（理由见上）；`composer.json` 因此没有 `autoload`。
 - **`dev` 下后端是 exe 不是脚本**：shim 调 `execv` 时**不传参数**，所以后端必须能直接执行。POSIX 上有 shebang 的脚本可以，Windows 上必须是真 `.exe`。
 

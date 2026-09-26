@@ -342,3 +342,32 @@ session 14 立下的规矩——**一个 kit 资产只有在"它被分发到的�
 - **最终两侧一致**：in-tree **51 PASS / 0 FAIL / ALL TIERS OK**（且**零**临时目录）；standalone（`BACKEND_PHP=` 指向本仓后端）同样 **51 / 0 / ALL TIERS OK**，临时目录**恰好一个**，就是它打印并实际使用的那个。技能目录 `diff` 回干净：只剩 13 个同步文件。
 - **顺带纠正两处已过时的旧结论**（见 `findings.md`）：`planb/` 已不存在；本项目**现在是 git 仓**（session 15 记的"不是 git 仓"已被推翻，`git diff --stat` 重新可用）。
 - **仍未做（不变、不阻塞）**：Phase 16b-2 的 tier 3（真 `--nano` freestanding 体积）与 tier 4（真 `launcher-linux`）需要 Linux；三条路（`radeon-cloud` / 任意 ssh 机器 / 本地 WSL，后者受 **C: 2.8G 可用**限制）等用户点头。
+
+## 2026-09-26 session 17（README 同步 + 打包链路回归修复：把 PE 后处理接回 tgui build）
+
+- **背景**：session 16 之后有三个未记档的 commit——GUI 融合入树（`f8202d0`）、真机验证中修好
+  `tgui build` 三个布局 bug（`3c9370e`：shim/后端同名互覆、漏拷 MinGW 运行时、`set -u` 未定义变量）。
+  本次用户要求更新 README；核对时发现两处"README 说的还是真的吗"级别的问题。
+- **发现的真回归**：README 声称入口"已置 GUI 子系统并嵌图标"——这正是旧 cli.js 的出货级修法
+  （bug #10：CUI 入口双击全程挂黑框）。融合 CLI `tgui build` **没接这两步**，当前 dist 入口是
+  console 子系统、无图标 → 声明为假。此前所有实测都从 shell 起，黑框根本看不见（#10 当年的
+  教训原样重演）。
+- **修法**：
+  - `gui/bin/tgui` build 接回两步 PE 后处理：① `launcher --embed-icon dist/<App>.exe <icon>`
+    （launcher 自带工具，会**整体重写 PE**）；② 用 php 内联改 PE `OptionalHeader.Subsystem`
+    （`peOff+24+68`，uint16）3→2。**顺序敏感**：子系统必须是最后一步（findings 既有结论）。
+  - `tools/verify-bundle.py`：PHP 后端改查 **`php.exe`**（新布局，入口是 shim、二者不同名）；
+    必查 DLL 加上 **2 个 MinGW 运行时**（libgcc/libstdc++，launcher 与 shim 都依赖）；入口候选
+    排除表加 `php.exe`；docstring 同步。
+- **实机验证**：重建 dist → `verify-bundle.py` **0 failure / 0 warning**（PE subsystem GUI、
+  图标 1 枚可被 Explorer 提取、launcher 逐字节一致、php.exe、8 DLL、conf、frontend；
+  top-level **20.7MB**）→ PE 补丁后的入口重跑打包方向 E2E：**`WINDOW-E2E OK ping=pong in 430ms`**
+  + 干净收尾（`evidence/e2e/pub_real2.log`）。
+- **README 同步（8 处）**：验证表改融合后真机复验数据（dev 406ms / packaged 430ms，旧 441/438ms
+  是融合前 cli.js 时代的数据）；图注补"打包方向后端叫 `php.exe`、为何与入口不同名"；build/ 树的
+  `runtime/` 补 2 个 MinGW DLL；产物清单重写（含自动刻图标 + 子系统 patch 的说明）；打包方向 E2E
+  命令改 `TypePHP-Demo.exe`（name 含空格被净化）并写明 **`TYPEPHP_SHELL_LOG` 必须给原生 Windows
+  路径（`D:/...`），原生 shim 读不懂 `/d/...`**；verify-bundle 描述改 8 DLL 口径；分发体积改
+  20.7MB 实测；已知限制改 `php.exe` 措辞。
+- **教训**：改构建产物布局时，要同盘盘点**引用该布局的下游工具**（verify-bundle）与**构建流程
+  隐含的后处理步骤**（PE 补丁）——README 的声明只能靠实跑 verify-bundle + E2E 背书，不能靠记忆。
