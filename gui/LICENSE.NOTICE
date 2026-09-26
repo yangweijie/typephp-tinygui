@@ -1,0 +1,50 @@
+The TypePHP GUI framework (typephp-gui) is licensed under the MIT License.
+
+Parts of this directory are derived from tinyjsapp (https://github.com/tarwin/tinyjsapp),
+Copyright (c) 2026 Tarwin Stroh-Spijer, also released under the MIT License.
+tinyjsapp is a desktop GUI toolkit; we have vendored and fused its native host into
+this project so the GUI implementation is owned in-tree and no longer depends on a
+separate tinyjsapp checkout or patch-based integration.
+
+The MIT License (for both works):
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+
+Derived / vendored files in this tree (respect their upstream MIT terms):
+
+  gui/host/src/launcher-win.cc    derived from tinyjsapp native/launcher-win.cc
+                                  (v0.42.0) with the --typephp backend-spawn
+                                  feature merged in-tree.
+  gui/host/src/launcher-linux.cc  vendored from tinyjsapp (pristine).
+  gui/host/src/launcher-macos.cc  vendored from tinyjsapp (pristine).
+  gui/runtime/tiny.js             vendored from tinyjsapp runtime/tiny.js
+                                  (the window.tiny client API surface).
+  gui/host/include/webview.h      vendored from tinyjsapp native/include/webview.h
+                                  (the webview/webview C++ wrapper).
+  gui/host/include/WebView2.h     vendored (Microsoft WebView2 SDK header).
+  gui/host/include/miniaudio.h    vendored (miniaudio single-header library).
+
+Originated in this project (MIT, yangweijie/typephp-gui):
+
+  gui/php/src/Tiny/Gui/*          the PHP-native protocol framework (the fusion's
+                                  innovation: a clean, extensible CALL/RET layer
+                                  replacing tinyjsapp's JS bridge.js).
+  gui/bin/tgui                    the dev/build/publish CLI replacing tinyjsapp's
+                                  patched cli.js.
+  shim/backend_shell.cpp          the C++ stdio<->IPC proxy (unchanged in role).

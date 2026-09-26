@@ -1,0 +1,7193 @@
+// tinyjs native launcher — Linux (GTK3 + WebKitGTK 4.1).
+//
+// Speaks the same newline-delimited wire protocol as launcher-macos.cc
+// (macOS) and launcher-win.cc (Windows) over a unix domain socket the
+// backend listens on:
+//   launcher <html-file-or-url> <socket> [title] [WxH] [version]
+//
+// Also: `launcher --open <socket> <app-exe> [url-or-path]` — single-instance /
+// deep-link forwarder for built apps (the .desktop Exec handler).
+//
+// Build: see setup.sh (pkg-config gtk+-3.0 webkit2gtk-4.1 [+appindicator, x11]).
+
+#include <gtk/gtk.h>
+#include <webkit2/webkit2.h>
+#include <gdk/gdk.h>
+#include <gio/gio.h>
+#include <gio/gunixfdlist.h>
+#include <glib-unix.h>
+#include <libsoup/soup.h>
+
+#ifdef GDK_WINDOWING_X11
+#include <gdk/gdkx.h>
+#endif
+#ifdef TINYJS_X11
+#include <X11/Xlib.h>
+#include <X11/extensions/XTest.h>
+#include <X11/keysym.h>
+#endif
+#ifdef TINYJS_PIPEWIRE
+#include <pipewire/pipewire.h>
+#include <spa/param/video/format-utils.h>
+#include <spa/param/audio/format-utils.h>
+// tiny.audio.sampler decode: miniaudio's WAV/MP3/FLAC decoders + resampler
+// only — MA_NO_DEVICE_IO drops its device layer (PipeWire is the output).
+// Vendored at native/include/miniaudio.h (v0.11.22); -isystem in setup.sh.
+#define MA_NO_DEVICE_IO
+#define MA_NO_ENCODING
+#define MA_NO_GENERATION
+#define MA_NO_ENGINE
+#define MA_NO_NODE_GRAPH
+#define MA_NO_RESOURCE_MANAGER
+#define MINIAUDIO_IMPLEMENTATION
+#include <miniaudio.h>
+#endif
+#ifdef TINYJS_APPINDICATOR
+#include <libayatana-appindicator/app-indicator.h>
+#endif
+
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <cstring>
+#include <cstdio>
+#include <cstdlib>
+#include <cmath>
+#include <memory>
+#include <string>
+#include <vector>
+#include <map>
+#include <set>
+#include <mutex>
+#include <thread>
+#include <atomic>
+#include <functional>
+
+#include "tiny_client.h"  // TINY_CLIENT_JS, generated from runtime/tiny.js
+
+// ---------------------------------------------------------------- globals ---
+
+static std::string g_app_name = "tinyjs";
+static std::string g_app_version = "0.0.0";
+static std::string g_app_id;          // TINYJS_APP_ID (WM class / notify identity)
+static std::string g_target;          // html path or http(s) url
+static bool g_target_is_url = false;
+static int g_width = 960, g_height = 640;
+
+static int g_sock = -1;
+static std::mutex g_write_mutex;
+
+static GtkWindow* g_win = nullptr;    // main window
+static WebKitWebView* g_wv = nullptr; // main webview
+static GtkWidget* g_vbox = nullptr;
+static GtkWidget* g_menubar = nullptr;   // main's bar (== g_main_menu.bar)
+static GtkAccelGroup* g_accel = nullptr; // main's accelerators
+
+static bool g_hide_on_close = false;
+static bool g_accessory = false;
+static bool g_quitting = false;
+
+// chrome state (main window), reported by GET win
+static bool g_fixed_main = false;      // app asked for setResizable(false)
+static bool g_chrome_frame = true, g_chrome_traffic = true,
+            g_chrome_transparent = false, g_chrome_square = false,
+            g_chrome_first_mouse = false;
+static std::string g_chrome_vibrancy;  // "" = none
+static std::string g_level = "normal";
+static bool g_click_through = false, g_all_spaces = false;
+
+// Menu declarations (shared by menu bar / tray / context menu). Defined this
+// early because a window carries its own menu — see WinMenu below.
+struct MenuItemSpec {
+  bool separator = false;
+  bool submenu = false;
+  std::string id, label, key, flags;
+  std::string role;  // ROLEITEM: a stock editing item (copy, standard, …)
+  std::vector<MenuItemSpec> children;
+};
+struct MenuSpec {
+  std::string title;
+  std::vector<MenuItemSpec> items;
+};
+
+// A window's menu bar. Every window has one — main included — and resolves
+// its contents by inheritance: its OWN declaration if it made one
+// (MENUBEGIN@<win>), otherwise the app menu (a bare MENUBEGIN, i.e.
+// tiny.menu.set / app.setMenu). macOS has a single bar for the whole app;
+// GTK, like Win32, draws the bar inside each toplevel, so each window gets
+// its own copy of the same menu and an app that says nothing per-window sees
+// the same thing everywhere.
+//
+// The widgets are BUILT even when the bar is hidden: accelerators live on
+// them (per-window GtkAccelGroup), and Ctrl+S has to keep working in a
+// window that merely doesn't show a bar — the macOS behaviour that
+// chrome.menu:false is imitating.
+struct WinMenu {
+  std::vector<MenuSpec> own;
+  bool has_own = false;
+  bool visible = true;             // chrome.menu
+  GtkWidget* bar = nullptr;        // GtkMenuBar, packed above the webview
+  GtkAccelGroup* accel = nullptr;  // this window's accelerators
+  bool room_given = false;         // page box repaid once (see apply_menus)
+};
+
+struct SecWin {
+  std::string id;
+  GtkWindow* win = nullptr;
+  WebKitWebView* wv = nullptr;
+  bool frame = true, transparent = false, square = false, first_mouse = false;
+  bool fixed = false;          // app asked for setResizable(false)
+  std::string vibrancy;
+  std::string level = "normal";
+  bool click_through = false;
+  WinMenu menu;
+  int req_w = 0, req_h = 0;    // the page box win.open asked for
+  // A window-mode popup runs its OPENER's content manager (WebKit builds the
+  // page from the opener's configuration). Remember WHICH manager we marked
+  // shared so the destroy path un-marks that one and not the popup's own.
+  WebKitUserContentManager* shared_ucm = nullptr;
+};
+static std::map<std::string, SecWin*> g_secwins;
+static WinMenu g_main_menu;                // main's; secondaries carry theirs
+static std::vector<MenuSpec> g_app_menu;   // the app menu (bare MENUBEGIN)
+
+// menu plumbing, defined in the menu-building section below
+static WinMenu* menu_for(const std::string& winid);
+static void apply_menus(const std::string& winid);
+static int menubar_height(const std::string& winid);
+static void set_content_size(const std::string& winid, int w, int h);
+static void repay_page_box(const std::string& winid, int w, int h, bool guard_born);
+
+// ------------------------------------------------------------------- utils --
+
+static std::string wire_unescape(const std::string& s) {
+  std::string out;
+  out.reserve(s.size());
+  for (size_t i = 0; i < s.size(); i++) {
+    if (s[i] == '\\' && i + 1 < s.size()) {
+      char c = s[++i];
+      out += c == 'n' ? '\n' : c == 't' ? '\t' : c == 'r' ? '\r' : c;
+    } else {
+      out += s[i];
+    }
+  }
+  return out;
+}
+
+static std::string wire_escape(const std::string& s) {
+  std::string out;
+  out.reserve(s.size());
+  for (char c : s) {
+    if (c == '\\') out += "\\\\";
+    else if (c == '\n') out += "\\n";
+    else if (c == '\t') out += "\\t";
+    else if (c == '\r') out += "\\r";
+    else out += c;
+  }
+  return out;
+}
+
+static std::string json_escape(const std::string& in) {
+  // A Linux filename is bytes, not text: a download named with an invalid
+  // UTF-8 sequence would otherwise ride into the DOWNLOAD JSON as-is and the
+  // bridge's parse would choke on the whole line. Substitute (U+FFFD) rather
+  // than drop, so the name still reads.
+  std::string s = in;
+  if (!g_utf8_validate(in.data(), (gssize)in.size(), nullptr)) {
+    char* fixed = g_utf8_make_valid(in.data(), (gssize)in.size());
+    if (fixed) { s = fixed; g_free(fixed); }
+  }
+  std::string out = "\"";
+  char buf[8];
+  for (unsigned char c : s) {
+    if (c == '"') out += "\\\"";
+    else if (c == '\\') out += "\\\\";
+    else if (c == '\n') out += "\\n";
+    else if (c == '\r') out += "\\r";
+    else if (c == '\t') out += "\\t";
+    else if (c < 0x20) { snprintf(buf, sizeof buf, "\\u%04x", c); out += buf; }
+    else out += (char)c;
+  }
+  out += "\"";
+  return out;
+}
+
+static std::vector<std::string> split_tabs(const std::string& s) {
+  std::vector<std::string> out;
+  size_t start = 0;
+  for (;;) {
+    size_t i = s.find('\t', start);
+    if (i == std::string::npos) { out.push_back(s.substr(start)); break; }
+    out.push_back(s.substr(start, i - start));
+    start = i + 1;
+  }
+  return out;
+}
+
+static std::string tab_field(const std::vector<std::string>& v, size_t i) {
+  return i < v.size() ? v[i] : "";
+}
+
+static void pipe_write_line(const std::string& line) {
+  std::lock_guard<std::mutex> lock(g_write_mutex);
+  if (g_sock < 0) return;
+  std::string data = line + "\n";
+  const char* p = data.data();
+  size_t left = data.size();
+  while (left > 0) {
+    ssize_t n = write(g_sock, p, left);
+    if (n <= 0) return;
+    p += n;
+    left -= (size_t)n;
+  }
+}
+
+static void send_got(const std::string& qid, const std::string& json) {
+  pipe_write_line("GOT " + qid + " " + json);
+}
+
+// Answer a capability op that this platform can't do. `why` is a specific,
+// app-facing reason (e.g. "OCR isn't available on Linux") so callers can show
+// something useful; it always carries "unsupported" so code can substring-match.
+static void got_unsupported(const std::string& qid,
+                            const std::string& why = "unsupported on linux") {
+  send_got(qid, "{\"ok\":false,\"error\":" + json_escape(why) + "}");
+}
+
+// Run a function on the GTK main thread.
+static void ui_dispatch(std::function<void()> fn) {
+  auto* heap = new std::function<void()>(std::move(fn));
+  g_idle_add([](gpointer data) -> gboolean {
+    auto* f = (std::function<void()>*)data;
+    (*f)();
+    delete f;
+    return G_SOURCE_REMOVE;
+  }, heap);
+}
+
+static std::string home_dir() {
+  const char* h = getenv("HOME");
+  return h ? h : "/tmp";
+}
+
+static bool file_exists(const std::string& p) {
+  struct stat st;
+  return stat(p.c_str(), &st) == 0;
+}
+
+// Set a window's icon from a png, as a SCALED LIST rather than the file.
+// gtk_window_set_icon_from_file() hands GDK the image at its natural size, and
+// GDK only publishes _NET_WM_ICON — the property every modern shell reads —
+// while it fits X11's per-request limit. Measured on GNOME/XWayland: a 256x256
+// icon lands, 512x512 is dropped and the window keeps only the legacy WM_HINTS
+// pixmap, which nothing reads. Every tinyjs app ships a 1024x1024 icon.png, so
+// the natural-size call was a silent no-op for all of them. Offering a few
+// sizes also lets the shell pick per use (titlebar vs alt-tab).
+// Wayland has no per-window icon at all — the shell matches the toplevel to a
+// .desktop by app id — so this is X11-only by nature, not by choice.
+static void set_window_icon(GtkWindow* win, const std::string& path) {
+  if (!win || path.empty()) return;
+  GdkPixbuf* src = gdk_pixbuf_new_from_file(path.c_str(), nullptr);
+  if (!src) return;
+  const int w = gdk_pixbuf_get_width(src), h = gdk_pixbuf_get_height(src);
+  const int longest = w > h ? w : h;
+  GList* icons = nullptr;
+  if (longest > 0 && longest <= 256) icons = g_list_prepend(icons, g_object_ref(src));
+  for (int size : {256, 128, 64, 48, 32}) {
+    if (longest <= size) continue;  // never upscale
+    int sw = w * size / longest, sh = h * size / longest;
+    GdkPixbuf* p = gdk_pixbuf_scale_simple(src, sw > 0 ? sw : 1, sh > 0 ? sh : 1,
+                                           GDK_INTERP_BILINEAR);
+    if (p) icons = g_list_prepend(icons, p);
+  }
+  if (icons) {
+    gtk_window_set_icon_list(win, icons);
+    g_list_free_full(icons, g_object_unref);
+  }
+  g_object_unref(src);
+}
+
+// True when GTK is driving a real X11 display (including XWayland). Wayland
+// forbids a client from placing its own toplevels, so this is what decides
+// whether setPosition/center can do anything.
+static bool on_x11();
+
+// The monitor a window sits on. Both obvious lookups can come up empty — an
+// unrealized window has no GdkWindow, and Wayland compositors routinely expose
+// no "primary" monitor — so fall back to the first monitor rather than leaving
+// the caller with a 0x0 screen rect, which apps then size themselves from.
+static GdkMonitor* monitor_for(GdkDisplay* d, GdkWindow* gw) {
+  GdkMonitor* m = gw ? gdk_display_get_monitor_at_window(d, gw) : nullptr;
+  if (!m) m = gdk_display_get_primary_monitor(d);
+  if (!m && gdk_display_get_n_monitors(d) > 0) m = gdk_display_get_monitor(d, 0);
+  return m;
+}
+
+// -------------------------------------------------------- window registry ---
+
+static WebKitWebView* wv_for(const std::string& winid) {
+  if (winid.empty() || winid == "main") return g_wv;
+  auto it = g_secwins.find(winid);
+  return it == g_secwins.end() ? nullptr : it->second->wv;
+}
+
+static GtkWindow* win_for(const std::string& winid) {
+  if (winid.empty() || winid == "main") return g_win;
+  auto it = g_secwins.find(winid);
+  return it == g_secwins.end() ? nullptr : it->second->win;
+}
+
+static SecWin* sec_for(const std::string& winid) {
+  auto it = g_secwins.find(winid);
+  return it == g_secwins.end() ? nullptr : it->second;
+}
+
+// The webview inside a toplevel; null = whichever of ours is active (main if
+// none is), for menus that belong to no one window.
+static WebKitWebView* wv_in(GtkWindow* win) {
+  if (!win) {
+    for (auto& kv : g_secwins)
+      if (kv.second->win && gtk_window_is_active(kv.second->win)) return kv.second->wv;
+    return g_wv;
+  }
+  if (win == g_win) return g_wv;
+  for (auto& kv : g_secwins)
+    if (kv.second->win == win) return kv.second->wv;
+  return nullptr;
+}
+
+// Is this window meant to be user-fixed? (what the app asked for, which is not
+// the same as GTK's resizable flag — see apply_fixed.)
+static bool win_fixed(const std::string& winid) {
+  if (winid.empty() || winid == "main") return g_fixed_main;
+  SecWin* sw = sec_for(winid);
+  return sw ? sw->fixed : false;
+}
+
+// setResizable(false) means "the user can't drag the edges". On macOS and
+// Windows it leaves the app's own setSize alone; GTK conflates the two, sizing
+// a non-resizable window to its child's natural request, so the app can no
+// longer shrink its own window (a fixed deck collapsing to a titlebar just
+// stayed put). Only enforce it at the toolkit level where the WM actually
+// offers a resize affordance — on an undecorated window there is nothing to
+// suppress, so leave GTK resizable and let setSize mean what it says. The
+// app's intent is still what getState reports and what suppresses the
+// client-side grips.
+static void apply_fixed(const std::string& winid) {
+  GtkWindow* win = win_for(winid);
+  if (!win) return;
+  bool enforce = win_fixed(winid) && gtk_window_get_decorated(win);
+  gtk_window_set_resizable(win, enforce ? FALSE : TRUE);
+}
+
+static void eval_in(const std::string& winid, const std::string& js) {
+  WebKitWebView* wv = wv_for(winid);
+  if (!wv) return;
+  webkit_web_view_evaluate_javascript(wv, js.c_str(), -1, nullptr, nullptr,
+                                      nullptr, nullptr, nullptr);
+}
+
+static void eval_all(const std::string& js) {
+  eval_in("main", js);
+  for (auto& kv : g_secwins) eval_in(kv.first, js);
+}
+
+// Resolve/reject a page call: callid is "<winid>:<seq>".
+static void reply_to_call(const std::string& callid, int status, const std::string& json) {
+  size_t colon = callid.find(':');
+  if (colon == std::string::npos) return;
+  std::string winid = callid.substr(0, colon);
+  std::string seq = callid.substr(colon + 1);
+  for (char c : seq) if (c < '0' || c > '9') return;
+  std::string js = "window.__tinyResolve(" + seq + "," +
+                   (status == 0 ? "true" : "false") + "," + json_escape(json) + ")";
+  eval_in(winid, js);
+}
+
+// --------------------------------------------------------- page injection ---
+
+static std::string tiny_shim_js(const std::string& winid) {
+  // An undecorated GTK window has no resize edges — the WM draws none and the
+  // WebView covers the whole surface — so a frameless app simply can't be
+  // resized unless the page provides the grips. Tell the client which windows
+  // need them (macOS/Windows get theirs from the platform).
+  GtkWindow* w0 = win_for(winid);
+  const char* frameless = (w0 && !gtk_window_get_decorated(w0)) ? "true" : "false";
+  // Every message carries a per-DOCUMENT token the launcher planted in this
+  // page (window.__TINY_TOK, set by assign_call_token at commit). The winid
+  // baked in below cannot be trusted on its own: a window-mode popup runs
+  // its OPENER's content manager — WebKit builds the new page from the
+  // opener's PageConfiguration, so our fresh manager is ignored (measured,
+  // and it's what WebKitWebView.cpp's configurationForNextRelatedView does)
+  // — which means the popup's messages arrive on main's handler tagged
+  // "main". Left there, a hostile popup's calls would be ATTRIBUTED TO THE
+  // OPENER'S ORIGIN and inherit its "api" gate. The token is minted per
+  // document by the launcher, so it names the real sender; calls made
+  // before it lands are queued rather than sent under the wrong identity.
+  return
+    "(() => {\n"
+    "  if (window.__tinyShim) return; window.__tinyShim = true;\n"
+    // Don't clobber a label the launcher already planted: assign_call_token
+    // runs just before this document's scripts, and in a popup its winid is
+    // the right one while the baked value below is the opener's.
+    "  window.__TINY_WIN = window.__TINY_WIN || '" + winid + "';\n"
+    "  window.__TINY_FRAMELESS = " + frameless + ";\n"
+    "  let seq = 0, giveUp = false, q = []; const pending = {};\n"
+    "  const post = (s, payload) => window.webkit.messageHandlers.tiny.postMessage(\n"
+    "    (window.__TINY_TOK || '') + '|' + String(s) + ':' + String(payload));\n"
+    "  window.__tinyFlush = () => { const a = q; q = []; for (const e of a) post(e[0], e[1]); };\n"
+    // Last resort: a page that never gets a token (a document the launcher
+    // never saw commit) falls back to the untokened form, which the launcher
+    // accepts only from a window whose content manager it knows is not
+    // shared. Without this an unusual load would hang the app's own boot.
+    "  setTimeout(() => { giveUp = true; window.__tinyFlush(); }, 1500);\n"
+    "  window.__invoke = (payload) => new Promise((res, rej) => {\n"
+    "    const s = ++seq; pending[s] = { res, rej };\n"
+    "    if (window.__TINY_TOK || giveUp) post(s, payload); else q.push([s, payload]);\n"
+    "  });\n"
+    "  window.__tinyResolve = (s, ok, jsonText) => {\n"
+    "    const p = pending[s]; if (!p) return; delete pending[s];\n"
+    "    let v = null; try { v = JSON.parse(jsonText); } catch (e) {}\n"
+    "    ok ? p.res(v) : p.rej(v);\n"
+    "  };\n"
+    "})();\n";
+}
+
+// token -> the document that holds it, and each window's current token (one
+// per document; a navigation mints a new one and retires the old). The ORIGIN
+// is captured with the token, at commit, and never re-read live. WebKit says
+// nothing binding about WHEN a view's active uri becomes the requested one:
+// if it flips at provisional-load start, the old document is still running
+// and still posting, and reading the uri at message time would stamp those
+// in-flight calls with the DESTINATION's origin for a whole round trip — a
+// page that picks a slow destination picks how long. (Measured on WebKitGTK
+// 2.52.3 the flip is late, so that race isn't reachable there; pinning the
+// origin to the document makes it not a question. TODO-site-wrapper.md.)
+struct CallToken {
+  std::string winid;
+  std::string origin;
+};
+static std::map<std::string, CallToken> g_call_tokens;
+static std::map<std::string, std::string> g_win_token;
+// Content managers serving more than one page — i.e. an opener whose
+// window-mode popup inherited it — with a count, because one opener can have
+// several popups alive at once. Untokened messages arriving on one of these
+// cannot be attributed and are dropped.
+static std::map<WebKitUserContentManager*, int> g_shared_ucms;
+
+// A page posted "<seq>:<payload>" from window `winid`.
+static std::string origin_from_uri(const char* uri);  // browser affordances below
+
+static void on_script_message(WebKitUserContentManager* ucm, WebKitJavascriptResult* res,
+                              gpointer user_data) {
+  const char* winid = (const char*)user_data;
+  JSCValue* v = webkit_javascript_result_get_js_value(res);
+  char* str = jsc_value_to_string(v);
+  if (!str) return;
+  std::string msg = str;
+  g_free(str);
+  // "<token>|<seq>:<payload>" — the token names the sending DOCUMENT (see
+  // tiny_shim_js); an empty one means the page never got one.
+  size_t bar = msg.find('|');
+  if (bar == std::string::npos) return;
+  std::string tok = msg.substr(0, bar);
+  size_t colon = msg.find(':', bar + 1);
+  if (colon == std::string::npos) return;
+  std::string seq = msg.substr(bar + 1, colon - bar - 1);
+  std::string payload = msg.substr(colon + 1);
+
+  std::string from = winid;  // the manager's owner, the untokened fallback
+  bool have_origin = false;
+  std::string origin;
+  if (!tok.empty()) {
+    auto it = g_call_tokens.find(tok);
+    if (it == g_call_tokens.end()) return;  // stale/forged token: not a window
+    from = it->second.winid;
+    origin = it->second.origin;  // the document's own, captured at commit
+    have_origin = true;
+  } else if (g_shared_ucms.count(ucm)) {
+    // Ambiguous: this manager serves an opener AND its popup, so "whoever
+    // owns the manager" is a guess, and guessing wrong hands one page's
+    // origin gate to the other. Drop instead.
+    if (getenv("TINYJS_DEBUG"))
+      fprintf(stderr, "tinyjs: dropped an untokened call on a shared content manager\n");
+    return;
+  }
+
+  // Last element: the calling page's origin, for the bridge's "api"
+  // origin sub-gates. WebKitGTK's script-message signal carries no frame
+  // info (unlike WKScriptMessage.frameInfo or WebView2's Source), so this
+  // is the sending window's MAIN-FRAME origin — attested by the UI process
+  // (page JS can't spoof it) but frame-blind: a subframe's hand-rolled
+  // postMessage is attributed to the top frame. The tiny shim only injects
+  // top-frame, so every ordinary call IS main-frame; caveat in
+  // TODO-site-wrapper.md. Tokened calls carry their document's committed
+  // origin; only the untokened fallback (a document the launcher never saw
+  // commit, on a manager it knows is not shared) reads the view live.
+  if (!have_origin) {
+    WebKitWebView* wv = wv_for(from);
+    origin = origin_from_uri(wv ? webkit_web_view_get_uri(wv) : nullptr);
+  }
+  pipe_write_line("CALL " + from + ":" + seq +
+                  " [" + json_escape(payload) + "," + json_escape(origin) + "]");
+}
+
+// One token per document, planted at commit — the only thing that tells the
+// launcher which page a message came from when a manager is shared.
+static void assign_call_token(WebKitWebView* wv, const std::string& winid) {
+  auto old = g_win_token.find(winid);
+  if (old != g_win_token.end()) g_call_tokens.erase(old->second);
+  char* uuid = g_uuid_string_random();
+  std::string tok = uuid ? uuid : "";
+  g_free(uuid);
+  if (tok.empty()) return;
+  // Captured HERE, where the active uri is the committed document's — not at
+  // message time, where it may already be pointing at wherever the page just
+  // asked to go.
+  g_call_tokens[tok] = {winid, origin_from_uri(webkit_web_view_get_uri(wv))};
+  g_win_token[winid] = tok;
+  // __TINY_WIN rides along: the shim baked in the manager owner's id, which
+  // is wrong in a popup sharing its opener's manager, and tiny.win.id reads
+  // it. Routing never trusts it (that's the token's job) — this keeps the
+  // page's own label honest.
+  std::string js = "window.__TINY_TOK=" + json_escape(tok) +
+                   ";window.__TINY_WIN=" + json_escape(winid) +
+                   ";window.__tinyFlush&&window.__tinyFlush()";
+  webkit_web_view_evaluate_javascript(wv, js.c_str(), -1, nullptr, nullptr,
+                                      nullptr, nullptr, nullptr);
+}
+
+// Build a UserContentManager with the full injection set for a window.
+static WebKitUserContentManager* make_ucm(const std::string& winid) {
+  WebKitUserContentManager* ucm = webkit_user_content_manager_new();
+  auto add = [&](const std::string& src) {
+    WebKitUserScript* s = webkit_user_script_new(
+        src.c_str(), WEBKIT_USER_CONTENT_INJECT_TOP_FRAME,
+        WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, nullptr, nullptr);
+    webkit_user_content_manager_add_script(ucm, s);
+    webkit_user_script_unref(s);
+  };
+  add(tiny_shim_js(winid));
+  add(TINY_CLIENT_JS);
+  const char* inject = getenv("TINYJS_INJECT");
+  if (inject && *inject) add(inject);
+  g_signal_connect_data(ucm, "script-message-received::tiny",
+                        G_CALLBACK(on_script_message), g_strdup(winid.c_str()),
+                        [](gpointer data, GClosure*) { g_free(data); }, (GConnectFlags)0);
+  webkit_user_content_manager_register_script_message_handler(ucm, "tiny");
+  return ucm;
+}
+
+// ------------------------------------------------- context menu (all wins) ---
+
+static std::vector<MenuItemSpec> g_ctx_items;   // custom right-click menu
+static bool g_ctx_custom = false;
+static bool g_ctx_suppress = false;
+
+// live item registry (menu bar + tray + ctx), id -> widget (may be null for ctx)
+struct RegItem {
+  GtkWidget* widget = nullptr;   // GtkCheckMenuItem
+  std::string label;
+  bool checked = false, enabled = true;
+  std::string kind;              // "menu" | "tray" | "ctx"
+  GtkWindow* owner = nullptr;    // menu-bar items: the window whose bar holds
+                                 // THIS copy. A GTK menu bar lives inside one
+                                 // toplevel, so a menu shown in three windows
+                                 // is three sets of widgets sharing ids.
+                                 // null for tray / context.
+};
+// Hence a multimap: an app-wide MENUUPD patches every copy, MENUUPD@<win> one.
+static std::multimap<std::string, RegItem> g_items;
+
+// Undo/Redo have no context-menu stock action in WebKitGTK (the
+// WebKitContextMenuAction enum jumps straight from RELOAD to COPY) — only the
+// editing-command strings exist. So those two roles ride on the webview's
+// editing commands instead of on WebKit's own menu items.
+struct CtxEdit { WebKitWebView* wv; const char* command; };
+
+static gboolean on_context_menu(WebKitWebView* wv, WebKitContextMenu* menu,
+                                GdkEvent*, WebKitHitTestResult*, gpointer) {
+  if (g_ctx_custom) {
+    webkit_context_menu_remove_all(menu);
+    std::function<void(WebKitContextMenu*, const std::vector<MenuItemSpec>&)> build =
+      [&](WebKitContextMenu* m, const std::vector<MenuItemSpec>& items) {
+        for (const auto& it : items) {
+          if (!it.role.empty()) {
+            // WebKit's own stock actions: they enable themselves per click.
+            // undo/redo are ours (see CtxEdit above); they stay enabled, since
+            // the can-execute query is async and the menu is already on screen
+            // by the time it answers — a no-op on an empty undo stack. Their
+            // labels are ours too, so untranslated where WebKit's are not.
+            auto stock = [&](const std::string& r) {
+              if (r == "undo" || r == "redo") {
+                GSimpleAction* act = g_simple_action_new(("tinyedit-" + r).c_str(), nullptr);
+                g_signal_connect_data(act, "activate",
+                  G_CALLBACK(+[](GSimpleAction*, GVariant*, gpointer data) {
+                    CtxEdit* e = (CtxEdit*)data;
+                    webkit_web_view_execute_editing_command(e->wv, e->command);
+                  }),
+                  new CtxEdit{wv, r == "undo" ? WEBKIT_EDITING_COMMAND_UNDO
+                                              : WEBKIT_EDITING_COMMAND_REDO},
+                  [](gpointer data, GClosure*) { delete (CtxEdit*)data; },
+                  (GConnectFlags)0);
+                webkit_context_menu_append(m,
+                  webkit_context_menu_item_new_from_gaction(
+                    G_ACTION(act), r == "undo" ? "Undo" : "Redo", nullptr));
+                g_object_unref(act);
+                return;
+              }
+              WebKitContextMenuAction a =
+                  r == "cut" ? WEBKIT_CONTEXT_MENU_ACTION_CUT
+                : r == "copy" ? WEBKIT_CONTEXT_MENU_ACTION_COPY
+                : r == "paste" ? WEBKIT_CONTEXT_MENU_ACTION_PASTE
+                : r == "selectAll" ? WEBKIT_CONTEXT_MENU_ACTION_SELECT_ALL
+                : WEBKIT_CONTEXT_MENU_ACTION_NO_ACTION;
+              if (a != WEBKIT_CONTEXT_MENU_ACTION_NO_ACTION)
+                webkit_context_menu_append(m, webkit_context_menu_item_new_from_stock_action(a));
+            };
+            if (it.role == "standard") {
+              for (const char* r : {"undo", "redo", "-", "cut", "copy", "paste", "selectAll"})
+                if (r[0] == '-') webkit_context_menu_append(m, webkit_context_menu_item_new_separator());
+                else stock(r);
+            } else {
+              stock(it.role);
+            }
+            continue;
+          }
+          if (it.separator) {
+            webkit_context_menu_append(m, webkit_context_menu_item_new_separator());
+            continue;
+          }
+          if (it.submenu) {
+            WebKitContextMenu* sub = webkit_context_menu_new();
+            build(sub, it.children);
+            webkit_context_menu_append(m,
+              webkit_context_menu_item_new_with_submenu(it.label.c_str(), sub));
+            continue;
+          }
+          GSimpleAction* act = g_simple_action_new(
+              ("tinyctx-" + it.id).c_str(), nullptr);
+          bool disabled = it.flags.find('d') != std::string::npos;
+          g_simple_action_set_enabled(act, !disabled);
+          g_signal_connect_data(act, "activate",
+            G_CALLBACK(+[](GSimpleAction*, GVariant*, gpointer data) {
+              pipe_write_line("CTX " + std::string((const char*)data));
+            }), g_strdup(it.id.c_str()),
+            [](gpointer data, GClosure*) { g_free(data); }, (GConnectFlags)0);
+          webkit_context_menu_append(m,
+            webkit_context_menu_item_new_from_gaction(
+              G_ACTION(act), it.label.c_str(), nullptr));
+          g_object_unref(act);
+        }
+      };
+    build(menu, g_ctx_items);
+    return FALSE;  // show the (replaced) menu
+  }
+  if (g_ctx_suppress) return TRUE;  // show nothing
+  return FALSE;                     // default WebKit menu
+}
+
+// ------------------------------------------------------------ drop files ----
+
+// WebKitGTK delivers HTML5 drops to the page itself but real filesystem paths
+// only travel in the text/uri-list selection — observe it as it arrives and
+// emit DROP alongside (the page still gets its HTML5 event).
+static void on_drag_data_received(GtkWidget*, GdkDragContext*, gint, gint,
+                                  GtkSelectionData* data, guint, guint, gpointer) {
+  GdkAtom target = gtk_selection_data_get_data_type(data);
+  char* name = gdk_atom_name(target);
+  bool is_uris = name && !strcmp(name, "text/uri-list");
+  g_free(name);
+  if (!is_uris) return;
+  gchar** uris = gtk_selection_data_get_uris(data);
+  if (!uris) return;
+  std::string json = "[";
+  bool any = false;
+  for (int i = 0; uris[i]; i++) {
+    char* path = g_filename_from_uri(uris[i], nullptr, nullptr);
+    if (!path) continue;
+    if (any) json += ",";
+    json += json_escape(path);
+    any = true;
+    g_free(path);
+  }
+  json += "]";
+  g_strfreev(uris);
+  if (any) pipe_write_line("DROP " + json);
+}
+
+// ------------------------------------------------------------- webview ------
+
+// The pointer button-press that a page drag region rides on is consumed by
+// the WebView, and by the time `win.startDrag` round-trips through the backend
+// there's no event context left — so gtk_window_begin_move_drag with
+// GDK_CURRENT_TIME can't get a valid grab serial from the compositor (windows
+// silently refuse to move on Wayland). Capture the live press here (device +
+// timestamp) and hand it to begin_move_drag when DRAGWIN arrives.
+static GdkDevice* g_last_press_device = nullptr;
+static guint32 g_last_press_time = 0;
+
+static gboolean on_button_press(GtkWidget*, GdkEventButton* ev, gpointer) {
+  if (ev->button == 1) {
+    g_last_press_device = ev->device;
+    g_last_press_time = ev->time;
+  }
+  return FALSE;  // let the WebView handle the click too
+}
+
+// getUserMedia: WebKit's default for an unhandled permission-request is deny,
+// so a camera app fails silently. Unlike macOS (TCC prompt) and Windows
+// (WebView2's own prompt) there is no OS consent layer underneath us here,
+// so the grant is gated on the app's manifest instead: the backend forwards
+// tinyjs.json's "permissions" block as TINYJS_MEDIA ("camera,microphone")
+// and only what the app declared is allowed. Device-info (enumerateDevices
+// labels, for camera pickers) rides the same gate.
+static gboolean on_permission_request(WebKitWebView*, WebKitPermissionRequest* req, gpointer) {
+  const char* env = g_getenv("TINYJS_MEDIA");
+  std::string declared = env ? env : "";
+  if (WEBKIT_IS_USER_MEDIA_PERMISSION_REQUEST(req)) {
+    WebKitUserMediaPermissionRequest* um = WEBKIT_USER_MEDIA_PERMISSION_REQUEST(req);
+#if WEBKIT_CHECK_VERSION(2, 34, 0)
+    if (webkit_user_media_permission_is_for_display_device(um)) {
+      webkit_permission_request_deny(req);  // getDisplayMedia is not this gate
+      return TRUE;
+    }
+#endif
+    bool ok = true;
+    if (webkit_user_media_permission_is_for_video_device(um) &&
+        declared.find("camera") == std::string::npos) ok = false;
+    if (webkit_user_media_permission_is_for_audio_device(um) &&
+        declared.find("microphone") == std::string::npos) ok = false;
+    if (ok) webkit_permission_request_allow(req);
+    else webkit_permission_request_deny(req);
+    return TRUE;
+  }
+  if (WEBKIT_IS_DEVICE_INFO_PERMISSION_REQUEST(req) && !declared.empty()) {
+    webkit_permission_request_allow(req);
+    return TRUE;
+  }
+  return FALSE;  // everything else keeps WebKit's default (deny)
+}
+
+// tinyjs.json "debug" via TINYJS_DEBUG spawn env: absent = no inspector at
+// all (developer extras stay off, so no built-in shortcut either), "1" = F12
+// opens it in its own window, "open" = every window auto-opens it at
+// creation. `tinyjs dev` seeds TINYJS_DEBUG=1.
+static int debug_mode() {  // 0 off, 1 on, 2 on + auto-open per window
+  static int mode = -1;
+  if (mode < 0) {
+    const char* d = getenv("TINYJS_DEBUG");
+    mode = (!d || !*d) ? 0 : (!strcmp(d, "open") ? 2 : 1);
+  }
+  return mode;
+}
+
+static WebKitSettings* make_settings() {
+  WebKitSettings* s = webkit_settings_new();
+  webkit_settings_set_enable_developer_extras(s, debug_mode() ? TRUE : FALSE);
+  webkit_settings_set_enable_webgl(s, TRUE);
+  webkit_settings_set_javascript_can_access_clipboard(s, TRUE);
+  webkit_settings_set_allow_file_access_from_file_urls(s, TRUE);
+  webkit_settings_set_allow_universal_access_from_file_urls(s, TRUE);
+  webkit_settings_set_enable_media_stream(s, TRUE);
+  webkit_settings_set_enable_mediasource(s, TRUE);
+  // macOS parity: WKPreferences defaults javaScriptCanOpenWindowsAutomatically
+  // to YES on desktop, WebKitGTK to FALSE — without this, a second
+  // gesture-less window.open silently never reaches `create` (measured
+  // 2026-08-05: the first sneaks through, later ones vanish). The "popups"
+  // config + POPUPQ ask is the actual gate.
+  webkit_settings_set_javascript_can_open_windows_automatically(s, TRUE);
+  const char* ua = getenv("TINYJS_UA");
+  if (ua && *ua) webkit_settings_set_user_agent(s, ua);
+  return s;
+}
+
+// Enable experimental WebKit features by name (WebGPU parity with the macOS
+// launcher, which force-enables the WebKit flag).
+static void enable_features(WebKitSettings* s) {
+  WebKitFeatureList* list = webkit_settings_get_experimental_features();
+  if (!list) return;
+  for (gsize i = 0; i < webkit_feature_list_get_length(list); i++) {
+    WebKitFeature* f = webkit_feature_list_get(list, i);
+    const char* ident = webkit_feature_get_identifier(f);
+    if (ident && (!strcmp(ident, "WebGPUEnabled") || !strcmp(ident, "WebGPU"))) {
+      webkit_settings_set_feature_enabled(s, f, TRUE);
+    }
+  }
+  webkit_feature_list_unref(list);
+}
+
+// tiny-media://proxy/?u=<url> — stream a remote http(s) resource with
+// permissive CORS so cross-origin audio is untainted for Web Audio.
+static SoupSession* g_media_session = nullptr;
+
+static void media_scheme_cb(WebKitURISchemeRequest* req, gpointer) {
+  const char* uri = webkit_uri_scheme_request_get_uri(req);
+  std::string upstream;
+  if (uri) {
+    const char* q = strstr(uri, "u=");
+    if (q) {
+      char* dec = g_uri_unescape_string(q + 2, nullptr);
+      if (dec) { upstream = dec; g_free(dec); }
+    }
+  }
+  if (upstream.rfind("http://", 0) != 0 && upstream.rfind("https://", 0) != 0) {
+    GError* err = g_error_new_literal(WEBKIT_NETWORK_ERROR, 1, "bad tiny-media url");
+    webkit_uri_scheme_request_finish_error(req, err);
+    g_error_free(err);
+    return;
+  }
+  if (!g_media_session) g_media_session = soup_session_new();
+  SoupMessage* msg = soup_message_new("GET", upstream.c_str());
+  if (!msg) {
+    GError* err = g_error_new_literal(WEBKIT_NETWORK_ERROR, 1, "bad tiny-media url");
+    webkit_uri_scheme_request_finish_error(req, err);
+    g_error_free(err);
+    return;
+  }
+  g_object_ref(req);
+  soup_session_send_async(g_media_session, msg, G_PRIORITY_DEFAULT, nullptr,
+    [](GObject* src, GAsyncResult* res, gpointer data) {
+      WebKitURISchemeRequest* req = (WebKitURISchemeRequest*)data;
+      GError* error = nullptr;
+      GInputStream* stream = soup_session_send_finish(SOUP_SESSION(src), res, &error);
+      if (!stream) {
+        webkit_uri_scheme_request_finish_error(req, error);
+        g_clear_error(&error);
+        g_object_unref(req);
+        return;
+      }
+      SoupMessage* m = soup_session_get_async_result_message(SOUP_SESSION(src), res);
+      SoupMessageHeaders* h = m ? soup_message_get_response_headers(m) : nullptr;
+      goffset len = h ? soup_message_headers_get_content_length(h) : -1;
+      const char* ctype = h ? soup_message_headers_get_one(h, "Content-Type") : nullptr;
+      // Live icecast-style streams answer 200 with no length; give the media
+      // stack a huge synthetic length so it plays progressively.
+      if (len <= 0) len = (goffset)1 << 40;
+      WebKitURISchemeResponse* resp = webkit_uri_scheme_response_new(stream, len);
+      webkit_uri_scheme_response_set_status(resp, 200, nullptr);
+      webkit_uri_scheme_response_set_content_type(resp,
+          ctype && *ctype ? ctype : "application/octet-stream");
+      SoupMessageHeaders* rh = soup_message_headers_new(SOUP_MESSAGE_HEADERS_RESPONSE);
+      soup_message_headers_append(rh, "Access-Control-Allow-Origin", "*");
+      webkit_uri_scheme_response_set_http_headers(resp, rh);
+      webkit_uri_scheme_request_finish_with_response(req, resp);
+      g_object_unref(resp);
+      g_object_unref(stream);
+      g_object_unref(req);
+    }, req);
+  g_object_unref(msg);
+}
+
+// --------------------------------------------------------------- chrome -----
+
+static void apply_rgba_visual(GtkWidget* win) {
+  GdkScreen* screen = gtk_widget_get_screen(win);
+  GdkVisual* visual = gdk_screen_get_rgba_visual(screen);
+  if (visual) gtk_widget_set_visual(win, visual);
+}
+
+static void apply_transparent(GtkWindow* win, WebKitWebView* wv, bool on) {
+  GdkRGBA clear = {0, 0, 0, 0};
+  GdkRGBA white = {1, 1, 1, 1};
+  webkit_web_view_set_background_color(wv, on ? &clear : &white);
+  gtk_widget_set_app_paintable(GTK_WIDGET(win), on);
+}
+
+// _MOTIF_WM_HINTS is the only portable-ish way to ask an X11 WM to drop
+// individual titlebar buttons. Mutter and KWin both read it; plenty of WMs
+// don't, which is why this is a request rather than a guarantee.
+// flags bit 1 = functions, and the function bits are
+// ALL=1 RESIZE=2 MOVE=4 MINIMIZE=8 MAXIMIZE=16 CLOSE=32.
+static void set_mwm_buttons(GtkWindow* w, bool close_on, bool min_on,
+                            bool max_on) {
+#ifdef GDK_WINDOWING_X11
+  GdkWindow* gw = gtk_widget_get_window(GTK_WIDGET(w));
+  if (!gw || !GDK_IS_X11_WINDOW(gw)) return;
+  Display* dpy = GDK_DISPLAY_XDISPLAY(gdk_window_get_display(gw));
+  Atom prop = XInternAtom(dpy, "_MOTIF_WM_HINTS", False);
+  long hints[5] = {0, 0, 0, 0, 0};
+  // PropModeReplace clobbers whatever GDK wrote, so BOTH sections must be
+  // specified: a property whose flags omit DECORATIONS reads as "WM
+  // default", i.e. decorated — which put a title bar back on every
+  // frameless window that also asked for windowControls (amp, found
+  // 2026-07-29; frame:false and windowControls:false travel together in
+  // every frameless app). Carry the window's decorated state through.
+  hints[0] = (1L << 0) | (1L << 1); // MWM_HINTS_FUNCTIONS | _DECORATIONS
+  hints[1] = (1L << 1) | (1L << 2); // keep resize + move
+  if (min_on) hints[1] |= (1L << 3);
+  if (max_on) hints[1] |= (1L << 4);
+  if (close_on) hints[1] |= (1L << 5);
+  if (gtk_window_get_decorated(w)) {
+    hints[2] = (1L << 1) | (1L << 2) | (1L << 3) | (1L << 4); // border, resizeh, title, menu
+    if (min_on) hints[2] |= (1L << 5);   // MWM_DECOR_MINIMIZE
+    if (max_on) hints[2] |= (1L << 6);   // MWM_DECOR_MAXIMIZE
+  }                                      // undecorated: explicitly 0
+  XChangeProperty(dpy, GDK_WINDOW_XID(gw), prop, prop, 32, PropModeReplace,
+                  (unsigned char*)hints, 5);
+#else
+  (void)w; (void)close_on; (void)min_on; (void)max_on;
+#endif
+}
+
+// fields: frame, traffic, transparent, vibrancy, square, firstMouse ('' = keep)
+static void apply_chrome(const std::string& winid, const std::vector<std::string>& f) {
+  GtkWindow* win = win_for(winid);
+  WebKitWebView* wv = wv_for(winid);
+  if (!win || !wv) return;
+  bool main_win = (winid.empty() || winid == "main");
+  SecWin* sec = nullptr;
+  if (!main_win) sec = g_secwins.count(winid) ? g_secwins[winid] : nullptr;
+
+  std::string frame = tab_field(f, 0), traffic = tab_field(f, 1),
+              transp = tab_field(f, 2), vib = tab_field(f, 3),
+              square = tab_field(f, 4), first = tab_field(f, 5),
+              menu = tab_field(f, 6);
+
+  // chrome.menu — whether THIS window shows a bar. The app menu carries on
+  // everywhere else; the widgets stay built either way so the accelerators
+  // keep firing (see WinMenu).
+  if (!menu.empty()) {
+    if (WinMenu* wm = menu_for(winid)) {
+      bool on = menu == "1";
+      if (wm->visible != on) {
+        // The bar's row belongs to the FRAME, not the page: hiding it must
+        // shrink the window, not hand the page an extra 26px (and showing it
+        // must grow the window, not eat the page). Measure the page box
+        // before the flip, restore it after — repay_page_box waits out the
+        // freshly shown bar having no allocation yet.
+        int pw = 0, ph = 0;
+        gtk_window_get_size(win, &pw, &ph);
+        ph -= menubar_height(winid);
+        wm->visible = on;
+        apply_menus(winid);
+        repay_page_box(winid, pw, ph, false);
+      }
+    }
+  }
+
+  if (!frame.empty()) {
+    bool on = frame == "1";
+    gtk_window_set_decorated(win, on);
+    if (main_win) g_chrome_frame = on; else if (sec) sec->frame = on;
+    apply_fixed(winid);   // decoration decides whether "fixed" is enforceable
+  }
+  if (!traffic.empty()) {
+    // windowControls: '' keep · 'all' · 'none' · comma list of
+    // close/minimize/maximize. UNTESTED on Linux (written on macOS).
+    // GTK can hide the CLOSE button portably; minimize/maximize are only
+    // requestable through _MOTIF_WM_HINTS, which the WM may ignore — so this
+    // is best-effort by design, and capabilities() says windowControls is
+    // X11-only.
+    const bool all = traffic == "all", none = traffic == "none";
+    auto want = [&](const char *nm) {
+      return all ? true : none ? false : traffic.find(nm) != std::string::npos;
+    };
+    const bool close_on = want("close"), min_on = want("minimize"),
+               max_on = want("maximize");
+    gtk_window_set_deletable(win, close_on ? TRUE : FALSE);
+    set_mwm_buttons(win, close_on, min_on, max_on);
+    if (main_win) g_chrome_traffic = close_on || min_on || max_on;
+  }
+  if (!transp.empty()) {
+    bool on = transp == "1";
+    apply_transparent(win, wv, on);
+    if (main_win) g_chrome_transparent = on; else if (sec) sec->transparent = on;
+  }
+  if (!vib.empty()) {
+    std::string v = vib == "none" ? "" : vib;
+    if (main_win) g_chrome_vibrancy = v; else if (sec) sec->vibrancy = v;
+    // no portable blur on Linux — recorded for GET, otherwise a no-op
+  }
+  if (!square.empty()) {
+    bool on = square == "1";
+    if (on) gtk_window_set_decorated(win, FALSE);
+    else gtk_window_set_decorated(win, main_win ? g_chrome_frame : (sec ? sec->frame : true));
+    if (main_win) g_chrome_square = on; else if (sec) sec->square = on;
+    apply_fixed(winid);
+  }
+  if (!first.empty()) {
+    bool on = first == "1";
+    if (main_win) g_chrome_first_mouse = on; else if (sec) sec->first_mouse = on;
+    // GTK already delivers first clicks — stored for GET only
+  }
+}
+
+// ----------------------------------------------------------- window state ---
+
+// per-window GdkWindowState tracking (minimized/fullscreen for GET win)
+static std::map<GtkWindow*, GdkWindowState> g_winstate;
+
+// WINSTATE <id> {"fullscreen":b,"maximized":b,"minimized":b,"focused":b} —
+// deduped snapshot per window; GTK hands all four bits in the one
+// window-state-event signal, already connected on main and every secondary.
+// Wayland caveat: ICONIFIED is never reported there (the compositor keeps
+// minimize private), so `minimized` stays false — same honesty rule as
+// mousePosition.
+static std::map<std::string, std::string> g_last_winstate;
+
+static std::string id_for_gtkwin(GtkWindow* win) {
+  if (win == g_win) return "main";
+  for (auto& kv : g_secwins)
+    if (kv.second && kv.second->win == win) return kv.first;
+  return "";
+}
+
+static gboolean on_window_state(GtkWidget* w, GdkEventWindowState* ev, gpointer) {
+  g_winstate[GTK_WINDOW(w)] = ev->new_window_state;
+  std::string id = id_for_gtkwin(GTK_WINDOW(w));
+  if (!id.empty()) {
+    GdkWindowState st = ev->new_window_state;
+    bool fs = (st & GDK_WINDOW_STATE_FULLSCREEN) != 0;
+    auto b = [](bool v) { return v ? "true" : "false"; };
+    // GTK keeps MAXIMIZED set under fullscreen-from-maximized; report the
+    // green-button sense (maximized XOR fullscreen) like the other launchers.
+    std::string s = std::string("{\"fullscreen\":") + b(fs) +
+        ",\"maximized\":" + b(!fs && (st & GDK_WINDOW_STATE_MAXIMIZED)) +
+        ",\"minimized\":" + b((st & GDK_WINDOW_STATE_ICONIFIED) != 0) +
+        ",\"focused\":" + b((st & GDK_WINDOW_STATE_FOCUSED) != 0) + "}";
+    auto it = g_last_winstate.find(id);
+    if (it == g_last_winstate.end() || it->second != s) {
+      g_last_winstate[id] = s;
+      pipe_write_line("WINSTATE " + id + " " + s);
+    }
+  }
+  return FALSE;
+}
+
+// This window's menu state ('main' or a secondary id).
+static WinMenu* menu_for(const std::string& winid) {
+  if (winid.empty() || winid == "main") return &g_main_menu;
+  SecWin* sw = sec_for(winid);
+  return sw ? &sw->menu : nullptr;
+}
+
+// main + every open secondary
+static std::vector<std::string> menu_windows() {
+  std::vector<std::string> out{"main"};
+  for (auto& kv : g_secwins) out.push_back(kv.first);
+  return out;
+}
+
+static int menubar_height(const std::string& winid) {
+  WinMenu* wm = menu_for(winid);
+  if (!wm || !wm->bar || !gtk_widget_get_visible(wm->bar)) return 0;
+  GtkAllocation a;
+  gtk_widget_get_allocation(wm->bar, &a);
+  return a.height > 1 ? a.height : 0;
+}
+
+// SIZE sets the CONTENT area (the webview box); a window's menu bar rides
+// above it, so add its height back when resizing the outer window.
+static void set_content_size(const std::string& winid, int w, int h) {
+  GtkWindow* win = win_for(winid);
+  if (!win) return;
+  if (w <= 0 || h <= 0) return;   // gtk_window_resize asserts on either
+  gtk_window_resize(win, w, h + menubar_height(winid));
+}
+
+// Restore a window's page box to (w,h) once its bar's row has settled. The
+// bar has no allocation until GTK lays it out, and on X11 that can land
+// several main-loop passes after the window is created — a single idle that
+// reads menubar_height()==0 there resizes by nothing and the bar then eats
+// the page (seen: 3 windows opened the same way, 2 lost their row, 1 kept
+// it). So poll until the bar has a height, bounded so a never-mapped window
+// can't pin a timer. guard_born: only act while the window still sits at
+// exactly (w,h) — the once-per-window birth repayment; after a user resize
+// the size is theirs.
+struct Repay { std::string id; int w, h; bool guard_born; int tries; };
+static void repay_page_box(const std::string& winid, int w, int h, bool guard_born) {
+  if (w <= 0 || h <= 0) return;
+  g_timeout_add(16, [](gpointer data) -> gboolean {
+    Repay* r = (Repay*)data;
+    GtkWindow* win = win_for(r->id);
+    WinMenu* wm = menu_for(r->id);
+    if (!win || !wm) { delete r; return G_SOURCE_REMOVE; }
+    const std::vector<MenuSpec>& spec = wm->has_own ? wm->own : g_app_menu;
+    if (!spec.empty() && wm->visible && menubar_height(r->id) == 0 && r->tries++ < 120)
+      return G_SOURCE_CONTINUE;        // bar not laid out yet — wait for it
+    if (r->guard_born) {
+      int cw = 0, ch = 0;
+      gtk_window_get_size(win, &cw, &ch);
+      if (cw != r->w || ch != r->h) { delete r; return G_SOURCE_REMOVE; }
+    }
+    set_content_size(r->id, r->w, r->h);
+    delete r;
+    return G_SOURCE_REMOVE;
+  }, new Repay{winid, w, h, guard_born, 0});
+}
+
+static void set_level(const std::string& winid, const std::string& level) {
+  GtkWindow* win = win_for(winid);
+  if (!win) return;
+  if (level == "desktop") {
+    gtk_window_set_keep_above(win, FALSE);
+    gtk_window_set_keep_below(win, TRUE);
+  } else if (level == "overlay" || level == "floating") {
+    gtk_window_set_keep_below(win, FALSE);
+    gtk_window_set_keep_above(win, TRUE);
+  } else {
+    gtk_window_set_keep_above(win, FALSE);
+    gtk_window_set_keep_below(win, FALSE);
+  }
+  if (winid.empty() || winid == "main") g_level = level;
+  else if (g_secwins.count(winid)) g_secwins[winid]->level = level;
+}
+
+static void set_click_through(const std::string& winid, bool on) {
+  GtkWindow* win = win_for(winid);
+  if (!win) return;
+  GdkWindow* gdkwin = gtk_widget_get_window(GTK_WIDGET(win));
+  if (gdkwin) {
+    if (on) {
+      cairo_region_t* empty = cairo_region_create();
+      gdk_window_input_shape_combine_region(gdkwin, empty, 0, 0);
+      cairo_region_destroy(empty);
+    } else {
+      gdk_window_input_shape_combine_region(gdkwin, nullptr, 0, 0);
+    }
+  }
+  if (winid.empty() || winid == "main") g_click_through = on;
+  else if (g_secwins.count(winid)) g_secwins[winid]->click_through = on;
+}
+
+// A window nobody can see or grab is a lost window: apps restore saved
+// positions blindly, and coordinates from an unplugged external display land
+// the window in empty space. Rule: if less than a 24px-square sliver of the
+// window overlaps any monitor's work area, pull it onto the nearest monitor,
+// titlebar first. Windows deliberately parked half-off-screen keep more than
+// a sliver and are never touched.
+//
+// WHEN it runs is the bridge's call, not ours — some apps (coo3d) fling
+// windows off-screen on purpose, so nothing here fires on ordinary pos/show.
+// Triggers: the `onscreen` op (sent by the bridge on a boot whose screen
+// fingerprint changed, and by win.ensureOnScreen()), and a monitor
+// added/removed while running, gated by `rescue 0|1` ("offscreenRescue" in
+// tinyjs.json, default on). X11 semantics — under Wayland the compositor
+// owns placement and both the read and the move are no-ops, which is fine:
+// Wayland never lets a window get lost this way in the first place.
+static bool g_rescue_on = true;
+static void rescue_offscreen(GtkWindow* win) {
+  if (!win) return;
+  GdkWindow* gwin = gtk_widget_get_window(GTK_WIDGET(win));
+  GdkDisplay* d = gdk_display_get_default();
+  if (!gwin || !d) return;   // not realized yet — the show-path runs us again
+  // same space the `pos` op moves in (gdk_window_move / gdk_window_get_origin)
+  int x = 0, y = 0;
+  gdk_window_get_origin(gwin, &x, &y);
+  int w = gdk_window_get_width(gwin), h = gdk_window_get_height(gwin);
+  int n = gdk_display_get_n_monitors(d);
+  for (int i = 0; i < n; i++) {
+    GdkRectangle wa;
+    gdk_monitor_get_workarea(gdk_display_get_monitor(d, i), &wa);
+    int iw = (x + w < wa.x + wa.width ? x + w : wa.x + wa.width) - (x > wa.x ? x : wa.x);
+    int ih = (y + h < wa.y + wa.height ? y + h : wa.y + wa.height) - (y > wa.y ? y : wa.y);
+    if (iw >= 24 && ih >= 24) return;   // reachable — leave it alone
+  }
+  // nearest monitor by center distance, then clamp inside its work area
+  GdkRectangle v = {0, 0, 0, 0};
+  long best = -1;
+  for (int i = 0; i < n; i++) {
+    GdkRectangle wa;
+    gdk_monitor_get_workarea(gdk_display_get_monitor(d, i), &wa);
+    long dx = (x + w / 2) - (wa.x + wa.width / 2), dy = (y + h / 2) - (wa.y + wa.height / 2);
+    long dist = dx * dx + dy * dy;
+    if (best < 0 || dist < best) { best = dist; v = wa; }
+  }
+  if (best < 0) return;   // no monitors (headless): nothing sane to do
+  int nx = x > v.x + v.width - w ? v.x + v.width - w : x;
+  if (nx < v.x) nx = v.x;               // wider than the monitor pins the LEFT edge
+  int ny = y > v.y + v.height - h ? v.y + v.height - h : y;
+  if (ny < v.y) ny = v.y;               // taller pins the TOP (titlebar)
+  if (nx != x || ny != y) gdk_window_move(gwin, nx, ny);
+}
+
+static void do_winop(const std::string& winid, const std::string& op) {
+  GtkWindow* win = win_for(winid);
+  if (!win) return;
+  bool main_win = (winid.empty() || winid == "main");
+
+  // "hidewin" is hide({ app: false }) — window-scoped, which is all a hide has
+  // ever been here (only macOS's main-window hide takes the app with it).
+  if (op == "hide" || op == "hidewin") gtk_widget_hide(GTK_WIDGET(win));
+  else if (op == "show" || op == "show 1") {
+    gtk_widget_show(GTK_WIDGET(win));
+    gtk_window_present(win);
+  } else if (op == "show 0") {
+    // surface without stealing focus
+    gtk_window_set_focus_on_map(win, FALSE);
+    gtk_widget_show(GTK_WIDGET(win));
+    gtk_window_set_focus_on_map(win, TRUE);
+  } else if (op == "onscreen") {
+    // the bridge (or the app) decided this window must be reachable — see
+    // the note on rescue_offscreen. Realize first: an `onscreen` right after
+    // a boot restore may land before the window ever mapped.
+    gtk_widget_realize(GTK_WIDGET(win));
+    rescue_offscreen(win);
+  } else if (op == "rescue 0" || op == "rescue 1") {
+    g_rescue_on = op.back() == '1';
+  } else if (op == "center") {
+    GdkDisplay* d = gdk_display_get_default();
+    GdkWindow* gw = gtk_widget_get_window(GTK_WIDGET(win));
+    GdkMonitor* m = monitor_for(d, gw);
+    if (m) {
+      GdkRectangle wa;
+      gdk_monitor_get_workarea(m, &wa);
+      int w, h;
+      gtk_window_get_size(win, &w, &h);
+      gtk_window_move(win, wa.x + (wa.width - w) / 2, wa.y + (wa.height - h) / 2);
+    }
+  }
+  else if (op == "minimize") gtk_window_iconify(win);
+  else if (op == "restore") {
+    // deiconify alone is NOT enough: Mutter's focus-stealing prevention drops
+    // a bare deiconify from a client that has no user timestamp, leaving the
+    // window _NET_WM_STATE_HIDDEN and merely setting DEMANDS_ATTENTION —
+    // measured on GNOME 46, and the call still resolved true, so it looked
+    // exactly like a working restore (TODO-verify.md). present() is what the
+    // `show` arm above already does, and that path was measured to really
+    // un-minimize; present_with_time carries a server timestamp on X11 so the
+    // WM has no reason to treat it as a steal.
+    gtk_window_deiconify(win);
+#ifdef GDK_WINDOWING_X11
+    GdkWindow* gw = gtk_widget_get_window(GTK_WIDGET(win));
+    if (gw && GDK_IS_X11_WINDOW(gw)) {
+      gtk_window_present_with_time(win, gdk_x11_get_server_time(gw));
+      return;
+    }
+#endif
+    gtk_window_present(win);
+  }
+  else if (op == "zoom") {
+    GdkWindowState st = g_winstate.count(win) ? g_winstate[win] : (GdkWindowState)0;
+    if (st & GDK_WINDOW_STATE_MAXIMIZED) gtk_window_unmaximize(win);
+    else gtk_window_maximize(win);
+  }
+  else if (op == "fullscreen") {
+    GdkWindowState st = g_winstate.count(win) ? g_winstate[win] : (GdkWindowState)0;
+    if (st & GDK_WINDOW_STATE_FULLSCREEN) gtk_window_unfullscreen(win);
+    else gtk_window_fullscreen(win);
+  }
+  else if (op == "fullscreen 1") gtk_window_fullscreen(win);
+  else if (op == "fullscreen 0") gtk_window_unfullscreen(win);
+  else if (op == "ontop 1") gtk_window_set_keep_above(win, TRUE);
+  else if (op == "ontop 0") gtk_window_set_keep_above(win, FALSE);
+  else if (op.rfind("zoomfactor ", 0) == 0) {
+    // Page zoom rendered natively (crisp at any factor) — a "double size" mode
+    // for hi-dpi screens costs one call and no page changes. The page keeps
+    // laying out in CSS px; the window shows factor× the pixels.
+    double f = atof(op.c_str() + 11);
+    WebKitWebView* wv = wv_for(winid);
+    if (wv && f >= 0.25 && f <= 5.0) webkit_web_view_set_zoom_level(wv, f);
+  }
+  else if (op.rfind("minsize ", 0) == 0) {
+    // Floor for user resizes (and programmatic ones — GTK clamps both). A
+    // window whose layout has a natural size can stop content like amp's
+    // headphone row being resized out of existence.
+    int mw = 0, mh = 0;
+    if (sscanf(op.c_str() + 8, "%dx%d", &mw, &mh) == 2 && mw > 0 && mh > 0) {
+      GdkGeometry geom;
+      geom.min_width = mw;
+      geom.min_height = mh + menubar_height(winid);
+      gtk_window_set_geometry_hints(win, nullptr, &geom, GDK_HINT_MIN_SIZE);
+    }
+  }
+  else if (op == "resizable 1" || op == "resizable 0") {
+    bool fixed = op == "resizable 0";
+    if (main_win) g_fixed_main = fixed; else if (SecWin* sw = sec_for(winid)) sw->fixed = fixed;
+    apply_fixed(winid);
+  }
+  else if (op == "clickthrough 1") set_click_through(winid, true);
+  else if (op == "clickthrough 0") set_click_through(winid, false);
+  else if (op.rfind("level ", 0) == 0) set_level(winid, op.substr(6));
+  else if (op.rfind("pos ", 0) == 0) {
+    int x = 0, y = 0;
+    if (sscanf(op.c_str() + 4, "%d %d", &x, &y) == 2) {
+      // Move in the same space getWinState reports (see win_state_json):
+      // gdk_window_move places the toplevel's origin, which is what
+      // gdk_window_get_origin reads back, so read -> move -> read is stable.
+      GdkWindow* gwin = gtk_widget_get_window(GTK_WIDGET(win));
+      if (gwin) gdk_window_move(gwin, x, y);
+      else gtk_window_move(win, x, y);   // not realized yet
+    }
+  }
+  else if (op == "hideonclose 1") { if (main_win) g_hide_on_close = true; }
+  else if (op == "hideonclose 0") { if (main_win) g_hide_on_close = false; }
+  else if (op == "presence 1") { if (main_win) gtk_window_set_skip_taskbar_hint(win, FALSE); }
+  else if (op == "presence 0") { if (main_win) gtk_window_set_skip_taskbar_hint(win, TRUE); }
+  else if (op == "allspaces 1") { gtk_window_stick(win); if (main_win) g_all_spaces = true; }
+  else if (op == "allspaces 0") { gtk_window_unstick(win); if (main_win) g_all_spaces = false; }
+  // unknown verbs: silently ignored
+}
+
+// --------------------------------------------------------- menu building ----
+
+// shared block-builder state (menu bar / tray / context menu declarations)
+static std::vector<MenuItemSpec> g_build_menus_current;    // items at current level
+static std::vector<std::vector<MenuItemSpec>*> g_build_stack;
+static std::vector<MenuSpec> g_build_menubar;              // MENU sections
+static std::string g_build_menu_win;   // MENUBEGIN@<win>; empty = the app menu
+static int g_build_edit_idx = -1;      // g_build_menubar slot of MENUROLE edit
+static int g_build_mode = 0;   // 0 none, 1 menubar, 2 tray, 3 ctx
+struct TraySpec {
+  std::string title, icon, tooltip;
+  bool template_icon = true, primary = false;
+  std::vector<MenuItemSpec> items;
+};
+static TraySpec g_build_tray;
+
+static std::vector<MenuItemSpec>* build_top() {
+  return g_build_stack.empty() ? nullptr : g_build_stack.back();
+}
+
+static void build_item_line(const std::string& op, const std::string& rest) {
+  std::vector<MenuItemSpec>* level = build_top();
+  if (!level) return;
+  if (op == "SEP") {
+    MenuItemSpec s;
+    s.separator = true;
+    level->push_back(s);
+  } else if (op == "ITEM") {
+    auto f = split_tabs(rest);
+    MenuItemSpec it;
+    it.id = tab_field(f, 0);
+    it.label = tab_field(f, 1);
+    it.key = tab_field(f, 2);
+    it.flags = tab_field(f, 3);
+    if (it.id.empty()) it.id = it.label;
+    if (it.label.empty()) it.label = it.id;
+    level->push_back(it);
+  } else if (op == "SUB") {
+    auto f = split_tabs(rest);
+    MenuItemSpec sub;
+    sub.submenu = true;
+    sub.id = tab_field(f, 0);
+    sub.label = tab_field(f, 1);
+    if (sub.label.empty()) sub.label = sub.id;
+    level->push_back(sub);
+    g_build_stack.push_back(&level->back().children);
+  } else if (op == "SUBEND") {
+    if (g_build_stack.size() > 1) g_build_stack.pop_back();
+  } else if (op == "ROLEITEM") {
+    MenuItemSpec it;
+    it.role = rest;
+    level->push_back(it);
+  }
+}
+
+static void on_menu_item_activate(GtkMenuItem* item, gpointer data) {
+  const char* payload = (const char*)data;   // "menu\0id" packed as "kind:id"
+  std::string s = payload;
+  size_t colon = s.find(':');
+  std::string kind = s.substr(0, colon), id = s.substr(colon + 1);
+  // Match on the WIDGET, not the id: several windows can hold an item with
+  // this id, and only this one's enabled flag has any say here.
+  auto range = g_items.equal_range(id);
+  for (auto it = range.first; it != range.second; ++it)
+    if (it->second.widget == GTK_WIDGET(item) && !it->second.enabled) return;
+  if (kind == "tray") pipe_write_line("TRAY " + id);
+  else pipe_write_line("MENU " + id);
+}
+
+// A menu key is Ctrl plus the character ("s" is Ctrl+S, "S" is Ctrl+Shift+S,
+// the shift coming out of the character itself). Prefixes spell the rest:
+// "alt+p" is Ctrl+Alt+P. Ctrl is always in — cmd maps to it here.
+static GdkModifierType split_accel(const std::string& spec, std::string& key) {
+  int mask = GDK_CONTROL_MASK;
+  key = spec;
+  for (;;) {
+    size_t plus = key.find('+');
+    if (plus == std::string::npos || plus == 0) break;
+    std::string mod = key.substr(0, plus);
+    for (auto& c : mod) c = (char)tolower((unsigned char)c);
+    if (mod == "alt" || mod == "opt" || mod == "option") mask |= GDK_MOD1_MASK;
+    else if (mod == "shift") mask |= GDK_SHIFT_MASK;
+    else if (mod == "ctrl" || mod == "control" || mod == "cmd" || mod == "command"
+             || mod == "meta" || mod == "super") { /* already in */ }
+    else break;                                   // not a modifier — it's the key
+    key = key.substr(plus + 1);
+  }
+  // The shift really does have to come out of the character: GTK does NOT
+  // derive it (unlike AppKit's keyEquivalent). gtk_accel_group_connect
+  // lowercases the keyval and keeps the modifiers as given, so "P" without
+  // this landed on plain Ctrl+P — colliding with a "p" item elsewhere in the
+  // bar, and leaving Ctrl+Shift+P bound to nothing. nib's Print… ("P") ate
+  // Open Quickly's Ctrl+P ("p") exactly that way.
+  if (key.size() == 1 && key[0] >= 'A' && key[0] <= 'Z') {
+    mask |= GDK_SHIFT_MASK;
+    key[0] = (char)tolower((unsigned char)key[0]);
+  }
+  return (GdkModifierType)mask;
+}
+
+// Stock editing items (ROLEITEM), run through WebKitGTK's own editing
+// commands on the owning window's webview. The shortcut is shown on the item
+// but never bound in the accel group: WebKitGTK already handles Ctrl+C in its
+// text fields, and an accelerator here would take it away from them. Each
+// time the menu opens the items ask the webview whether they apply, so Copy
+// greys out with nothing selected, as on macOS.
+struct StockItem { const char *role, *label, *command; guint keyval; GdkModifierType mods; };
+static const StockItem kStockItems[] = {
+  {"undo", "Undo", WEBKIT_EDITING_COMMAND_UNDO, GDK_KEY_z, GDK_CONTROL_MASK},
+  {"redo", "Redo", WEBKIT_EDITING_COMMAND_REDO, GDK_KEY_z,
+   (GdkModifierType)(GDK_CONTROL_MASK | GDK_SHIFT_MASK)},
+  {"cut", "Cut", WEBKIT_EDITING_COMMAND_CUT, GDK_KEY_x, GDK_CONTROL_MASK},
+  {"copy", "Copy", WEBKIT_EDITING_COMMAND_COPY, GDK_KEY_c, GDK_CONTROL_MASK},
+  {"paste", "Paste", WEBKIT_EDITING_COMMAND_PASTE, GDK_KEY_v, GDK_CONTROL_MASK},
+  {"selectAll", "Select All", WEBKIT_EDITING_COMMAND_SELECT_ALL, GDK_KEY_a, GDK_CONTROL_MASK},
+};
+
+// What a stock item needs at click (and menu-open) time. Owned by the item.
+struct StockData { std::string command; GtkWindow* owner; };
+
+static void stock_items_refresh(GtkWidget* menu, gpointer) {
+  GList* kids = gtk_container_get_children(GTK_CONTAINER(menu));
+  for (GList* l = kids; l; l = l->next) {
+    GtkWidget* mi = GTK_WIDGET(l->data);
+    StockData* sd = (StockData*)g_object_get_data(G_OBJECT(mi), "tiny-stock");
+    WebKitWebView* wv = sd ? wv_in(sd->owner) : nullptr;
+    if (!wv) continue;
+    g_object_ref(mi);  // the menu may be rebuilt before the answer comes back
+    webkit_web_view_can_execute_editing_command(wv, sd->command.c_str(), nullptr,
+      +[](GObject* src, GAsyncResult* res, gpointer data) {
+        GtkWidget* item = GTK_WIDGET(data);
+        gboolean ok = webkit_web_view_can_execute_editing_command_finish(
+            WEBKIT_WEB_VIEW(src), res, nullptr);
+        gtk_widget_set_sensitive(item, ok);
+        g_object_unref(item);
+      }, mi);
+  }
+  g_list_free(kids);
+}
+
+static void add_stock_items(GtkWidget* menu, const std::string& role, GtkWindow* owner) {
+  if (role == "standard") {
+    for (const char* r : {"undo", "redo", "-", "cut", "copy", "paste", "selectAll"}) {
+      if (r[0] == '-') gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
+      else add_stock_items(menu, r, owner);
+    }
+    return;
+  }
+  for (const StockItem& si : kStockItems) {
+    if (role != si.role) continue;
+    GtkWidget* mi = gtk_menu_item_new_with_label(si.label);
+    GtkWidget* lbl = gtk_bin_get_child(GTK_BIN(mi));
+    if (GTK_IS_ACCEL_LABEL(lbl))
+      gtk_accel_label_set_accel(GTK_ACCEL_LABEL(lbl), si.keyval, si.mods);
+    g_object_set_data_full(G_OBJECT(mi), "tiny-stock", new StockData{si.command, owner},
+      [](gpointer d) { delete (StockData*)d; });
+    g_signal_connect(mi, "activate", G_CALLBACK(+[](GtkMenuItem* item, gpointer) {
+      StockData* sd = (StockData*)g_object_get_data(G_OBJECT(item), "tiny-stock");
+      if (WebKitWebView* wv = sd ? wv_in(sd->owner) : nullptr)
+        webkit_web_view_execute_editing_command(wv, sd->command.c_str());
+    }), nullptr);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+    // once per menu, however many stock items it holds
+    if (!g_object_get_data(G_OBJECT(menu), "tiny-stock-menu")) {
+      g_object_set_data(G_OBJECT(menu), "tiny-stock-menu", GINT_TO_POINTER(1));
+      g_signal_connect(menu, "show", G_CALLBACK(stock_items_refresh), nullptr);
+    }
+    return;
+  }                                            // unknown role: ignored
+}
+
+// Build a GtkMenu from item specs; register items under `kind`. `owner` and
+// `accel` are the window this copy belongs to (null for tray / context).
+static GtkWidget* build_gtk_menu(const std::vector<MenuItemSpec>& items,
+                                 const std::string& kind,
+                                 GtkWindow* owner = nullptr,
+                                 GtkAccelGroup* accel = nullptr) {
+  GtkWidget* menu = gtk_menu_new();
+  for (const auto& it : items) {
+    if (!it.role.empty()) {
+      // The tray has no text field to edit.
+      if (kind != "tray") add_stock_items(menu, it.role, owner);
+      continue;
+    }
+    if (it.separator) {
+      gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
+      continue;
+    }
+    if (it.submenu) {
+      GtkWidget* mi = gtk_menu_item_new_with_label(it.label.c_str());
+      gtk_menu_item_set_submenu(GTK_MENU_ITEM(mi),
+                                build_gtk_menu(it.children, kind, owner, accel));
+      gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+      continue;
+    }
+    bool checked = it.flags.find('c') != std::string::npos;
+    bool disabled = it.flags.find('d') != std::string::npos;
+    GtkWidget* mi = gtk_check_menu_item_new_with_label(it.label.c_str());
+    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(mi), checked);
+    // hide the check box unless checked (plain items look plain)
+    if (!checked) g_object_set(mi, "draw-as-radio", FALSE, NULL);
+    gtk_widget_set_sensitive(mi, !disabled);
+    if (!it.key.empty() && accel && kind == "menu") {
+      std::string key;
+      GdkModifierType mask = split_accel(it.key, key);
+      guint keyval = gdk_keyval_from_name(key.c_str());
+      if (keyval != GDK_KEY_VoidSymbol) {
+        gtk_widget_add_accelerator(mi, "activate", accel, keyval,
+                                   mask, GTK_ACCEL_VISIBLE);
+      }
+    }
+    g_signal_connect_data(mi, "activate", G_CALLBACK(on_menu_item_activate),
+      g_strdup((kind + ":" + it.id).c_str()),
+      [](gpointer data, GClosure*) { g_free(data); }, (GConnectFlags)0);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+    RegItem reg;
+    reg.widget = mi;
+    reg.label = it.label;
+    reg.checked = checked;
+    reg.enabled = !disabled;
+    reg.kind = kind;
+    reg.owner = owner;
+    g_items.emplace(it.id, reg);
+  }
+  return menu;
+}
+
+// kind = tray|ctx: clears the lot. kind = menu: clears ONE window's items —
+// the other windows' copies are still on screen and still theirs.
+static void clear_registry_kind(const std::string& kind, GtkWindow* owner = nullptr) {
+  for (auto it = g_items.begin(); it != g_items.end();) {
+    if (it->second.kind == kind && (!owner || it->second.owner == owner))
+      it = g_items.erase(it);
+    else ++it;
+  }
+}
+
+// (Re)build one window's bar from its effective spec: its own declaration if
+// it made one, otherwise the app menu.
+static void apply_menus(const std::string& winid) {
+  GtkWindow* win = win_for(winid);
+  WinMenu* wm = menu_for(winid);
+  if (!win || !wm || !wm->bar) return;
+  clear_registry_kind("menu", win);
+  gtk_container_foreach(GTK_CONTAINER(wm->bar),
+    [](GtkWidget* w, gpointer) { gtk_widget_destroy(w); }, nullptr);
+  const std::vector<MenuSpec>& spec = wm->has_own ? wm->own : g_app_menu;
+  for (const auto& m : spec) {
+    GtkWidget* top = gtk_menu_item_new_with_label(m.title.c_str());
+    gtk_menu_item_set_submenu(GTK_MENU_ITEM(top),
+                              build_gtk_menu(m.items, "menu", win, wm->accel));
+    gtk_menu_shell_append(GTK_MENU_SHELL(wm->bar), top);
+  }
+  // chrome.menu:false keeps the widgets (so the accelerators above still
+  // fire) and just doesn't show them.
+  if (spec.empty() || !wm->visible) gtk_widget_hide(wm->bar);
+  else gtk_widget_show_all(wm->bar);
+
+  // The menu bar lives INSIDE the toplevel, and gtk_window_set_default_size
+  // took the declared size as the whole window — so the first bar to appear
+  // ate itself out of the page, and an app that asked for 1100x720 got a
+  // 720-minus-a-bar-tall document on Linux only. `size` means the page's box
+  // (same as win.setSize and getState), so hand it back.
+  //
+  // Once per window, and only while it is still exactly the size it was born
+  // at: after the user has dragged an edge the size is theirs, not ours.
+  // repay_page_box waits for the bar's allocation — on X11 one idle pass is
+  // not enough and a too-early read loses the repayment forever.
+  if (!wm->room_given && !spec.empty() && wm->visible) {
+    wm->room_given = true;
+    int want_w = g_width, want_h = g_height;
+    if (SecWin* sw = sec_for(winid)) { want_w = sw->req_w; want_h = sw->req_h; }
+    repay_page_box(winid, want_w, want_h, true);
+  }
+}
+
+// The app menu changed: every window that hasn't overridden shows it.
+static void apply_app_menu_everywhere() {
+  for (const auto& id : menu_windows()) {
+    WinMenu* wm = menu_for(id);
+    if (wm && !wm->has_own) apply_menus(id);
+  }
+}
+
+// winid empty = every window's copy of the id (what one shared macOS bar
+// already did); otherwise just that window's.
+static void menu_update(const std::string& rest, const std::string& winid = "") {
+  auto f = split_tabs(rest);
+  std::string id = tab_field(f, 0), label = tab_field(f, 1),
+              checked = tab_field(f, 2), enabled = tab_field(f, 3);
+  GtkWindow* only = winid.empty() ? nullptr : win_for(winid);
+  if (!winid.empty() && !only) return;   // named a window that has since closed
+  auto range = g_items.equal_range(id);
+  for (auto it = range.first; it != range.second; ++it) {
+    RegItem& reg = it->second;
+    if (only && reg.owner != only) continue;
+    if (!label.empty()) {
+      reg.label = label;
+      if (reg.widget) gtk_menu_item_set_label(GTK_MENU_ITEM(reg.widget), label.c_str());
+    }
+    if (!checked.empty()) {
+      reg.checked = checked == "1";
+      if (reg.widget && GTK_IS_CHECK_MENU_ITEM(reg.widget)) {
+        g_signal_handlers_block_matched(reg.widget, G_SIGNAL_MATCH_FUNC, 0, 0,
+          nullptr, (gpointer)on_menu_item_activate, nullptr);
+        gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(reg.widget), reg.checked);
+        g_signal_handlers_unblock_matched(reg.widget, G_SIGNAL_MATCH_FUNC, 0, 0,
+          nullptr, (gpointer)on_menu_item_activate, nullptr);
+      }
+    }
+    if (!enabled.empty()) {
+      reg.enabled = enabled == "1";
+      if (reg.widget) gtk_widget_set_sensitive(reg.widget, reg.enabled);
+    }
+  }
+  // context-menu items live in the stored spec, not widgets
+  std::function<void(std::vector<MenuItemSpec>&)> patch =
+    [&](std::vector<MenuItemSpec>& items) {
+      for (auto& mi : items) {
+        if (mi.submenu) { patch(mi.children); continue; }
+        if (mi.id != id) continue;
+        if (!label.empty()) mi.label = label;
+        std::string fl;
+        bool c = checked.empty() ? mi.flags.find('c') != std::string::npos : checked == "1";
+        bool d = enabled.empty() ? mi.flags.find('d') != std::string::npos : enabled == "0";
+        if (c) fl += 'c';
+        if (d) fl += 'd';
+        mi.flags = fl;
+      }
+    };
+  patch(g_ctx_items);
+  // Menu bars are REBUILT from their stored specs (a window opening later,
+  // MENURESET, a chrome.menu toggle) — patch those too or the update
+  // evaporates on the next apply_menus. App-wide: the app menu and every
+  // window's override, mirroring the widget walk above. Per-window: only
+  // that window's own spec — an inheriting window has no spec of its own,
+  // and writing through to the app menu would move every other window too.
+  auto patch_spec = [&](std::vector<MenuSpec>& spec) {
+    for (auto& m : spec) patch(m.items);
+  };
+  if (winid.empty()) {
+    patch_spec(g_app_menu);
+    for (const auto& wid : menu_windows())
+      if (WinMenu* wm = menu_for(wid); wm && wm->has_own) patch_spec(wm->own);
+  } else if (WinMenu* wm = menu_for(winid); wm && wm->has_own) {
+    patch_spec(wm->own);
+  }
+}
+
+// ------------------------------------------------------------------ tray ----
+
+#ifdef TINYJS_APPINDICATOR
+static AppIndicator* g_indicator = nullptr;
+static GtkWidget* g_tray_menu = nullptr;
+#endif
+
+static void apply_tray() {
+#ifdef TINYJS_APPINDICATOR
+  clear_registry_kind("tray");
+  if (!g_indicator) {
+    g_indicator = app_indicator_new(
+        (g_app_id.empty() ? "tinyjs-app" : g_app_id).c_str(),
+        "application-default-icon", APP_INDICATOR_CATEGORY_APPLICATION_STATUS);
+  }
+  // Icon: a png path (theme-path trick), or the default app icon.
+  const std::string& icon = g_build_tray.icon;
+  if (!icon.empty() && icon[0] == '/' && file_exists(icon)) {
+    char* dir = g_path_get_dirname(icon.c_str());
+    char* base = g_path_get_basename(icon.c_str());
+    std::string name = base;
+    size_t dot = name.rfind('.');
+    if (dot != std::string::npos) name = name.substr(0, dot);
+    app_indicator_set_icon_theme_path(g_indicator, dir);
+    app_indicator_set_icon_full(g_indicator, name.c_str(),
+        g_build_tray.tooltip.empty() ? g_app_name.c_str() : g_build_tray.tooltip.c_str());
+    g_free(dir);
+    g_free(base);
+  } else {
+    // sf:/emoji:/missing → an icon file the app ships, else a generic glyph
+    const char* env_icon = getenv("TINYJS_ICON");
+    if (env_icon && *env_icon && file_exists(env_icon)) {
+      char* dir = g_path_get_dirname(env_icon);
+      char* base = g_path_get_basename(env_icon);
+      std::string name = base;
+      size_t dot = name.rfind('.');
+      if (dot != std::string::npos) name = name.substr(0, dot);
+      app_indicator_set_icon_theme_path(g_indicator, dir);
+      app_indicator_set_icon_full(g_indicator, name.c_str(), g_app_name.c_str());
+      g_free(dir);
+      g_free(base);
+    } else {
+      app_indicator_set_icon_full(g_indicator, "application-default-icon",
+                                  g_app_name.c_str());
+    }
+  }
+  if (!g_build_tray.title.empty()) {
+    app_indicator_set_label(g_indicator, g_build_tray.title.c_str(), nullptr);
+  } else {
+    app_indicator_set_label(g_indicator, "", nullptr);
+  }
+  // AppIndicator/SNI can only open a menu on click (no bare-click events), so
+  // an empty menu — or primary-action mode — gets a synthetic first item that
+  // emits TRAYCLICK.
+  std::vector<MenuItemSpec> items = g_build_tray.items;
+  if (items.empty() || g_build_tray.primary) {
+    MenuItemSpec open;
+    open.id = "\ttrayclick";  // internal marker (tabs can't appear in real ids)
+    open.label = g_build_tray.title.empty()
+        ? (g_build_tray.tooltip.empty() ? "Open" : g_build_tray.tooltip)
+        : g_build_tray.title;
+    MenuItemSpec sep;
+    sep.separator = true;
+    if (!items.empty()) items.insert(items.begin(), sep);
+    items.insert(items.begin(), open);
+  }
+  GtkWidget* menu = gtk_menu_new();
+  for (const auto& it : items) {
+    if (!it.role.empty()) continue;  // stock editing items: no text to edit here
+    if (it.separator) {
+      gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
+      continue;
+    }
+    if (it.submenu) {
+      GtkWidget* mi = gtk_menu_item_new_with_label(it.label.c_str());
+      gtk_menu_item_set_submenu(GTK_MENU_ITEM(mi), build_gtk_menu(it.children, "tray"));
+      gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+      continue;
+    }
+    if (it.id == "\ttrayclick") {
+      GtkWidget* mi = gtk_menu_item_new_with_label(it.label.c_str());
+      g_signal_connect(mi, "activate",
+        G_CALLBACK(+[](GtkMenuItem*, gpointer) { pipe_write_line("TRAYCLICK"); }),
+        nullptr);
+      gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+      continue;
+    }
+    bool checked = it.flags.find('c') != std::string::npos;
+    bool disabled = it.flags.find('d') != std::string::npos;
+    GtkWidget* mi = gtk_check_menu_item_new_with_label(it.label.c_str());
+    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(mi), checked);
+    gtk_widget_set_sensitive(mi, !disabled);
+    g_signal_connect_data(mi, "activate", G_CALLBACK(on_menu_item_activate),
+      g_strdup(("tray:" + it.id).c_str()),
+      [](gpointer data, GClosure*) { g_free(data); }, (GConnectFlags)0);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+    RegItem reg;
+    reg.widget = mi;
+    reg.label = it.label;
+    reg.checked = checked;
+    reg.enabled = !disabled;
+    reg.kind = "tray";
+    g_items.emplace(it.id, reg);
+  }
+  gtk_widget_show_all(menu);
+  // Take our own reference on the new menu (menus are created floating), then
+  // release the one we held on the menu it replaces. Destroying the old menu
+  // outright is a use-after-free: app_indicator_set_menu() already unrefs the
+  // menu it displaces, so by this point the widget can be finalized — which
+  // showed up as Gtk-CRITICAL GTK_IS_WIDGET assertions on every tray repaint
+  // and killed apps that repaint the tray on a ticker (worldclock, 1s).
+  g_object_ref_sink(menu);
+  app_indicator_set_menu(g_indicator, GTK_MENU(menu));
+  if (g_tray_menu) g_object_unref(g_tray_menu);
+  g_tray_menu = menu;
+  app_indicator_set_status(g_indicator, APP_INDICATOR_STATUS_ACTIVE);
+#endif
+}
+
+static void remove_tray() {
+#ifdef TINYJS_APPINDICATOR
+  clear_registry_kind("tray");
+  if (g_indicator) app_indicator_set_status(g_indicator, APP_INDICATOR_STATUS_PASSIVE);
+#endif
+}
+
+// --------------------------------------------------------------- dialogs ----
+
+// Put back the line breaks the bridge escaped for a dialog's detail text (the
+// wire is newline-delimited, so they can't travel raw). "\\n" is a literal
+// backslash followed by n, not a break — the bridge doubled those first.
+static std::string unescape_lines(const std::string& s) {
+  std::string out;
+  out.reserve(s.size());
+  for (size_t i = 0; i < s.size(); i++) {
+    if (s[i] == '\\' && i + 1 < s.size()) {
+      if (s[i + 1] == 'n') { out += '\n'; i++; continue; }
+      if (s[i + 1] == '\\') { out += '\\'; i++; continue; }
+    }
+    out += s[i];
+  }
+  return out;
+}
+
+static void do_dialog(const std::string& callid, const std::string& body) {
+  auto f = split_tabs(body);
+  std::string op = tab_field(f, 0);
+  auto label_or = [](const std::string& s, const char* dflt) {
+    return s.empty() ? std::string(dflt) : s;
+  };
+
+  if (op == "open" || op == "openmulti" || op == "dir" || op == "save") {
+    GtkFileChooserAction action =
+        op == "dir" ? GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER
+      : op == "save" ? GTK_FILE_CHOOSER_ACTION_SAVE
+      : GTK_FILE_CHOOSER_ACTION_OPEN;
+    GtkFileChooserNative* dlg = gtk_file_chooser_native_new(
+        g_app_name.c_str(), g_win, action, nullptr, nullptr);
+    if (op == "openmulti") {
+      gtk_file_chooser_set_select_multiple(GTK_FILE_CHOOSER(dlg), TRUE);
+    }
+    if (op == "save") {
+      gtk_file_chooser_set_do_overwrite_confirmation(GTK_FILE_CHOOSER(dlg), TRUE);
+    }
+    // Field 1 (open/openmulti/save): comma-separated extensions from the
+    // bridge, pre-normalized to lowercase. GTK patterns are case-sensitive,
+    // so each extension gets a lowercase and an uppercase pattern. An "All
+    // files" filter is always added so the filter never hard-hides the disk.
+    std::string types = tab_field(f, 1);
+    // Kept for the save arm's default extension: which filter the user has
+    // selected, and the first declared extension (the one Windows'
+    // SetDefaultExtension would append).
+    GtkFileFilter* type_filter = nullptr;
+    std::string first_ext;
+    if (!types.empty() && op != "dir") {
+      GtkFileFilter* filt = gtk_file_filter_new();
+      std::string label;
+      size_t start = 0;
+      while (start <= types.size()) {
+        size_t comma = types.find(',', start);
+        std::string ext = types.substr(
+            start, comma == std::string::npos ? std::string::npos
+                                              : comma - start);
+        if (!ext.empty()) {
+          if (!label.empty()) label += ", ";
+          else first_ext = ext;
+          label += "*." + ext;
+          gtk_file_filter_add_pattern(filt, ("*." + ext).c_str());
+          std::string upper = ext;
+          for (auto& c : upper) c = g_ascii_toupper(c);
+          if (upper != ext)
+            gtk_file_filter_add_pattern(filt, ("*." + upper).c_str());
+        }
+        if (comma == std::string::npos) break;
+        start = comma + 1;
+      }
+      if (!label.empty()) {
+        gtk_file_filter_set_name(filt, label.c_str());
+        gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(dlg), filt);
+        type_filter = filt;
+        GtkFileFilter* all = gtk_file_filter_new();
+        gtk_file_filter_set_name(all, "All files");
+        gtk_file_filter_add_pattern(all, "*");
+        gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(dlg), all);
+      } else {
+        g_object_ref_sink(filt);
+        g_object_unref(filt);
+      }
+    }
+    gint res = gtk_native_dialog_run(GTK_NATIVE_DIALOG(dlg));
+    if (res != GTK_RESPONSE_ACCEPT) {
+      reply_to_call(callid, 0, "null");
+    } else if (op == "openmulti") {
+      GSList* list = gtk_file_chooser_get_filenames(GTK_FILE_CHOOSER(dlg));
+      std::string json = "[";
+      bool any = false;
+      for (GSList* l = list; l; l = l->next) {
+        if (any) json += ",";
+        json += json_escape((char*)l->data);
+        any = true;
+        g_free(l->data);
+      }
+      json += "]";
+      g_slist_free(list);
+      reply_to_call(callid, 0, json);
+    } else {
+      char* path = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dlg));
+      // saveFile({ types }) with a name typed without one: append the first
+      // declared extension, the way Windows' SetDefaultExtension does. GTK has
+      // no equivalent, so a bare "untitled-note" used to come back extensionless
+      // off Windows — the same call, two different results (TODO-verify.md).
+      // Only when the type filter is the one selected (pick "All files" and you
+      // meant it), and only when there is no extension at all: a name that
+      // already carries one, matching or not, is the user's business.
+      // Caveat GTK forces on us: this lands AFTER the chooser's own overwrite
+      // confirmation, which saw the extensionless name.
+      std::string out = path ? path : "";
+      if (path && op == "save" && type_filter && !first_ext.empty() &&
+          gtk_file_chooser_get_filter(GTK_FILE_CHOOSER(dlg)) == type_filter) {
+        const char* base = strrchr(path, '/');
+        base = base ? base + 1 : path;
+        if (!strchr(base, '.')) out += "." + first_ext;
+      }
+      reply_to_call(callid, 0, path ? json_escape(out.c_str()) : "null");
+      g_free(path);
+    }
+    g_object_unref(dlg);
+    return;
+  }
+
+  if (op == "alert" || op == "confirm") {
+    std::string message = label_or(tab_field(f, 1), g_app_name.c_str());
+    std::string detail = unescape_lines(tab_field(f, 2));
+    std::string ok = label_or(tab_field(f, 3), "OK");
+    std::string cancel = label_or(tab_field(f, 4), "Cancel");
+    GtkWidget* dlg = gtk_message_dialog_new(g_win,
+        GTK_DIALOG_MODAL,
+        op == "alert" ? GTK_MESSAGE_INFO : GTK_MESSAGE_QUESTION,
+        GTK_BUTTONS_NONE, "%s", message.c_str());
+    if (!detail.empty()) {
+      gtk_message_dialog_format_secondary_text(GTK_MESSAGE_DIALOG(dlg), "%s",
+                                               detail.c_str());
+    }
+    if (op == "confirm") {
+      gtk_dialog_add_button(GTK_DIALOG(dlg), cancel.c_str(), GTK_RESPONSE_CANCEL);
+    }
+    gtk_dialog_add_button(GTK_DIALOG(dlg), ok.c_str(), GTK_RESPONSE_OK);
+    gtk_dialog_set_default_response(GTK_DIALOG(dlg), GTK_RESPONSE_OK);
+    gint res = gtk_dialog_run(GTK_DIALOG(dlg));
+    gtk_widget_destroy(dlg);
+    if (op == "alert") reply_to_call(callid, 0, "true");
+    else reply_to_call(callid, 0, res == GTK_RESPONSE_OK ? "true" : "false");
+    return;
+  }
+
+  if (op == "prompt") {
+    std::string message = label_or(tab_field(f, 1), g_app_name.c_str());
+    std::string dflt = tab_field(f, 2);
+    std::string ok = label_or(tab_field(f, 3), "OK");
+    std::string cancel = label_or(tab_field(f, 4), "Cancel");
+    GtkWidget* dlg = gtk_dialog_new_with_buttons(g_app_name.c_str(), g_win,
+        GTK_DIALOG_MODAL, cancel.c_str(), GTK_RESPONSE_CANCEL,
+        ok.c_str(), GTK_RESPONSE_OK, NULL);
+    gtk_dialog_set_default_response(GTK_DIALOG(dlg), GTK_RESPONSE_OK);
+    GtkWidget* content = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
+    GtkWidget* label = gtk_label_new(message.c_str());
+    gtk_label_set_xalign(GTK_LABEL(label), 0);
+    GtkWidget* entry = gtk_entry_new();
+    gtk_entry_set_text(GTK_ENTRY(entry), dflt.c_str());
+    gtk_entry_set_activates_default(GTK_ENTRY(entry), TRUE);
+    gtk_container_set_border_width(GTK_CONTAINER(content), 12);
+    gtk_box_set_spacing(GTK_BOX(content), 8);
+    gtk_box_pack_start(GTK_BOX(content), label, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(content), entry, FALSE, FALSE, 0);
+    gtk_widget_show_all(dlg);
+    gint res = gtk_dialog_run(GTK_DIALOG(dlg));
+    std::string text = gtk_entry_get_text(GTK_ENTRY(entry));
+    gtk_widget_destroy(dlg);
+    reply_to_call(callid, 0, res == GTK_RESPONSE_OK ? json_escape(text) : "null");
+    return;
+  }
+
+  reply_to_call(callid, 1, json_escape("unknown dialog op: " + op));
+}
+
+// ------------------------------------------------------------- clipboard ----
+
+static int g_clip_count = 0;          // our own monotonically-increasing counter
+static int g_clip_self_count = -1;    // count value produced by our own write
+static bool g_clip_watching = false;
+static std::string g_clip_image_tmp;  // materialized clipboard png
+
+struct ClipData {
+  std::string text, html, color;
+  GdkPixbuf* image = nullptr;
+  std::vector<std::string> uris;
+};
+static ClipData* g_clip_data = nullptr;
+
+static void clip_get_func(GtkClipboard*, GtkSelectionData* sel, guint, gpointer data) {
+  ClipData* d = (ClipData*)data;
+  GdkAtom target = gtk_selection_data_get_target(sel);
+  char* name = gdk_atom_name(target);
+  std::string t = name ? name : "";
+  g_free(name);
+  if (t == "text/html" && !d->html.empty()) {
+    gtk_selection_data_set(sel, target, 8, (const guchar*)d->html.data(),
+                           d->html.size());
+  } else if (t == "text/uri-list" && !d->uris.empty()) {
+    std::vector<char*> arr;
+    for (auto& u : d->uris) arr.push_back((char*)u.c_str());
+    arr.push_back(nullptr);
+    gtk_selection_data_set_uris(sel, arr.data());
+  } else if ((t == "image/png" || t.rfind("image/", 0) == 0) && d->image) {
+    gtk_selection_data_set_pixbuf(sel, d->image);
+  } else if (!d->text.empty() || !d->color.empty()) {
+    const std::string& s = d->text.empty() ? d->color : d->text;
+    gtk_selection_data_set_text(sel, s.c_str(), s.size());
+  }
+}
+
+static void clip_clear_func(GtkClipboard*, gpointer data) {
+  ClipData* d = (ClipData*)data;
+  if (d == g_clip_data) g_clip_data = nullptr;
+  if (d->image) g_object_unref(d->image);
+  delete d;
+}
+
+static void do_clipwrite(const std::string& rest) {
+  auto f = split_tabs(rest);
+  ClipData* d = new ClipData();
+  d->text = wire_unescape(tab_field(f, 0));
+  d->html = wire_unescape(tab_field(f, 1));
+  std::string image = wire_unescape(tab_field(f, 2));
+  d->color = wire_unescape(tab_field(f, 3));
+  for (size_t i = 4; i < f.size(); i++) {
+    std::string p = wire_unescape(f[i]);
+    if (p.empty()) continue;
+    char* uri = g_filename_to_uri(p.c_str(), nullptr, nullptr);
+    if (uri) { d->uris.push_back(uri); g_free(uri); }
+  }
+  if (!image.empty()) {
+    if (image.rfind("data:", 0) == 0) {
+      size_t comma = image.find(',');
+      if (comma != std::string::npos) image = image.substr(comma + 1);
+    }
+    if (image[0] == '/' || image.rfind("~/", 0) == 0) {
+      std::string p = image[0] == '~' ? home_dir() + image.substr(1) : image;
+      d->image = gdk_pixbuf_new_from_file(p.c_str(), nullptr);
+    } else {
+      gsize len = 0;
+      guchar* bytes = g_base64_decode(image.c_str(), &len);
+      if (bytes) {
+        GInputStream* ms = g_memory_input_stream_new_from_data(bytes, len, g_free);
+        d->image = gdk_pixbuf_new_from_stream(ms, nullptr, nullptr);
+        g_object_unref(ms);
+      }
+    }
+  }
+
+  std::vector<GtkTargetEntry> targets;
+  auto addT = [&](const char* name) {
+    targets.push_back({(gchar*)name, 0, (guint)targets.size()});
+  };
+  if (!d->text.empty() || (!d->color.empty() && d->text.empty())) {
+    addT("UTF8_STRING"); addT("text/plain;charset=utf-8"); addT("text/plain");
+  }
+  if (!d->html.empty()) addT("text/html");
+  if (d->image) addT("image/png");
+  if (!d->uris.empty()) addT("text/uri-list");
+  if (targets.empty()) { clip_clear_func(nullptr, d); return; }
+
+  GtkClipboard* cb = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+  g_clip_data = d;
+  gtk_clipboard_set_with_data(cb, targets.data(), targets.size(),
+                              clip_get_func, clip_clear_func, d);
+  gtk_clipboard_set_can_store(cb, nullptr, 0);
+  g_clip_self_count = g_clip_count + 1;  // the owner-change about to fire is ours
+}
+
+static void on_clip_owner_change(GtkClipboard*, GdkEvent*, gpointer) {
+  g_clip_count++;
+  if (g_clip_watching) {
+    bool self = g_clip_count == g_clip_self_count;
+    pipe_write_line("CLIPCHANGE " + std::to_string(g_clip_count) + (self ? " 1" : " 0"));
+  }
+}
+
+static std::string clipboard_json(bool count_only) {
+  if (count_only) {
+    return "{\"changeCount\":" + std::to_string(g_clip_count) + "}";
+  }
+  GtkClipboard* cb = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+  std::string kind = "empty";
+  std::string text_json = "null", html_json = "null", paths_json = "[]",
+              image_json = "null", size_json = "null";
+
+  gchar** uris = gtk_clipboard_wait_for_uris(cb);
+  if (uris && uris[0]) {
+    kind = "files";
+    std::string arr = "[";
+    bool any = false;
+    for (int i = 0; uris[i]; i++) {
+      char* p = g_filename_from_uri(uris[i], nullptr, nullptr);
+      if (!p) continue;
+      if (any) arr += ",";
+      arr += json_escape(p);
+      any = true;
+      g_free(p);
+    }
+    arr += "]";
+    paths_json = arr;
+  }
+  if (uris) g_strfreev(uris);
+
+  gchar* text = gtk_clipboard_wait_for_text(cb);
+  if (text) {
+    text_json = json_escape(text);
+    if (kind == "empty") kind = "text";
+    g_free(text);
+  }
+
+  if (kind == "empty" || kind == "text") {
+    GdkPixbuf* pix = gtk_clipboard_wait_for_image(cb);
+    if (pix) {
+      kind = "image";
+      if (g_clip_image_tmp.empty()) {
+        g_clip_image_tmp = std::string(g_get_tmp_dir()) + "/tinyjs-clip-" +
+                           std::to_string(getpid()) + ".png";
+      }
+      if (gdk_pixbuf_save(pix, g_clip_image_tmp.c_str(), "png", nullptr, NULL)) {
+        image_json = json_escape(g_clip_image_tmp);
+        size_json = "{\"width\":" + std::to_string(gdk_pixbuf_get_width(pix)) +
+                    ",\"height\":" + std::to_string(gdk_pixbuf_get_height(pix)) + "}";
+      }
+      g_object_unref(pix);
+    }
+  }
+
+  GdkAtom html_atom = gdk_atom_intern("text/html", FALSE);
+  GtkSelectionData* sel = gtk_clipboard_wait_for_contents(cb, html_atom);
+  if (sel) {
+    gint len = gtk_selection_data_get_length(sel);
+    const guchar* raw = gtk_selection_data_get_data(sel);
+    if (len > 0 && raw) {
+      std::string html((const char*)raw, (size_t)len);
+      // some sources hand over UTF-16LE — crude but effective detection
+      if (len > 1 && raw[1] == 0) {
+        std::string narrow;
+        for (int i = 0; i + 1 < len; i += 2) if (raw[i]) narrow += (char)raw[i];
+        html = narrow;
+      }
+      html_json = json_escape(html);
+    }
+    gtk_selection_data_free(sel);
+  }
+
+  return "{\"kind\":" + json_escape(kind) +
+         ",\"changeCount\":" + std::to_string(g_clip_count) +
+         ",\"text\":" + text_json + ",\"html\":" + html_json +
+         ",\"paths\":" + paths_json + ",\"image\":" + image_json +
+         ",\"imageSize\":" + size_json +
+         ",\"color\":null,\"concealed\":false,\"sourceApp\":null,\"sourceURL\":null}";
+}
+
+// -------------------------------------------------------------- GET / win ---
+
+static std::string win_state_json(const std::string& winid) {
+  GtkWindow* win = win_for(winid);
+  if (!win) return "null";
+  bool main_win = (winid.empty() || winid == "main");
+  SecWin* sec = main_win ? nullptr : g_secwins[winid];
+
+  int x = 0, y = 0, w = 0, h = 0;
+  gtk_window_get_position(win, &x, &y);
+  // gtk_window_get_position() and gtk_window_move() disagree about which
+  // origin they mean once a window is undecorated: on X11 the read came back
+  // one frame-height above the value a move had just consumed, so an app that
+  // read its own position and moved by a delta — which is what dragging is —
+  // marched its window up the screen, 37px per grab under mutter. Ask GDK for
+  // the toplevel's real root-space origin instead; it pairs exactly with the
+  // gdk_window_move() the pos op uses.
+  {
+    GdkWindow* gwin = gtk_widget_get_window(GTK_WIDGET(win));
+    if (gwin) gdk_window_get_origin(gwin, &x, &y);
+  }
+  // width/height are the CONTENT box — the webview, menu bar excluded — which
+  // is what win.open's `size` and win.setSize mean, so set -> get round-trips.
+  // x/y stay the toplevel's origin, because that is what setPosition takes.
+  // `outer` is the footprint on screen: WM decorations (and the menu bar) in.
+  // Frame extents come from the WM, so on Wayland — where there is no server-
+  // side frame to ask about — expect it to equal the toplevel rect.
+  gtk_window_get_size(win, &w, &h);
+  int outer_w = w, outer_h = h;
+  {
+    GdkWindow* gwin = gtk_widget_get_window(GTK_WIDGET(win));
+    GdkRectangle ext = {0, 0, 0, 0};
+    if (gwin) {
+      gdk_window_get_frame_extents(gwin, &ext);
+      if (ext.width > 0 && ext.height > 0) { outer_w = ext.width; outer_h = ext.height; }
+    }
+  }
+  h -= menubar_height(winid);
+  GdkWindowState st = g_winstate.count(win) ? g_winstate[win] : (GdkWindowState)0;
+  bool fullscreen = st & GDK_WINDOW_STATE_FULLSCREEN;
+  bool minimized = st & GDK_WINDOW_STATE_ICONIFIED;
+  bool ontop = st & GDK_WINDOW_STATE_ABOVE;
+  bool visible = gtk_widget_get_visible(GTK_WIDGET(win));
+  bool focused = gtk_window_is_active(win);
+  bool resizable = !win_fixed(winid);
+
+  GdkDisplay* d = gdk_display_get_default();
+  GdkWindow* gw = gtk_widget_get_window(GTK_WIDGET(win));
+  GdkMonitor* m = monitor_for(d, gw);
+  GdkRectangle geo = {0, 0, 0, 0};
+  int scale = 1;
+  if (m) { gdk_monitor_get_geometry(m, &geo); scale = gdk_monitor_get_scale_factor(m); }
+
+  bool frame = main_win ? g_chrome_frame : (sec ? sec->frame : true);
+  // GTK has no per-window control of the WM's min/max/close buttons, so the
+  // windowControls is applied through gtk_window_set_deletable and the MWM
+  // hint above; neither can be read back, so getState reports null rather
+  // than echoing the request as though the WM had honoured it.
+  bool traffic = true;
+  (void)traffic;
+  bool transparent = main_win ? g_chrome_transparent : (sec ? sec->transparent : false);
+  std::string vib = main_win ? g_chrome_vibrancy : (sec ? sec->vibrancy : "");
+  bool square = main_win ? g_chrome_square : (sec ? sec->square : false);
+  bool first = main_win ? g_chrome_first_mouse : (sec ? sec->first_mouse : false);
+  std::string level = main_win ? g_level : (sec ? sec->level : "normal");
+  bool clickthrough = main_win ? g_click_through : (sec ? sec->click_through : false);
+
+  auto b = [](bool v) { return v ? "true" : "false"; };
+  return std::string("{") +
+    "\"x\":" + std::to_string(x) + ",\"y\":" + std::to_string(y) +
+    ",\"width\":" + std::to_string(w) + ",\"height\":" + std::to_string(h) +
+    ",\"outer\":{\"width\":" + std::to_string(outer_w) +
+    ",\"height\":" + std::to_string(outer_h) + "}" +
+    ",\"fullscreen\":" + b(fullscreen) + ",\"minimized\":" + b(minimized) +
+    ",\"visible\":" + b(visible) + ",\"focused\":" + b(focused) +
+    ",\"alwaysOnTop\":" + b(ontop) + ",\"resizable\":" + b(resizable) +
+    ",\"clickThrough\":" + b(clickthrough) + ",\"level\":" + json_escape(level) +
+    ",\"allSpaces\":" + b(main_win ? g_all_spaces : (st & GDK_WINDOW_STATE_STICKY)) +
+    ",\"chrome\":{\"frame\":" + b(frame) + // Unlike macOS we cannot read the buttons back: the WM owns them and may
+  // have ignored the MWM hint entirely. Reporting the request would be the
+  // same lie this key had before, so report "unknown".
+  ",\"windowControls\":null" +
+    ",\"transparent\":" + b(transparent) +
+    ",\"vibrancy\":" + (vib.empty() ? "null" : json_escape(vib)) +
+    ",\"squareCorners\":" + b(square) + ",\"acceptsFirstMouse\":" + b(first) + "}" +
+    ",\"canPosition\":" + b(on_x11()) +
+    ",\"screen\":{\"width\":" + std::to_string(geo.width) +
+    ",\"height\":" + std::to_string(geo.height) +
+    ",\"scale\":" + std::to_string(scale) + "}}";
+}
+
+// --- opt-in outside-the-window cursor tracking: state ------------------------
+// Wayland only tells us where the pointer is while it's over our own surface.
+// MOUSETRACK (the portal + PipeWire plumbing lives with the other portals
+// below) arms the ScreenCast portal's cursor-metadata stream, which feeds
+// these atomics with REAL global coords from its own thread; unarmed they
+// stay false/zero and mouse_json keeps the plain on-surface behavior.
+static std::atomic<bool> g_mt_active{false};
+static std::atomic<bool> g_mt_have{false};       // ≥1 cursor fix received
+static std::atomic<int> g_mt_px{0}, g_mt_py{0};  // global, logical coords
+struct MtCalib { int ox = 0, oy = 0; bool ok = false; };
+static std::map<std::string, MtCalib> g_mt_calib;  // winid -> real window origin
+static bool mt_on() { return g_mt_active.load() && g_mt_have.load(); }
+
+static std::string mouse_json(const std::string& winid) {
+  GdkDisplay* d = gdk_display_get_default();
+  GdkSeat* seat = gdk_display_get_default_seat(d);
+  GdkDevice* pointer = seat ? gdk_seat_get_pointer(seat) : nullptr;
+  int gx = 0, gy = 0;
+  if (pointer) gdk_device_get_position(pointer, nullptr, &gx, &gy);
+
+  std::string winpart = "null";
+  WebKitWebView* wv = wv_for(winid);
+  if (wv) {
+    GdkWindow* gw = gtk_widget_get_window(GTK_WIDGET(wv));
+    if (gw) {
+      int ox = 0, oy = 0;
+      gdk_window_get_origin(gw, &ox, &oy);
+      int rx = gx - ox, ry = gy - oy;
+      int w = gdk_window_get_width(gw), h = gdk_window_get_height(gw);
+      bool inside = rx >= 0 && ry >= 0 && rx < w && ry < h;
+      // A hidden window can't contain the cursor — and GDK never clears its
+      // Wayland pointer focus on unmap, so the probe below misses this case.
+      if (inside && !gdk_window_is_viewable(gw)) inside = false;
+      // Wayland freezes get_position at the last on-surface coords once the
+      // cursor leaves the app, which leaves the bounds check stuck true. The
+      // surface-under-pointer probe still knows the truth (NULL = not over
+      // any of our windows, another toplevel = not this one), so let it veto.
+      GdkWindow* under = (!on_x11() && pointer)
+          ? gdk_device_get_window_at_position(pointer, nullptr, nullptr) : nullptr;
+      bool over_this = under &&
+          gdk_window_get_toplevel(under) == gdk_window_get_toplevel(gw);
+      if (inside && !on_x11() && !over_this) inside = false;
+      if (!on_x11() && mt_on()) {
+        // While the cursor is over this window both coordinate systems are
+        // live, which pins down the window's REAL origin (Wayland never says
+        // where a window is). Off the window, that calibration turns the
+        // portal's global fix into window-relative coords — it only goes
+        // stale if the window moves while the cursor is away, and the next
+        // hover re-pins it.
+        if (over_this) {
+          g_mt_calib[winid] = { g_mt_px.load() - rx, g_mt_py.load() - ry, true };
+        } else {
+          auto c = g_mt_calib.find(winid);
+          if (c != g_mt_calib.end() && c->second.ok) {
+            rx = g_mt_px.load() - c->second.ox;
+            ry = g_mt_py.load() - c->second.oy;
+          }
+        }
+      }
+      if (on_x11() && g_getenv("WAYLAND_DISPLAY") && mt_on()) {
+        // XWayland: X pointer coords freeze whenever the cursor is over a
+        // native Wayland surface (the xeyes problem), but window origins ARE
+        // real in X space — with the portal armed, its global fix maps to
+        // window-relative directly, no calibration needed.
+        rx = g_mt_px.load() - ox;
+        ry = g_mt_py.load() - oy;
+        inside = rx >= 0 && ry >= 0 && rx < w && ry < h &&
+                 gdk_window_is_viewable(gw);
+      }
+      winpart = "{\"x\":" + std::to_string(rx) + ",\"y\":" + std::to_string(ry) +
+                ",\"inside\":" + (inside ? "true" : "false") + "}";
+    }
+  }
+
+  if (mt_on() && (!on_x11() || g_getenv("WAYLAND_DISPLAY"))) {
+    gx = g_mt_px.load();   // portal coords beat frozen ones (Wayland AND XWayland)
+    gy = g_mt_py.load();
+  }
+  GdkMonitor* m = gdk_display_get_monitor_at_point(d, gx, gy);
+  if (!m) m = monitor_for(d, nullptr);   // Wayland hides the pointer: 0,0 may match nothing
+  GdkRectangle geo = {0, 0, 0, 0};
+  int scale = 1;
+  if (m) { gdk_monitor_get_geometry(m, &geo); scale = gdk_monitor_get_scale_factor(m); }
+
+  return "{\"x\":" + std::to_string(gx) + ",\"y\":" + std::to_string(gy) +
+         ",\"window\":" + winpart +
+         ",\"screen\":{\"x\":" + std::to_string(geo.x) +
+         ",\"y\":" + std::to_string(geo.y) +
+         ",\"width\":" + std::to_string(geo.width) +
+         ",\"height\":" + std::to_string(geo.height) +
+         ",\"scale\":" + std::to_string(scale) + "}}";
+}
+
+static std::string screens_json() {
+  GdkDisplay* d = gdk_display_get_default();
+  int n = gdk_display_get_n_monitors(d);
+  std::string out = "[";
+  for (int i = 0; i < n; i++) {
+    GdkMonitor* m = gdk_display_get_monitor(d, i);
+    GdkRectangle geo, wa;
+    gdk_monitor_get_geometry(m, &geo);
+    gdk_monitor_get_workarea(m, &wa);
+    const char* model = gdk_monitor_get_model(m);
+    if (i) out += ",";
+    out += "{\"id\":" + std::to_string(i) +
+           ",\"name\":" + (model ? json_escape(model) : "null") +
+           ",\"x\":" + std::to_string(geo.x) + ",\"y\":" + std::to_string(geo.y) +
+           ",\"width\":" + std::to_string(geo.width) +
+           ",\"height\":" + std::to_string(geo.height) +
+           ",\"visible\":{\"x\":" + std::to_string(wa.x) +
+           ",\"y\":" + std::to_string(wa.y) +
+           ",\"width\":" + std::to_string(wa.width) +
+           ",\"height\":" + std::to_string(wa.height) + "}" +
+           ",\"scale\":" + std::to_string(gdk_monitor_get_scale_factor(m)) +
+           ",\"primary\":" + (gdk_monitor_is_primary(m) ? "true" : "false") + "}";
+  }
+  out += "]";
+  return out;
+}
+
+static std::string battery_json() {
+  GDir* dir = g_dir_open("/sys/class/power_supply", 0, nullptr);
+  if (!dir) return "null";
+  std::string bat;
+  const char* name;
+  while ((name = g_dir_read_name(dir))) {
+    if (g_str_has_prefix(name, "BAT")) { bat = std::string("/sys/class/power_supply/") + name; break; }
+  }
+  g_dir_close(dir);
+  if (bat.empty()) return "null";
+  auto readf = [](const std::string& p) -> std::string {
+    gchar* data = nullptr;
+    if (!g_file_get_contents(p.c_str(), &data, nullptr, nullptr)) return "";
+    std::string s = data;
+    g_free(data);
+    while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
+    return s;
+  };
+  std::string cap = readf(bat + "/capacity");
+  std::string status = readf(bat + "/status");
+  bool charging = status == "Charging";
+  bool plugged = charging || status == "Full" || status == "Not charging";
+  return "{\"percent\":" + (cap.empty() ? "null" : cap) +
+         ",\"charging\":" + (charging ? "true" : "false") +
+         ",\"plugged\":" + (plugged ? "true" : "false") +
+         ",\"minutesRemaining\":null}";
+}
+
+static std::string idle_json();  // fwd (D-Bus)
+
+static void answer_get(const std::string& qid, const std::string& what) {
+  if (what == "windows") {
+    std::string out = "[\"main\"";
+    for (auto& kv : g_secwins) out += "," + json_escape(kv.first);
+    out += "]";
+    send_got(qid, out);
+  } else if (what == "win" || what.rfind("win:", 0) == 0) {
+    send_got(qid, win_state_json(what == "win" ? "main" : what.substr(4)));
+  } else if (what == "mouse" || what.rfind("mouse:", 0) == 0) {
+    send_got(qid, mouse_json(what == "mouse" ? "main" : what.substr(6)));
+  } else if (what == "screens") {
+    send_got(qid, screens_json());
+  } else if (what == "clipboard") {
+    send_got(qid, clipboard_json(false));
+  } else if (what == "clipboard:count") {
+    send_got(qid, clipboard_json(true));
+  } else if (what == "idle") {
+    send_got(qid, idle_json());
+  } else if (what == "battery") {
+    send_got(qid, battery_json());
+  } else if (what == "frontmost") {
+    send_got(qid, "null");
+  } else if (what == "traypos") {
+    send_got(qid, "null");  // SNI does not expose icon geometry
+  } else if (what.rfind("item:", 0) == 0 || what.rfind("item@", 0) == 0) {
+    // item:<id> — any copy (tray/context items live here too). item@<win>:<id>
+    // — that window's copy. Window ids don't contain ':' (win.open picks
+    // them), so the first colon after '@' ends the window name.
+    std::string id = what.substr(5);
+    GtkWindow* only = nullptr;
+    if (what[4] == '@') {
+      size_t colon = id.find(':');
+      only = win_for(colon == std::string::npos ? id : id.substr(0, colon));
+      id = colon == std::string::npos ? "" : id.substr(colon + 1);
+    }
+    const RegItem* found = nullptr;
+    auto range = g_items.equal_range(id);
+    for (auto it = range.first; it != range.second && !found; ++it)
+      if (!only || it->second.owner == only) found = &it->second;
+    if (!found) { send_got(qid, "{\"exists\":false}"); return; }
+    send_got(qid, "{\"exists\":true,\"label\":" + json_escape(found->label) +
+                  ",\"checked\":" + (found->checked ? "true" : "false") +
+                  ",\"enabled\":" + (found->enabled ? "true" : "false") + "}");
+  } else {
+    send_got(qid, "null");
+  }
+}
+
+// ------------------------------------------------------------------ D-Bus ---
+
+static GDBusConnection* session_bus() {
+  static GDBusConnection* bus = g_bus_get_sync(G_BUS_TYPE_SESSION, nullptr, nullptr);
+  return bus;
+}
+
+// ---- Unity LauncherEntry: badge count + progress on the launcher icon ------
+// A session-bus SIGNAL (not a method call), so there is nothing to connect to
+// and nothing to fail: KDE Plasma, Ubuntu's Dock and Dash-to-Dock listen for
+// it, vanilla GNOME Shell doesn't, and where nobody listens the signal is just
+// dropped. Both properties ride the same Update, so they're kept as state here
+// and re-sent together.
+static long g_badge_count = 0;
+static bool g_badge_visible = false;
+static double g_launch_progress = -1.0;  // <0 = no bar
+
+static void unity_launcher_update() {
+  GDBusConnection* bus = session_bus();
+  if (!bus || g_app_id.empty()) return;
+
+  GVariantBuilder props;
+  g_variant_builder_init(&props, G_VARIANT_TYPE("a{sv}"));
+  g_variant_builder_add(&props, "{sv}", "count",
+                        g_variant_new_int64(g_badge_count));
+  g_variant_builder_add(&props, "{sv}", "count-visible",
+                        g_variant_new_boolean(g_badge_visible));
+  g_variant_builder_add(&props, "{sv}", "progress",
+                        g_variant_new_double(g_launch_progress < 0.0
+                                                 ? 0.0
+                                                 : g_launch_progress));
+  g_variant_builder_add(&props, "{sv}", "progress-visible",
+                        g_variant_new_boolean(g_launch_progress >= 0.0));
+
+  // The app is addressed by its .desktop id — the same file the bridge writes
+  // into ~/.local/share/applications on first run.
+  std::string uri = "application://" + g_app_id + ".desktop";
+  // Any stable object path works; deriving it from the id is what Unity did.
+  std::string path = "/com/canonical/unity/launcherentry/" +
+                     std::to_string((unsigned long)g_str_hash(uri.c_str()));
+
+  g_dbus_connection_emit_signal(
+      bus, nullptr, path.c_str(), "com.canonical.Unity.LauncherEntry", "Update",
+      g_variant_new("(sa{sv})", uri.c_str(), &props), nullptr);
+}
+
+static GDBusConnection* system_bus() {
+  static GDBusConnection* bus = g_bus_get_sync(G_BUS_TYPE_SYSTEM, nullptr, nullptr);
+  return bus;
+}
+
+// seconds since last user input: GNOME Mutter IdleMonitor (ms); fallback 0
+static std::string idle_json() {
+  double seconds = 0;
+  GDBusConnection* bus = session_bus();
+  if (bus) {
+    GVariant* r = g_dbus_connection_call_sync(bus,
+        "org.gnome.Mutter.IdleMonitor", "/org/gnome/Mutter/IdleMonitor/Core",
+        "org.gnome.Mutter.IdleMonitor", "GetIdletime", nullptr,
+        G_VARIANT_TYPE("(t)"), G_DBUS_CALL_FLAGS_NONE, 500, nullptr, nullptr);
+    if (r) {
+      guint64 ms = 0;
+      g_variant_get(r, "(t)", &ms);
+      seconds = ms / 1000.0;
+      g_variant_unref(r);
+    }
+  }
+  char buf[64];
+  snprintf(buf, sizeof buf, "{\"seconds\":%.1f}", seconds);
+  return buf;
+}
+
+// --- notifications: org.freedesktop.Notifications ---------------------------
+
+static std::map<guint32, std::string> g_notif_ids;  // dbus id -> app notify id
+static std::map<guint32, std::vector<std::string>> g_notif_actions;
+static bool g_notif_signals_wired = false;
+
+static void wire_notification_signals() {
+  if (g_notif_signals_wired) return;
+  GDBusConnection* bus = session_bus();
+  if (!bus) return;
+  g_notif_signals_wired = true;
+  g_dbus_connection_signal_subscribe(bus, "org.freedesktop.Notifications",
+      "org.freedesktop.Notifications", "ActionInvoked",
+      "/org/freedesktop/Notifications", nullptr, G_DBUS_SIGNAL_FLAGS_NONE,
+      [](GDBusConnection*, const gchar*, const gchar*, const gchar*, const gchar*,
+         GVariant* params, gpointer) {
+        guint32 nid = 0;
+        const gchar* action = nullptr;
+        g_variant_get(params, "(u&s)", &nid, &action);
+        auto it = g_notif_ids.find(nid);
+        if (it == g_notif_ids.end() || !action) return;
+        if (!strcmp(action, "default")) {
+          pipe_write_line("NOTIFYCLICK " + it->second);
+        } else {
+          pipe_write_line("NOTIFYACTION " + it->second + "\t" + action + "\t");
+        }
+      }, nullptr, nullptr);
+  g_dbus_connection_signal_subscribe(bus, "org.freedesktop.Notifications",
+      "org.freedesktop.Notifications", "NotificationClosed",
+      "/org/freedesktop/Notifications", nullptr, G_DBUS_SIGNAL_FLAGS_NONE,
+      [](GDBusConnection*, const gchar*, const gchar*, const gchar*, const gchar*,
+         GVariant* params, gpointer) {
+        guint32 nid = 0, reason = 0;
+        g_variant_get(params, "(uu)", &nid, &reason);
+        g_notif_ids.erase(nid);
+        g_notif_actions.erase(nid);
+      }, nullptr, nullptr);
+}
+
+// crude extraction of "id" and "title" string fields from the actions JSON
+// (avoids a JSON parser dependency; the bridge emits compact well-formed JSON)
+static std::vector<std::pair<std::string, std::string>> parse_actions(const std::string& json) {
+  std::vector<std::pair<std::string, std::string>> out;
+  size_t pos = 0;
+  auto find_str = [&](const std::string& key, size_t from, size_t to) -> std::string {
+    std::string needle = "\"" + key + "\":";
+    size_t k = json.find(needle, from);
+    if (k == std::string::npos || k > to) return "";
+    size_t q1 = json.find('"', k + needle.size());
+    if (q1 == std::string::npos) return "";
+    std::string val;
+    for (size_t i = q1 + 1; i < json.size(); i++) {
+      if (json[i] == '\\' && i + 1 < json.size()) { val += json[++i]; continue; }
+      if (json[i] == '"') break;
+      val += json[i];
+    }
+    return val;
+  };
+  while ((pos = json.find('{', pos)) != std::string::npos) {
+    size_t end = json.find('}', pos);
+    if (end == std::string::npos) break;
+    std::string id = find_str("id", pos, end);
+    std::string title = find_str("title", pos, end);
+    if (!id.empty()) out.push_back({id, title.empty() ? id : title});
+    pos = end + 1;
+  }
+  return out;
+}
+
+static void do_notify(const std::string& rest) {
+  wire_notification_signals();
+  auto f = split_tabs(rest);
+  std::string nid = tab_field(f, 0);
+  std::string title = tab_field(f, 1);
+  std::string body = tab_field(f, 2);
+  std::string subtitle = tab_field(f, 3);
+  bool sound = tab_field(f, 4) == "1";
+  std::string actions_json = wire_unescape(tab_field(f, 5));
+  if (!subtitle.empty()) body = subtitle + "\n" + body;
+
+  GVariantBuilder actions;
+  g_variant_builder_init(&actions, G_VARIANT_TYPE("as"));
+  g_variant_builder_add(&actions, "s", "default");
+  g_variant_builder_add(&actions, "s", "Open");
+  for (auto& a : parse_actions(actions_json)) {
+    g_variant_builder_add(&actions, "s", a.first.c_str());
+    g_variant_builder_add(&actions, "s", a.second.c_str());
+  }
+
+  GVariantBuilder hints;
+  g_variant_builder_init(&hints, G_VARIANT_TYPE("a{sv}"));
+  if (!g_app_id.empty()) {
+    g_variant_builder_add(&hints, "{sv}", "desktop-entry",
+                          g_variant_new_string(g_app_id.c_str()));
+  }
+  if (!sound) {
+    g_variant_builder_add(&hints, "{sv}", "suppress-sound",
+                          g_variant_new_boolean(TRUE));
+  }
+
+  const char* env_icon = getenv("TINYJS_ICON");
+  GDBusConnection* bus = session_bus();
+  if (!bus) return;
+  GVariant* r = g_dbus_connection_call_sync(bus,
+      "org.freedesktop.Notifications", "/org/freedesktop/Notifications",
+      "org.freedesktop.Notifications", "Notify",
+      g_variant_new("(susssasa{sv}i)",
+                    g_app_name.c_str(), (guint32)0,
+                    env_icon && *env_icon ? env_icon : "",
+                    title.c_str(), body.c_str(), &actions, &hints, -1),
+      G_VARIANT_TYPE("(u)"), G_DBUS_CALL_FLAGS_NONE, 2000, nullptr, nullptr);
+  if (r) {
+    guint32 dbus_id = 0;
+    g_variant_get(r, "(u)", &dbus_id);
+    if (!nid.empty()) g_notif_ids[dbus_id] = nid;
+    g_variant_unref(r);
+  }
+}
+
+// --- secrets: org.freedesktop.secrets (Secret Service, plain session) -------
+
+static std::string g_secret_session;
+
+static bool secret_open_session(GDBusConnection* bus) {
+  if (!g_secret_session.empty()) return true;
+  GVariant* r = g_dbus_connection_call_sync(bus,
+      "org.freedesktop.secrets", "/org/freedesktop/secrets",
+      "org.freedesktop.Secret.Service", "OpenSession",
+      g_variant_new("(sv)", "plain", g_variant_new_string("")),
+      G_VARIANT_TYPE("(vo)"), G_DBUS_CALL_FLAGS_NONE, 3000, nullptr, nullptr);
+  if (!r) return false;
+  GVariant* out = nullptr;
+  const gchar* path = nullptr;
+  g_variant_get(r, "(v&o)", &out, &path);
+  if (path) g_secret_session = path;
+  if (out) g_variant_unref(out);
+  g_variant_unref(r);
+  return !g_secret_session.empty();
+}
+
+static GVariant* secret_attrs(const std::string& service, const std::string& account) {
+  GVariantBuilder b;
+  g_variant_builder_init(&b, G_VARIANT_TYPE("a{ss}"));
+  g_variant_builder_add(&b, "{ss}", "service", service.c_str());
+  g_variant_builder_add(&b, "{ss}", "account", account.c_str());
+  return g_variant_builder_end(&b);
+}
+
+static std::vector<std::string> secret_search(GDBusConnection* bus,
+    const std::string& service, const std::string& account) {
+  std::vector<std::string> out;
+  GVariant* r = g_dbus_connection_call_sync(bus,
+      "org.freedesktop.secrets", "/org/freedesktop/secrets",
+      "org.freedesktop.Secret.Service", "SearchItems",
+      g_variant_new("(@a{ss})", secret_attrs(service, account)),
+      G_VARIANT_TYPE("(aoao)"), G_DBUS_CALL_FLAGS_NONE, 3000, nullptr, nullptr);
+  if (!r) return out;
+  GVariantIter *unlocked = nullptr, *locked = nullptr;
+  g_variant_get(r, "(aoao)", &unlocked, &locked);
+  const gchar* path;
+  while (unlocked && g_variant_iter_next(unlocked, "&o", &path)) out.push_back(path);
+  if (unlocked) g_variant_iter_free(unlocked);
+  if (locked) g_variant_iter_free(locked);
+  g_variant_unref(r);
+  return out;
+}
+
+static void do_secret(const std::string& qid, const std::string& rest) {
+  auto f = split_tabs(rest);
+  std::string op = tab_field(f, 0);
+  std::string service = wire_unescape(tab_field(f, 1));
+  std::string account = wire_unescape(tab_field(f, 2));
+  GDBusConnection* bus = session_bus();
+  if (!bus || !secret_open_session(bus)) {
+    send_got(qid, "{\"ok\":false,\"error\":\"no secret service\"}");
+    return;
+  }
+
+  if (op == "get") {
+    auto items = secret_search(bus, service, account);
+    if (items.empty()) { send_got(qid, "{\"ok\":true,\"value\":null}"); return; }
+    GVariantBuilder paths;
+    g_variant_builder_init(&paths, G_VARIANT_TYPE("ao"));
+    g_variant_builder_add(&paths, "o", items[0].c_str());
+    GError* err = nullptr;
+    GVariant* r = g_dbus_connection_call_sync(bus,
+        "org.freedesktop.secrets", "/org/freedesktop/secrets",
+        "org.freedesktop.Secret.Service", "GetSecrets",
+        g_variant_new("(aoo)", &paths, g_secret_session.c_str()),
+        G_VARIANT_TYPE("(a{o(oayays)})"), G_DBUS_CALL_FLAGS_NONE, 3000, nullptr, &err);
+    if (!r) {
+      send_got(qid, "{\"ok\":false,\"error\":" +
+               json_escape(err ? err->message : "keychain error") + "}");
+      g_clear_error(&err);
+      return;
+    }
+    std::string value;
+    GVariantIter* iter = nullptr;
+    g_variant_get(r, "(a{o(oayays)})", &iter);
+    const gchar* ipath = nullptr;
+    GVariant* secret = nullptr;
+    while (iter && g_variant_iter_next(iter, "{&o@(oayays)}", &ipath, &secret)) {
+      const gchar* spath = nullptr;
+      GVariantIter *params = nullptr, *val = nullptr;
+      const gchar* ctype = nullptr;
+      g_variant_get(secret, "(&oayay&s)", &spath, &params, &val, &ctype);
+      guchar byte;
+      while (val && g_variant_iter_next(val, "y", &byte)) value += (char)byte;
+      if (params) g_variant_iter_free(params);
+      if (val) g_variant_iter_free(val);
+      g_variant_unref(secret);
+    }
+    if (iter) g_variant_iter_free(iter);
+    g_variant_unref(r);
+    send_got(qid, "{\"ok\":true,\"value\":" + json_escape(value) + "}");
+    return;
+  }
+
+  if (op == "set") {
+    std::string value = wire_unescape(tab_field(f, 3));
+    GVariantBuilder props;
+    g_variant_builder_init(&props, G_VARIANT_TYPE("a{sv}"));
+    g_variant_builder_add(&props, "{sv}", "org.freedesktop.Secret.Item.Label",
+        g_variant_new_string((service + "/" + account).c_str()));
+    g_variant_builder_add(&props, "{sv}", "org.freedesktop.Secret.Item.Attributes",
+        secret_attrs(service, account));
+    GVariantBuilder val;
+    g_variant_builder_init(&val, G_VARIANT_TYPE("ay"));
+    for (char c : value) g_variant_builder_add(&val, "y", (guchar)c);
+    GVariantBuilder params;
+    g_variant_builder_init(&params, G_VARIANT_TYPE("ay"));
+    GError* err = nullptr;
+    GVariant* r = g_dbus_connection_call_sync(bus,
+        "org.freedesktop.secrets", "/org/freedesktop/secrets/aliases/default",
+        "org.freedesktop.Secret.Collection", "CreateItem",
+        g_variant_new("(a{sv}(oayays)b)", &props, g_secret_session.c_str(),
+                      &params, &val, "text/plain", TRUE),
+        G_VARIANT_TYPE("(oo)"), G_DBUS_CALL_FLAGS_NONE, 3000, nullptr, &err);
+    if (!r) {
+      send_got(qid, "{\"ok\":false,\"error\":" +
+               json_escape(err ? err->message : "keychain error") + "}");
+      g_clear_error(&err);
+      return;
+    }
+    g_variant_unref(r);
+    send_got(qid, "{\"ok\":true}");
+    return;
+  }
+
+  if (op == "del") {
+    auto items = secret_search(bus, service, account);
+    for (auto& item : items) {
+      GVariant* r = g_dbus_connection_call_sync(bus,
+          "org.freedesktop.secrets", item.c_str(),
+          "org.freedesktop.Secret.Item", "Delete", nullptr,
+          G_VARIANT_TYPE("(o)"), G_DBUS_CALL_FLAGS_NONE, 3000, nullptr, nullptr);
+      if (r) g_variant_unref(r);
+    }
+    send_got(qid, "{\"ok\":true}");
+    return;
+  }
+
+  send_got(qid, "{\"ok\":false,\"error\":\"bad secret op\"}");
+}
+
+// --- power: login1 sleep inhibitor (+ ScreenSaver for display) ---------------
+
+static int g_inhibit_fd = -1;
+static guint32 g_screensaver_cookie = 0;
+
+static void do_power(const std::string& qid, const std::string& rest) {
+  auto f = split_tabs(rest);
+  bool on = tab_field(f, 0).rfind("on", 0) == 0;
+  bool display = tab_field(f, 1) == "1";
+  std::string reason = wire_unescape(tab_field(f, 2));
+  if (reason.empty()) reason = g_app_name;
+
+  // release anything held (each call replaces the previous assertion)
+  if (g_inhibit_fd >= 0) { close(g_inhibit_fd); g_inhibit_fd = -1; }
+  if (g_screensaver_cookie) {
+    GDBusConnection* bus = session_bus();
+    if (bus) {
+      GVariant* r = g_dbus_connection_call_sync(bus,
+          "org.freedesktop.ScreenSaver", "/org/freedesktop/ScreenSaver",
+          "org.freedesktop.ScreenSaver", "UnInhibit",
+          g_variant_new("(u)", g_screensaver_cookie), nullptr,
+          G_DBUS_CALL_FLAGS_NONE, 1000, nullptr, nullptr);
+      if (r) g_variant_unref(r);
+    }
+    g_screensaver_cookie = 0;
+  }
+  if (!on) { send_got(qid, "{\"ok\":true,\"active\":false}"); return; }
+
+  bool ok = false;
+  GDBusConnection* sys = system_bus();
+  if (sys) {
+    GUnixFDList* fds = nullptr;
+    GVariant* r = g_dbus_connection_call_with_unix_fd_list_sync(sys,
+        "org.freedesktop.login1", "/org/freedesktop/login1",
+        "org.freedesktop.login1.Manager", "Inhibit",
+        g_variant_new("(ssss)", "sleep:idle", g_app_name.c_str(),
+                      reason.c_str(), "block"),
+        G_VARIANT_TYPE("(h)"), G_DBUS_CALL_FLAGS_NONE, 2000, nullptr,
+        &fds, nullptr, nullptr);
+    if (r && fds) {
+      gint32 idx = 0;
+      g_variant_get(r, "(h)", &idx);
+      g_inhibit_fd = g_unix_fd_list_get(fds, idx, nullptr);
+      ok = g_inhibit_fd >= 0;
+    }
+    if (r) g_variant_unref(r);
+    if (fds) g_object_unref(fds);
+  }
+  if (display) {
+    GDBusConnection* bus = session_bus();
+    if (bus) {
+      GVariant* r = g_dbus_connection_call_sync(bus,
+          "org.freedesktop.ScreenSaver", "/org/freedesktop/ScreenSaver",
+          "org.freedesktop.ScreenSaver", "Inhibit",
+          g_variant_new("(ss)", g_app_name.c_str(), reason.c_str()),
+          G_VARIANT_TYPE("(u)"), G_DBUS_CALL_FLAGS_NONE, 1000, nullptr, nullptr);
+      if (r) {
+        g_variant_get(r, "(u)", &g_screensaver_cookie);
+        g_variant_unref(r);
+        ok = true;
+      }
+    }
+  }
+  send_got(qid, ok ? "{\"ok\":true,\"active\":true}"
+                   : "{\"ok\":false,\"active\":false}");
+}
+
+// --- theme + sleep/wake observers --------------------------------------------
+
+static void send_theme() {
+  bool dark = false;
+  GDBusConnection* bus = session_bus();
+  if (bus) {
+    GVariant* r = g_dbus_connection_call_sync(bus,
+        "org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
+        "org.freedesktop.portal.Settings", "Read",
+        g_variant_new("(ss)", "org.freedesktop.appearance", "color-scheme"),
+        G_VARIANT_TYPE("(v)"), G_DBUS_CALL_FLAGS_NONE, 1000, nullptr, nullptr);
+    if (r) {
+      GVariant* v = nullptr;
+      g_variant_get(r, "(v)", &v);
+      GVariant* inner = v && g_variant_is_of_type(v, G_VARIANT_TYPE_VARIANT)
+          ? g_variant_get_variant(v) : nullptr;
+      GVariant* u = inner ? inner : v;
+      if (u && g_variant_is_of_type(u, G_VARIANT_TYPE_UINT32)) {
+        dark = g_variant_get_uint32(u) == 1;
+      }
+      if (inner) g_variant_unref(inner);
+      if (v) g_variant_unref(v);
+      g_variant_unref(r);
+    }
+  } else {
+    gboolean prefer_dark = FALSE;
+    g_object_get(gtk_settings_get_default(), "gtk-application-prefer-dark-theme",
+                 &prefer_dark, NULL);
+    dark = prefer_dark;
+  }
+  pipe_write_line(dark ? "SYS theme dark" : "SYS theme light");
+}
+
+static void install_system_observers() {
+  GDBusConnection* bus = session_bus();
+  if (bus) {
+    g_dbus_connection_signal_subscribe(bus,
+        "org.freedesktop.portal.Desktop", "org.freedesktop.portal.Settings",
+        "SettingChanged", "/org/freedesktop/portal/desktop", nullptr,
+        G_DBUS_SIGNAL_FLAGS_NONE,
+        [](GDBusConnection*, const gchar*, const gchar*, const gchar*, const gchar*,
+           GVariant* params, gpointer) {
+          const gchar *ns = nullptr, *key = nullptr;
+          GVariant* val = nullptr;
+          g_variant_get(params, "(&s&sv)", &ns, &key, &val);
+          if (ns && key && !strcmp(ns, "org.freedesktop.appearance") &&
+              !strcmp(key, "color-scheme") &&
+              g_variant_is_of_type(val, G_VARIANT_TYPE_UINT32)) {
+            bool dark = g_variant_get_uint32(val) == 1;
+            pipe_write_line(dark ? "SYS theme dark" : "SYS theme light");
+          }
+          if (val) g_variant_unref(val);
+        }, nullptr, nullptr);
+  }
+  GDBusConnection* sys = system_bus();
+  if (sys) {
+    g_dbus_connection_signal_subscribe(sys,
+        "org.freedesktop.login1", "org.freedesktop.login1.Manager",
+        "PrepareForSleep", "/org/freedesktop/login1", nullptr,
+        G_DBUS_SIGNAL_FLAGS_NONE,
+        [](GDBusConnection*, const gchar*, const gchar*, const gchar*, const gchar*,
+           GVariant* params, gpointer) {
+          gboolean going = FALSE;
+          g_variant_get(params, "(b)", &going);
+          pipe_write_line(going ? "SYS sleep" : "SYS wake");
+        }, nullptr, nullptr);
+  }
+}
+
+// --- Now Playing: MPRIS (org.mpris.MediaPlayer2) -----------------------------
+
+// crude scalar-field extraction from the compact JSON the bridge sends
+static std::string json_find_str(const std::string& j, const std::string& key) {
+  std::string needle = "\"" + key + "\":";
+  size_t k = j.find(needle);
+  if (k == std::string::npos) return "";
+  size_t q1 = j.find('"', k + needle.size());
+  size_t colon_end = k + needle.size();
+  // only accept a string value (skip if the value is a number/bool)
+  size_t first_non_ws = j.find_first_not_of(" \t", colon_end);
+  if (first_non_ws == std::string::npos || j[first_non_ws] != '"') return "";
+  std::string val;
+  for (size_t i = q1 + 1; i < j.size(); i++) {
+    if (j[i] == '\\' && i + 1 < j.size()) { val += j[++i]; continue; }
+    if (j[i] == '"') break;
+    val += j[i];
+  }
+  return val;
+}
+
+static double json_find_num(const std::string& j, const std::string& key, double dflt) {
+  std::string needle = "\"" + key + "\":";
+  size_t k = j.find(needle);
+  if (k == std::string::npos) return dflt;
+  return atof(j.c_str() + k + needle.size());
+}
+
+static bool json_find_bool(const std::string& j, const std::string& key, bool dflt) {
+  std::string needle = "\"" + key + "\":";
+  size_t k = j.find(needle);
+  if (k == std::string::npos) return dflt;
+  return j.compare(k + needle.size(), 4, "true") == 0;
+}
+
+struct NowPlaying {
+  std::string title, artist, album;
+  double duration = 0, elapsed = 0;
+  bool playing = false;
+};
+static NowPlaying g_np;
+static guint g_mpris_owner = 0;
+static guint g_mpris_reg_root = 0, g_mpris_reg_player = 0;
+
+static const char* MPRIS_XML =
+  "<node>"
+  " <interface name='org.mpris.MediaPlayer2'>"
+  "  <method name='Raise'/><method name='Quit'/>"
+  "  <property name='CanQuit' type='b' access='read'/>"
+  "  <property name='CanRaise' type='b' access='read'/>"
+  "  <property name='HasTrackList' type='b' access='read'/>"
+  "  <property name='Identity' type='s' access='read'/>"
+  "  <property name='SupportedUriSchemes' type='as' access='read'/>"
+  "  <property name='SupportedMimeTypes' type='as' access='read'/>"
+  " </interface>"
+  " <interface name='org.mpris.MediaPlayer2.Player'>"
+  "  <method name='Next'/><method name='Previous'/><method name='Pause'/>"
+  "  <method name='PlayPause'/><method name='Stop'/><method name='Play'/>"
+  "  <method name='Seek'><arg name='Offset' type='x' direction='in'/></method>"
+  "  <method name='SetPosition'>"
+  "   <arg name='TrackId' type='o' direction='in'/>"
+  "   <arg name='Position' type='x' direction='in'/></method>"
+  "  <method name='OpenUri'><arg name='Uri' type='s' direction='in'/></method>"
+  "  <property name='PlaybackStatus' type='s' access='read'/>"
+  "  <property name='Rate' type='d' access='readwrite'/>"
+  "  <property name='Metadata' type='a{sv}' access='read'/>"
+  "  <property name='Volume' type='d' access='readwrite'/>"
+  "  <property name='Position' type='x' access='read'/>"
+  "  <property name='MinimumRate' type='d' access='read'/>"
+  "  <property name='MaximumRate' type='d' access='read'/>"
+  "  <property name='CanGoNext' type='b' access='read'/>"
+  "  <property name='CanGoPrevious' type='b' access='read'/>"
+  "  <property name='CanPlay' type='b' access='read'/>"
+  "  <property name='CanPause' type='b' access='read'/>"
+  "  <property name='CanSeek' type='b' access='read'/>"
+  "  <property name='CanControl' type='b' access='read'/>"
+  " </interface>"
+  "</node>";
+
+static GVariant* mpris_metadata() {
+  GVariantBuilder b;
+  g_variant_builder_init(&b, G_VARIANT_TYPE("a{sv}"));
+  g_variant_builder_add(&b, "{sv}", "mpris:trackid",
+      g_variant_new_object_path("/org/tinyjs/track/0"));
+  if (!g_np.title.empty()) {
+    g_variant_builder_add(&b, "{sv}", "xesam:title",
+        g_variant_new_string(g_np.title.c_str()));
+  }
+  if (!g_np.artist.empty()) {
+    GVariantBuilder artists;
+    g_variant_builder_init(&artists, G_VARIANT_TYPE("as"));
+    g_variant_builder_add(&artists, "s", g_np.artist.c_str());
+    g_variant_builder_add(&b, "{sv}", "xesam:artist", g_variant_builder_end(&artists));
+  }
+  if (!g_np.album.empty()) {
+    g_variant_builder_add(&b, "{sv}", "xesam:album",
+        g_variant_new_string(g_np.album.c_str()));
+  }
+  if (g_np.duration > 0) {
+    g_variant_builder_add(&b, "{sv}", "mpris:length",
+        g_variant_new_int64((gint64)(g_np.duration * 1e6)));
+  }
+  return g_variant_builder_end(&b);
+}
+
+static void mpris_method_call(GDBusConnection*, const gchar*, const gchar*,
+                              const gchar* iface, const gchar* method,
+                              GVariant* params, GDBusMethodInvocation* inv, gpointer) {
+  if (!strcmp(iface, "org.mpris.MediaPlayer2.Player")) {
+    if (!strcmp(method, "Play")) pipe_write_line("MEDIAKEY play");
+    else if (!strcmp(method, "Pause")) pipe_write_line("MEDIAKEY pause");
+    else if (!strcmp(method, "PlayPause")) pipe_write_line("MEDIAKEY toggle");
+    else if (!strcmp(method, "Stop")) pipe_write_line("MEDIAKEY pause");
+    else if (!strcmp(method, "Next")) pipe_write_line("MEDIAKEY next");
+    else if (!strcmp(method, "Previous")) pipe_write_line("MEDIAKEY previous");
+    else if (!strcmp(method, "Seek")) {
+      gint64 offset_us = 0;
+      g_variant_get(params, "(x)", &offset_us);
+      char buf[64];
+      snprintf(buf, sizeof buf, "MEDIAKEY seek\t%.3f",
+               g_np.elapsed + offset_us / 1e6);
+      pipe_write_line(buf);
+    } else if (!strcmp(method, "SetPosition")) {
+      const gchar* track = nullptr;
+      gint64 pos_us = 0;
+      g_variant_get(params, "(&ox)", &track, &pos_us);
+      char buf[64];
+      snprintf(buf, sizeof buf, "MEDIAKEY seek\t%.3f", pos_us / 1e6);
+      pipe_write_line(buf);
+    }
+  } else if (!strcmp(method, "Raise")) {
+    gtk_window_present(g_win);
+  }
+  g_dbus_method_invocation_return_value(inv, nullptr);
+}
+
+static GVariant* mpris_get_property(GDBusConnection*, const gchar*, const gchar*,
+                                    const gchar* iface, const gchar* prop,
+                                    GError**, gpointer) {
+  if (!strcmp(iface, "org.mpris.MediaPlayer2")) {
+    if (!strcmp(prop, "Identity")) return g_variant_new_string(g_app_name.c_str());
+    if (!strcmp(prop, "CanQuit") || !strcmp(prop, "HasTrackList"))
+      return g_variant_new_boolean(FALSE);
+    if (!strcmp(prop, "CanRaise")) return g_variant_new_boolean(TRUE);
+    if (!strcmp(prop, "SupportedUriSchemes") || !strcmp(prop, "SupportedMimeTypes"))
+      return g_variant_new_strv(nullptr, 0);
+  } else {
+    if (!strcmp(prop, "PlaybackStatus"))
+      return g_variant_new_string(g_np.playing ? "Playing" : "Paused");
+    if (!strcmp(prop, "Metadata")) return mpris_metadata();
+    if (!strcmp(prop, "Position")) return g_variant_new_int64((gint64)(g_np.elapsed * 1e6));
+    if (!strcmp(prop, "Rate") || !strcmp(prop, "MinimumRate") ||
+        !strcmp(prop, "MaximumRate") || !strcmp(prop, "Volume"))
+      return g_variant_new_double(1.0);
+    if (!strcmp(prop, "CanGoNext") || !strcmp(prop, "CanGoPrevious") ||
+        !strcmp(prop, "CanPlay") || !strcmp(prop, "CanPause") ||
+        !strcmp(prop, "CanSeek") || !strcmp(prop, "CanControl"))
+      return g_variant_new_boolean(TRUE);
+  }
+  return nullptr;
+}
+
+static gboolean mpris_set_property(GDBusConnection*, const gchar*, const gchar*,
+                                   const gchar*, const gchar*, GVariant*,
+                                   GError**, gpointer) {
+  return TRUE;  // Rate/Volume writes accepted and ignored
+}
+
+static void mpris_emit_changed() {
+  GDBusConnection* bus = session_bus();
+  if (!bus || !g_mpris_owner) return;
+  GVariantBuilder props;
+  g_variant_builder_init(&props, G_VARIANT_TYPE("a{sv}"));
+  g_variant_builder_add(&props, "{sv}", "PlaybackStatus",
+      g_variant_new_string(g_np.playing ? "Playing" : "Paused"));
+  g_variant_builder_add(&props, "{sv}", "Metadata", mpris_metadata());
+  g_dbus_connection_emit_signal(bus, nullptr, "/org/mpris/MediaPlayer2",
+      "org.freedesktop.DBus.Properties", "PropertiesChanged",
+      g_variant_new("(sa{sv}as)", "org.mpris.MediaPlayer2.Player", &props, nullptr),
+      nullptr);
+}
+
+static void do_nowplaying(const std::string& rest) {
+  GDBusConnection* bus = session_bus();
+  if (!bus) return;
+  if (rest == "clear" || rest.empty()) {
+    if (g_mpris_owner) {
+      g_bus_unown_name(g_mpris_owner);
+      g_mpris_owner = 0;
+      if (g_mpris_reg_root) g_dbus_connection_unregister_object(bus, g_mpris_reg_root);
+      if (g_mpris_reg_player) g_dbus_connection_unregister_object(bus, g_mpris_reg_player);
+      g_mpris_reg_root = g_mpris_reg_player = 0;
+    }
+    g_np = NowPlaying();
+    return;
+  }
+  std::string json = wire_unescape(rest);
+  g_np.title = json_find_str(json, "title");
+  g_np.artist = json_find_str(json, "artist");
+  g_np.album = json_find_str(json, "album");
+  g_np.duration = json_find_num(json, "duration", 0);
+  g_np.elapsed = json_find_num(json, "elapsed", 0);
+  g_np.playing = json_find_bool(json, "playing", true);
+
+  if (!g_mpris_owner) {
+    static GDBusNodeInfo* node = nullptr;
+    if (!node) node = g_dbus_node_info_new_for_xml(MPRIS_XML, nullptr);
+    if (!node) return;
+    static const GDBusInterfaceVTable vtable = {
+      mpris_method_call, mpris_get_property, mpris_set_property, {nullptr}
+    };
+    g_mpris_reg_root = g_dbus_connection_register_object(bus,
+        "/org/mpris/MediaPlayer2", node->interfaces[0], &vtable,
+        nullptr, nullptr, nullptr);
+    g_mpris_reg_player = g_dbus_connection_register_object(bus,
+        "/org/mpris/MediaPlayer2", node->interfaces[1], &vtable,
+        nullptr, nullptr, nullptr);
+    std::string safe;
+    for (char c : (g_app_id.empty() ? g_app_name : g_app_id)) {
+      safe += (g_ascii_isalnum(c) ? c : '_');
+    }
+    g_mpris_owner = g_bus_own_name_on_connection(bus,
+        ("org.mpris.MediaPlayer2." + safe).c_str(),
+        G_BUS_NAME_OWNER_FLAGS_NONE, nullptr, nullptr, nullptr, nullptr);
+  }
+  mpris_emit_changed();
+}
+
+// --- audioTap: system-output PCM via the PipeWire/Pulse monitor --------------
+
+static GPid g_tap_pid = 0;
+static guint g_tap_timer = 0;
+static guint g_tap_watch = 0;
+static int g_tap_fd = -1;
+static std::mutex g_tap_mutex;
+static std::string g_tap_buf;        // raw s16le interleaved, filled by reader
+static int g_tap_rate = 44100, g_tap_channels = 2, g_tap_interval = 80;
+// scope:'app' plumbing (PipeWire only). We can't capture one application's
+// output directly — PipeWire has no per-app capture primitive — so we build
+// one: a private null sink, our own playback streams fanned into it (they keep
+// playing to the real sink too), and pw-cat reading that sink's monitor. A
+// timer re-links because our streams come and go (new windows, a track that
+// stops and starts). Empty name = not an app-scope tap.
+static std::string g_tap_sink;       // "tinyjs-tap-<pid>" while an app tap runs
+static guint g_tap_link_timer = 0;
+// "tinyjs-sampler-<pid>" while the sampler's pw_stream runs (see the sampler
+// section below). Declared here because the app-scope tap and the EQ router
+// must treat that node as one of ours: it plays this app's audio but can't
+// share node.name with the WebKit streams (teardown is by exact-name match).
+static std::string g_smp_node;
+
+// Fire-and-forget a pw-* helper; errors (a port not there yet, a link that
+// already exists) are the normal case here, so ignore them.
+static void pw_run(std::vector<std::string> args) {
+  std::vector<const gchar*> argv;
+  for (auto& a : args) argv.push_back(a.c_str());
+  argv.push_back(nullptr);
+  g_spawn_async(nullptr, (gchar**)argv.data(), nullptr,
+                (GSpawnFlags)(G_SPAWN_SEARCH_PATH | G_SPAWN_STDOUT_TO_DEV_NULL |
+                              G_SPAWN_STDERR_TO_DEV_NULL),
+                nullptr, nullptr, nullptr, nullptr);
+}
+
+// Link this app's playback ports into our tap sink. Our WebKit streams are
+// named after the app id (node.name == g_app_id), so their ports are
+// "<app_id>:output_FL/FR". Re-linking an existing link is a harmless no-op, so
+// running this on a timer keeps new streams captured without tracking them.
+static gboolean tap_link_tick(gpointer) {
+  if (g_tap_sink.empty() || g_app_id.empty()) return G_SOURCE_CONTINUE;
+  for (const char* ch : {"FL", "FR"}) {
+    pw_run({"pw-link", g_app_id + ":output_" + ch, g_tap_sink + ":playback_" + ch});
+    // The sampler's stream is this app's audio too, under its own node name.
+    if (!g_smp_node.empty())
+      pw_run({"pw-link", g_smp_node + ":output_" + ch, g_tap_sink + ":playback_" + ch});
+  }
+  return G_SOURCE_CONTINUE;
+}
+
+// Tear down the tap sink (this also drops every link into it).
+//
+// `pw-cli ls Node` prints "id <n>," and then that node's properties, so the id
+// belonging to a node is the LAST one seen before its node.name line — hence
+// the awk carry. Matching on a window of surrounding lines instead (an earlier
+// grep -B20) swept up neighbouring nodes' ids and destroyed OTHER
+// applications' streams: stopping a tap silenced Firefox until it was
+// reloaded. Only ever destroy the id that our own uniquely-named node owns.
+static void tap_destroy_sink() {
+  if (g_tap_sink.empty()) return;
+  std::string script =
+      "pw-cli ls Node 2>/dev/null | awk '/^[[:space:]]*id [0-9]+/{id=$2; "
+      "gsub(/[^0-9]/,\"\",id)} /node\\.name = \"" + g_tap_sink +
+      "\"/{print id}' | while read n; do pw-cli destroy \"$n\" >/dev/null 2>&1; done";
+  const gchar* argv[] = {"sh", "-c", script.c_str(), nullptr};
+  g_spawn_async(nullptr, (gchar**)argv, nullptr,
+                (GSpawnFlags)(G_SPAWN_SEARCH_PATH | G_SPAWN_STDOUT_TO_DEV_NULL |
+                              G_SPAWN_STDERR_TO_DEV_NULL),
+                nullptr, nullptr, nullptr, nullptr);
+  g_tap_sink.clear();
+}
+
+// Reap tap sinks orphaned by an app that died without reaching its teardown —
+// SIGKILL, a crash, a `kill` from a script. object.linger is what makes the
+// sink outlive the pw-cli that created it, so nothing in the session will ever
+// collect one: they pile up in the sink list, and in WirePlumber's saved state,
+// for as long as the machine is up. Each is named with its owner's pid, so a
+// dead pid means a dead sink. A pid the kernel HAS recycled onto some unrelated
+// process just leaves the sink alone — leaking one is recoverable, destroying a
+// live app's sink is not.
+static void tap_sweep_stale() {
+  static const char* script =
+      "pw-cli ls Node 2>/dev/null | awk '"
+      "/^[[:space:]]*id [0-9]+/{id=$2; gsub(/[^0-9]/,\"\",id)} "
+      "/node\\.name = \"tinyjs-tap-/{p=$0; sub(/.*tinyjs-tap-/,\"\",p); "
+      "sub(/\".*/,\"\",p); print id, p}' "
+      "| while read n p; do kill -0 \"$p\" 2>/dev/null || "
+      "pw-cli destroy \"$n\" >/dev/null 2>&1; done";
+  const gchar* argv[] = {"sh", "-c", script, nullptr};
+  g_spawn_async(nullptr, (gchar**)argv, nullptr,
+                (GSpawnFlags)(G_SPAWN_SEARCH_PATH | G_SPAWN_STDOUT_TO_DEV_NULL |
+                              G_SPAWN_STDERR_TO_DEV_NULL),
+                nullptr, nullptr, nullptr, nullptr);
+}
+
+// ---------------------------------------------------------- audio filters ---
+// A native DSP chain on this app's OWN output. Web Audio would be the obvious
+// home for this, but WebKitGTK renders that graph on a normal-priority thread
+// while its media threads get real-time priority, so anything reaching
+// ctx.destination crackles no matter how it's fed (measured; see
+// TODO-linux.md). Filtering below the browser sidesteps that entirely, and
+// picks up something Web Audio never had: it applies to audio the page doesn't
+// own — raw radio streams, native HLS — and survives a page reload.
+//
+// Built from libpipewire-module-filter-chain's builtin biquads. The module is
+// held open by a pw-cli child: unlike a node created with object.linger, a
+// module dies with the process that loaded it, so a killed launcher can't
+// strand a sink the way an audioTap could. That's why there's no sweep here.
+struct EqFilter {
+  std::string label;                      // bq_peaking, gain, …
+  double freq = 1000, q = 1.0, gain = 0;  // dB for bq_*, a multiplier for linear
+  double gainR = 0;                       // right channel; equals gain unless split
+  bool split = false;                     // true when the channels differ
+};
+// module-filter-chain SEGFAULTS past ~30 DECLARED nodes on PipeWire 1.0.5
+// (measured: 15 stereo pairs load, 16 take pw-cli down; 30 mono load). A page
+// must not be able to crash the user's audio server, so the chain is truncated
+// here rather than trusted. Mono layout (channels identical, module replicates
+// the graph per channel) costs one declared node per filter; split L/R (some
+// filter carries gainR) costs two.
+static const size_t EQ_MAX_MONO = 28;     // 30 declared proven, minus margin
+static const size_t EQ_MAX_SPLIT = 15;    // two declared nodes per filter
+static bool g_eq_mono = true;             // layout of the RUNNING chain
+static double g_eq_balance = 0;           // -1..1, lives on the -out stream
+static std::vector<EqFilter> g_eq;        // current chain (empty = none)
+static std::string g_eq_sink;             // "tinyjs-eq-<pid>" while it runs
+static GPid g_eq_pid = 0;                 // the pw-cli holding the module open
+static guint g_eq_route_timer = 0;
+
+static std::string eq_num(double v) {
+  char b[32];
+  snprintf(b, sizeof b, "%.6g", v);       // never locale-formatted: pw parses C floats
+  return b;
+}
+
+// Point every stream this app owns at a sink (or back to the default when
+// `sink` is empty). Our WebKit streams are named after the app id, the same
+// handle audioTap links by. Runs on a timer because a stream that appears
+// later — a second window, a page reload — must be routed too.
+static void eq_route(const std::string& sink) {
+  if (g_app_id.empty() && g_smp_node.empty()) return;
+  std::string val = sink.empty() ? "" : sink;
+  // Everything this app plays: the WebKit streams (node.name == app id) and
+  // the sampler's own stream, when it exists — awk alternation matches both.
+  std::string names = g_app_id.empty() ? g_smp_node
+      : g_smp_node.empty() ? g_app_id : g_app_id + "|" + g_smp_node;
+  std::string script =
+      "pw-cli ls Node 2>/dev/null | awk '/^[[:space:]]*id [0-9]+/{id=$2; "
+      "gsub(/[^0-9]/,\"\",id)} /node\\.name = \"(" + names +
+      ")\"/{print id}' | while read n; do pw-metadata \"$n\" target.object \"" +
+      val + "\" >/dev/null 2>&1; done";
+  const gchar* argv[] = {"sh", "-c", script.c_str(), nullptr};
+  g_spawn_async(nullptr, (gchar**)argv, nullptr,
+                (GSpawnFlags)(G_SPAWN_SEARCH_PATH | G_SPAWN_STDOUT_TO_DEV_NULL |
+                              G_SPAWN_STDERR_TO_DEV_NULL),
+                nullptr, nullptr, nullptr, nullptr);
+}
+
+static gboolean eq_route_tick(gpointer) {
+  if (!g_eq_sink.empty()) eq_route(g_eq_sink);
+  return G_SOURCE_CONTINUE;
+}
+
+// One control-value expression for a filter (right channel when asked).
+static std::string eq_node_ctrl(const EqFilter& f, bool right) {
+  double g = (f.split && right) ? f.gainR : f.gain;
+  // The `gain` builtin is advertised but takes the whole chain down with it on
+  // PipeWire 1.0.5 (every config containing one fails to load, however small)
+  // — `linear` does the same job with Mult as a plain multiplier.
+  if (f.label == "linear") return "\"Mult\" = " + eq_num(g) + " \"Add\" = 0.0";
+  return "\"Freq\" = " + eq_num(f.freq) + " \"Q\" = " + eq_num(f.q) +
+         " \"Gain\" = " + eq_num(g);
+}
+
+// The filter.graph config. Mono layout whenever both channels are identical:
+// a single-input graph is replicated per channel by the module, which halves
+// the declared-node count (the crash ceiling counts DECLARED nodes) and lets
+// one control name drive both channels. Only per-channel gains (gainR) pay
+// for the explicit L/R layout.
+static std::string eq_config(const std::string& sink) {
+  std::string nodes, links;
+  size_t last = g_eq.size() - 1;
+  if (g_eq_mono) {
+    for (size_t i = 0; i < g_eq.size(); i++) {
+      nodes += "{ type = builtin name = f" + std::to_string(i) + " label = " +
+               g_eq[i].label + " control = { " + eq_node_ctrl(g_eq[i], false) + " } }\n";
+      if (i > 0)
+        links += "{ output = \"f" + std::to_string(i - 1) + ":Out\" input = \"f" +
+                 std::to_string(i) + ":In\" }\n";
+    }
+  } else {
+    for (size_t i = 0; i < g_eq.size(); i++) {
+      for (const char* ch : {"L", "R"}) {
+        std::string n = "f" + std::to_string(i) + ch;
+        nodes += "{ type = builtin name = " + n + " label = " + g_eq[i].label +
+                 " control = { " + eq_node_ctrl(g_eq[i], ch[0] == 'R') + " } }\n";
+        if (i > 0)
+          links += "{ output = \"f" + std::to_string(i - 1) + ch + ":Out\" input = \"" +
+                   n + ":In\" }\n";
+      }
+    }
+  }
+  std::string ins = g_eq_mono ? "\"f0:In\"" : "\"f0L:In\" \"f0R:In\"";
+  std::string outs = g_eq_mono
+      ? "\"f" + std::to_string(last) + ":Out\""
+      : "\"f" + std::to_string(last) + "L:Out\" \"f" + std::to_string(last) + "R:Out\"";
+  return "{ node.name = \"" + sink + "\" media.class = Audio/Sink\n"
+         "  filter.graph = {\n    nodes = [\n" + nodes + "    ]\n"
+         "    links = [\n" + links + "    ]\n"
+         "    inputs  = [ " + ins + " ]\n"
+         "    outputs = [ " + outs + " ]\n  }\n"
+         "  capture.props  = { node.name = \"" + sink +
+         "\" media.class = Audio/Sink audio.position = [ FL FR ] }\n"
+         "  playback.props = { node.name = \"" + sink +
+         "-out\" node.passive = true audio.position = [ FL FR ] }\n}";
+}
+
+// Balance rides on the chain's OUTPUT STREAM as plain channelVolumes — no
+// filter slot, no rebuild, works in both layouts. (channelVolumes is ignored
+// on an app's own stream node but honored exactly here — measured: [1, 0.1]
+// yields a 0.1 R/L ratio at the sink.)
+static void eq_apply_balance() {
+  if (g_eq_sink.empty()) return;
+  double bal = g_eq_balance < -1 ? -1 : g_eq_balance > 1 ? 1 : g_eq_balance;
+  double l = bal > 0 ? 1.0 - bal : 1.0;
+  double r = bal < 0 ? 1.0 + bal : 1.0;
+  std::string script =
+      "id=$(pw-cli ls Node 2>/dev/null | awk '/^[[:space:]]*id [0-9]+/{i=$2; "
+      "gsub(/[^0-9]/,\"\",i)} /node\\.name = \"" + g_eq_sink + "-out\"/"
+      "{print i; exit}'); [ -n \"$id\" ] && pw-cli set-param \"$id\" Props "
+      "'{ channelVolumes = [ " + eq_num(l) + ", " + eq_num(r) + " ] }' >/dev/null 2>&1";
+  const gchar* argv[] = {"sh", "-c", script.c_str(), nullptr};
+  g_spawn_async(nullptr, (gchar**)argv, nullptr,
+                (GSpawnFlags)(G_SPAWN_SEARCH_PATH | G_SPAWN_STDOUT_TO_DEV_NULL |
+                              G_SPAWN_STDERR_TO_DEV_NULL),
+                nullptr, nullptr, nullptr, nullptr);
+}
+
+static void eq_push_params(int only);   // defined below; eq_start needs it
+
+// Tear the chain down: streams back to the default sink FIRST, so there is no
+// window in which they point at a sink that is about to vanish.
+static void eq_stop() {
+  if (g_eq_route_timer) { g_source_remove(g_eq_route_timer); g_eq_route_timer = 0; }
+  if (!g_eq_sink.empty()) { eq_route(""); g_eq_sink.clear(); }
+  if (g_eq_pid) {
+    kill(g_eq_pid, SIGTERM);
+    g_spawn_close_pid(g_eq_pid);
+    g_eq_pid = 0;
+  }
+  g_eq.clear();
+}
+
+// (Re)build the chain from g_eq. Changing a control value does NOT come through
+// here — see eq_set_param, which retunes in place without a gap.
+static bool eq_start() {
+  if (g_eq.empty()) { eq_stop(); return true; }
+  char* pwcli = g_find_program_in_path("pw-cli");
+  if (!pwcli) return false;
+  if (g_eq_pid) {   // rebuilding: drop the old chain first
+    if (g_eq_route_timer) { g_source_remove(g_eq_route_timer); g_eq_route_timer = 0; }
+    kill(g_eq_pid, SIGTERM);
+    g_spawn_close_pid(g_eq_pid);
+    g_eq_pid = 0;
+  }
+  g_eq_mono = true;
+  for (const EqFilter& f : g_eq) if (f.split) { g_eq_mono = false; break; }
+  g_eq_sink = "tinyjs-eq-" + std::to_string(getpid());
+  std::string cfg = eq_config(g_eq_sink);
+  // -m keeps pw-cli connected; without it the module unloads the moment it
+  // exits and the sink never appears.
+  const gchar* argv[] = {pwcli, "-m", "load-module",
+                         "libpipewire-module-filter-chain", cfg.c_str(), nullptr};
+  GError* err = nullptr;
+  if (!g_spawn_async(nullptr, (gchar**)argv, nullptr,
+                     (GSpawnFlags)(G_SPAWN_DO_NOT_REAP_CHILD | G_SPAWN_STDOUT_TO_DEV_NULL |
+                                   G_SPAWN_STDERR_TO_DEV_NULL),
+                     nullptr, nullptr, &g_eq_pid, &err)) {
+    if (err) g_error_free(err);
+    g_eq_sink.clear();
+    return false;
+  }
+  // The sink takes a moment to appear. Route our streams once it has, and
+  // re-push the control values: anything that arrived between the spawn and
+  // the sink existing (a balance change right after the chain is built) would
+  // otherwise have been set-param'd at a node that wasn't there yet.
+  g_timeout_add(600, [](gpointer) -> gboolean {
+    if (g_eq_sink.empty()) return G_SOURCE_REMOVE;
+    eq_route(g_eq_sink);
+    eq_push_params(-1);
+    eq_apply_balance();   // a balance set before/while the chain built
+    return G_SOURCE_REMOVE;
+  }, nullptr);
+  g_eq_route_timer = g_timeout_add(1500, eq_route_tick, nullptr);
+  return true;
+}
+
+// Retune in place — this is what a slider drag ends up calling, so it must not
+// rebuild anything. `only` < 0 pushes the whole chain in a single set-param;
+// a ten-band EQ is one spawn, not ten.
+static void eq_push_params(int only) {
+  if (g_eq_sink.empty()) return;
+  // One pw-cli set-param can only carry ~20 key/value pairs — past that its
+  // parser overflows an internal buffer and emits an EMPTY pod with exit 0
+  // (measured: 20 pairs -> pod 824, 28 pairs -> pod 8, silently a no-op). A
+  // full 15-filter chain is 86 pairs, so every full retune was being thrown
+  // away while small manual pushes worked. Chunk it.
+  std::vector<std::string> pairs;
+  auto push_one = [&](const std::string& n, const EqFilter& f, bool right) {
+    double g = (f.split && right) ? f.gainR : f.gain;
+    if (f.label == "linear") pairs.push_back("\"" + n + ":Mult\" " + eq_num(g));
+    else {
+      pairs.push_back("\"" + n + ":Freq\" " + eq_num(f.freq));
+      pairs.push_back("\"" + n + ":Q\" " + eq_num(f.q));
+      pairs.push_back("\"" + n + ":Gain\" " + eq_num(g));
+    }
+  };
+  for (size_t i = 0; i < g_eq.size(); i++) {
+    if (only >= 0 && (size_t)only != i) continue;
+    if (g_eq_mono) push_one("f" + std::to_string(i), g_eq[i], false);
+    else for (const char* ch : {"L", "R"})
+      push_one("f" + std::to_string(i) + ch, g_eq[i], ch[0] == 'R');
+  }
+  if (pairs.empty()) return;
+  const size_t CHUNK = 18;   // comfortably under the ~20-pair ceiling
+  std::string script =
+      "id=$(pw-cli ls Node 2>/dev/null | awk '/^[[:space:]]*id [0-9]+/{i=$2; "
+      "gsub(/[^0-9]/,\"\",i)} /node\\.name = \"" + g_eq_sink +
+      "\"/{print i; exit}'); [ -n \"$id\" ] || exit 0; ";
+  for (size_t at = 0; at < pairs.size(); at += CHUNK) {
+    std::string chunk;
+    for (size_t j = at; j < pairs.size() && j < at + CHUNK; j++) chunk += pairs[j] + " ";
+    script += "pw-cli set-param \"$id\" Props '{ params = [ " + chunk +
+              "] }' >/dev/null 2>&1; ";
+  }
+  const gchar* argv[] = {"sh", "-c", script.c_str(), nullptr};
+  g_spawn_async(nullptr, (gchar**)argv, nullptr,
+                (GSpawnFlags)(G_SPAWN_SEARCH_PATH | G_SPAWN_STDOUT_TO_DEV_NULL |
+                              G_SPAWN_STDERR_TO_DEV_NULL),
+                nullptr, nullptr, nullptr, nullptr);
+}
+
+// Dragging a slider fires input events far faster than a process can be
+// spawned, so coalesce: one push per frame-ish window, always carrying the
+// latest values.
+static guint g_eq_push_timer = 0;
+static void eq_push_soon() {
+  if (g_eq_push_timer) return;
+  g_eq_push_timer = g_timeout_add(30, [](gpointer) -> gboolean {
+    g_eq_push_timer = 0;
+    eq_push_params(-1);
+    return G_SOURCE_REMOVE;
+  }, nullptr);
+}
+
+// -------------------------------------------------- tiny.audio.sampler ------
+// A native sampled-SFX mixer: decoded banks of short sounds, fired with
+// per-voice vol/pan/rate, summed in a pw_stream process callback. It exists
+// because Web Audio is unusable on WebKitGTK (the graph renders on a
+// normal-priority thread and crackles — measured, TODO-linux.md), while
+// PipeWire's client data loop IS RT-scheduled (rtkit promotes it). macOS and
+// Windows run the same verbs in a page-side Web Audio host instead; the wire
+// ops here are the Linux backend (TODO-audio-sampler.md).
+//
+// The stream node dies with the process — no object.linger, so unlike the
+// tap sink a kill -9 strands nothing and there is no sweep to run.
+//
+// Threading: LOAD decodes on a detached thread (bank map under its own
+// mutex); PLAY/SET/STOP arrive on the GTK thread and the process callback
+// runs on PipeWire's RT data thread (PW_STREAM_FLAG_RT_PROCESS), so voice
+// state is shared under g_smp_mutex. Control-side critical sections are
+// plain field writes — bounded µs, never an allocation or syscall — and the
+// RT side holds the lock only while mixing one quantum.
+
+#ifdef TINYJS_PIPEWIRE
+
+static const int SMP_RATE = 48000;
+static const int SMP_MAX_VOICES = 32;  // live cap — above it play() steals
+static const int SMP_SLOTS = 48;       // + headroom so stolen voices can fade
+
+struct SmpSound {
+  std::vector<float> pcm;   // interleaved f32 @48k; 1ch (mono kept mono) or 2
+  int channels = 2;
+  size_t frames = 0;
+};
+
+// Per-voice mixing coefficients follow StereoPannerNode's equal-power law so
+// the same {vol, pan} numbers sound the same as the mac/win page backend:
+//   mono   x=(pan+1)/2:  L = m·cos(xπ/2)          R = m·sin(xπ/2)
+//   pan≤0  x=pan+1:      L = l + r·cos(xπ/2)      R = r·sin(xπ/2)
+//   pan>0  x=pan:        L = l·cos(xπ/2)          R = r + l·sin(xπ/2)
+// cXY = source channel X into output Y; targets move on set(), the cur*
+// values chase them per-sample in the callback (~5ms one-pole) so a live
+// set()/stop() never clicks.
+struct SmpVoice {
+  bool active = false;
+  bool fading = false;      // targets forced 0; slot frees at silence
+  std::shared_ptr<SmpSound> snd;
+  uint32_t vid = 0;
+  uint64_t serial = 0;      // steal order (oldest live voice goes first)
+  double pos = 0;           // fractional frame; += rate per output frame
+  double rate = 1;
+  bool loop = false;
+  float vol = 1, pan = 0;
+  float tLL = 0, tRL = 0, tLR = 0, tRR = 0;  // targets
+  float cLL = 0, cRL = 0, cLR = 0, cRR = 0;  // smoothed (start 0: fade-in declick)
+};
+
+static std::mutex g_smp_mutex;             // voices + master (GTK ↔ RT thread)
+static SmpVoice g_smp_voices[SMP_SLOTS];
+static uint64_t g_smp_serial = 1;
+static float g_smp_master_target = 1.0f, g_smp_master_cur = 1.0f;
+static std::mutex g_smp_bank_mutex;        // bank map (GTK ↔ decode threads)
+static std::map<std::string, std::shared_ptr<SmpSound>> g_smp_bank;
+
+static pw_thread_loop* g_smp_loop = nullptr;
+static pw_context* g_smp_ctx = nullptr;
+static pw_core* g_smp_core = nullptr;
+static pw_stream* g_smp_stream = nullptr;
+static spa_hook g_smp_listener;
+
+static void smp_voice_targets(SmpVoice& v) {
+  float pan = v.pan < -1 ? -1.0f : v.pan > 1 ? 1.0f : v.pan;
+  float vol = v.vol < 0 ? 0.0f : v.vol;
+  const float H = (float)M_PI / 2;
+  if (v.snd && v.snd->channels == 1) {
+    float x = (pan + 1) * 0.5f;
+    v.tLL = vol * cosf(x * H); v.tRR = vol * sinf(x * H);
+    v.tRL = v.tLR = 0;
+  } else if (pan <= 0) {
+    float x = pan + 1;
+    v.tLL = vol; v.tRL = vol * cosf(x * H);
+    v.tRR = vol * sinf(x * H); v.tLR = 0;
+  } else {
+    v.tLL = vol * cosf(pan * H); v.tRL = 0;
+    v.tRR = vol; v.tLR = vol * sinf(pan * H);
+  }
+}
+
+static void smp_on_process(void*) {
+  pw_buffer* b = pw_stream_dequeue_buffer(g_smp_stream);
+  if (!b) return;
+  spa_data& d = b->buffer->datas[0];
+  float* dst = (float*)d.data;
+  uint32_t max_frames = d.maxsize / (2 * sizeof(float));
+  uint32_t frames = max_frames;
+#if PW_CHECK_VERSION(0, 3, 49)
+  if (b->requested && b->requested < max_frames) frames = (uint32_t)b->requested;
+#else
+  // pw_buffer.requested arrived in 0.3.49; the release floor (Ubuntu 22.04)
+  // builds against 0.3.48. Cap the fill instead so gain moves (set(), the
+  // stop() fade, master) stay responsive rather than riding a maxsize
+  // buffer — short fills are legal for a playback stream.
+  if (frames > 1024) frames = 1024;
+#endif
+  if (!dst || !frames) { pw_stream_queue_buffer(g_smp_stream, b); return; }
+  memset(dst, 0, frames * 2 * sizeof(float));
+
+  // ~5ms one-pole for every gain move (start, set(), stop() fade, master).
+  const float A = 0.99584f;  // expf(-1 / (0.005 * 48000))
+  {
+    std::lock_guard<std::mutex> lock(g_smp_mutex);
+    for (SmpVoice& v : g_smp_voices) {
+      if (!v.active || !v.snd) continue;
+      const SmpSound& s = *v.snd;
+      if (!s.frames) { v.active = false; continue; }
+      const float* pcm = s.pcm.data();
+      for (uint32_t f = 0; f < frames; f++) {
+        if (v.pos >= (double)s.frames) {
+          if (!v.loop) { v.active = false; break; }
+          v.pos = fmod(v.pos, (double)s.frames);
+        }
+        size_t i0 = (size_t)v.pos;
+        float frac = (float)(v.pos - (double)i0);
+        size_t i1 = i0 + 1;
+        if (i1 >= s.frames) i1 = v.loop ? 0 : i0;
+        v.cLL = v.tLL + (v.cLL - v.tLL) * A;
+        v.cRL = v.tRL + (v.cRL - v.tRL) * A;
+        v.cLR = v.tLR + (v.cLR - v.tLR) * A;
+        v.cRR = v.tRR + (v.cRR - v.tRR) * A;
+        if (s.channels == 1) {
+          float m = pcm[i0] + (pcm[i1] - pcm[i0]) * frac;
+          dst[2 * f] += m * v.cLL;
+          dst[2 * f + 1] += m * v.cRR;
+        } else {
+          float l = pcm[2 * i0] + (pcm[2 * i1] - pcm[2 * i0]) * frac;
+          float r = pcm[2 * i0 + 1] + (pcm[2 * i1 + 1] - pcm[2 * i0 + 1]) * frac;
+          dst[2 * f] += l * v.cLL + r * v.cRL;
+          dst[2 * f + 1] += r * v.cRR + l * v.cLR;
+        }
+        v.pos += v.rate;
+      }
+      // A fade-out that has reached silence frees its slot. Only the flag
+      // flips here — the shared_ptr is control-thread property, so decoded
+      // PCM is never freed on the RT thread.
+      if (v.fading && v.cLL + v.cRL + v.cLR + v.cRR < 1e-4f) v.active = false;
+    }
+    for (uint32_t f = 0; f < frames; f++) {
+      g_smp_master_cur = g_smp_master_target + (g_smp_master_cur - g_smp_master_target) * A;
+      dst[2 * f] *= g_smp_master_cur;
+      dst[2 * f + 1] *= g_smp_master_cur;
+    }
+  }
+
+  d.chunk->offset = 0;
+  d.chunk->stride = 2 * sizeof(float);
+  d.chunk->size = frames * 2 * sizeof(float);
+  pw_stream_queue_buffer(g_smp_stream, b);
+}
+
+static const struct pw_stream_events g_smp_stream_events = [] {
+  pw_stream_events ev{};
+  ev.version = PW_VERSION_STREAM_EVENTS;
+  ev.process = smp_on_process;
+  return ev;
+}();
+
+static void smp_stop() {
+  if (g_smp_loop) pw_thread_loop_stop(g_smp_loop);
+  if (g_smp_stream) { pw_stream_destroy(g_smp_stream); g_smp_stream = nullptr; }
+  if (g_smp_core) { pw_core_disconnect(g_smp_core); g_smp_core = nullptr; }
+  if (g_smp_ctx) { pw_context_destroy(g_smp_ctx); g_smp_ctx = nullptr; }
+  if (g_smp_loop) { pw_thread_loop_destroy(g_smp_loop); g_smp_loop = nullptr; }
+  g_smp_node.clear();
+  std::lock_guard<std::mutex> lock(g_smp_bank_mutex);
+  g_smp_bank.clear();
+}
+
+// Bring the output stream up (first LOAD). One stream for the app's whole
+// bank; PW_STREAM_FLAG_RT_PROCESS runs smp_on_process on the RT data loop —
+// the entire reason this backend exists.
+static bool smp_stream_start() {
+  if (g_smp_stream) return true;
+  static bool pw_inited = false;
+  if (!pw_inited) { pw_init(nullptr, nullptr); pw_inited = true; }
+  g_smp_node = "tinyjs-sampler-" + std::to_string(getpid());
+  g_smp_loop = pw_thread_loop_new("tinyjs-sampler", nullptr);
+  if (!g_smp_loop) { g_smp_node.clear(); return false; }
+  g_smp_ctx = pw_context_new(pw_thread_loop_get_loop(g_smp_loop), nullptr, 0);
+  if (!g_smp_ctx || pw_thread_loop_start(g_smp_loop) < 0) { smp_stop(); return false; }
+  pw_thread_loop_lock(g_smp_loop);
+  g_smp_core = pw_context_connect(g_smp_ctx, nullptr, 0);
+  if (!g_smp_core) { pw_thread_loop_unlock(g_smp_loop); smp_stop(); return false; }
+  pw_properties* props = pw_properties_new(
+      PW_KEY_MEDIA_TYPE, "Audio", PW_KEY_MEDIA_CATEGORY, "Playback",
+      PW_KEY_MEDIA_ROLE, "Game", PW_KEY_NODE_NAME, g_smp_node.c_str(),
+      PW_KEY_APP_NAME, (g_app_id.empty() ? g_app_name : g_app_id).c_str(),
+      nullptr);
+  // A filter chain already up: route through it from the first buffer, so
+  // tiny.audio.filters keeps its "applies to everything the app plays"
+  // contract (eq_route's timer would catch it anyway, seconds later).
+  if (!g_eq_sink.empty())
+    pw_properties_set(props, PW_KEY_TARGET_OBJECT, g_eq_sink.c_str());
+  g_smp_stream = pw_stream_new(g_smp_core, "tinyjs sampler", props);
+  if (!g_smp_stream) { pw_thread_loop_unlock(g_smp_loop); smp_stop(); return false; }
+  pw_stream_add_listener(g_smp_stream, &g_smp_listener, &g_smp_stream_events, nullptr);
+  uint8_t pod[1024];
+  spa_pod_builder pb = SPA_POD_BUILDER_INIT(pod, sizeof pod);
+  spa_audio_info_raw info{};
+  info.format = SPA_AUDIO_FORMAT_F32;
+  info.rate = SMP_RATE;
+  info.channels = 2;
+  info.position[0] = SPA_AUDIO_CHANNEL_FL;
+  info.position[1] = SPA_AUDIO_CHANNEL_FR;
+  const spa_pod* params[1];
+  params[0] = spa_format_audio_raw_build(&pb, SPA_PARAM_EnumFormat, &info);
+  int rc = pw_stream_connect(g_smp_stream, PW_DIRECTION_OUTPUT, PW_ID_ANY,
+      (pw_stream_flags)(PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS |
+                        PW_STREAM_FLAG_RT_PROCESS),
+      params, 1);
+  pw_thread_loop_unlock(g_smp_loop);
+  if (rc < 0) { smp_stop(); return false; }
+  return true;
+}
+
+// SAMPLER <qid> LOAD\t<name>\t<path> — decode off-thread, answer when done.
+// The decoder sniffs content (extension irrelevant); mono stays mono (half
+// the memory, and the mono pan law — see smp_voice_targets), >2ch folds to
+// stereo. Decoded PCM is the only copy that exists; the compressed source
+// stays on disk (the bridge owns the path).
+static void smp_err(const std::string& qid, const std::string& why) {
+  send_got(qid, "{\"ok\":false,\"error\":" + json_escape(why) + "}");
+}
+
+static void do_sampler_load(const std::string& qid, const std::string& body) {
+  auto f = split_tabs(body);
+  std::string name = wire_unescape(tab_field(f, 1));
+  std::string path = wire_unescape(tab_field(f, 2));
+  if (name.empty() || path.empty()) { smp_err(qid, "sampler: LOAD needs a name and a path"); return; }
+  if (!smp_stream_start()) {
+    smp_err(qid, "sampler: PipeWire output unavailable");
+    return;
+  }
+  std::thread([qid, name, path]() {
+    auto snd = std::make_shared<SmpSound>();
+    ma_decoder_config cfg = ma_decoder_config_init(ma_format_f32, 0, SMP_RATE);
+    ma_decoder dec;
+    if (ma_decoder_init_file(path.c_str(), &cfg, &dec) != MA_SUCCESS) {
+      smp_err(qid, "sampler: can't decode " + path + " (wav/mp3/flac)");
+      return;
+    }
+    if (dec.outputChannels > 2) {          // fold surround down to stereo
+      ma_decoder_uninit(&dec);
+      cfg = ma_decoder_config_init(ma_format_f32, 2, SMP_RATE);
+      if (ma_decoder_init_file(path.c_str(), &cfg, &dec) != MA_SUCCESS) {
+        smp_err(qid, "sampler: can't decode " + path);
+        return;
+      }
+    }
+    snd->channels = (int)dec.outputChannels;
+    const ma_uint64 CHUNK = 4096;
+    std::vector<float> buf(CHUNK * snd->channels);
+    for (;;) {
+      ma_uint64 got = 0;
+      ma_result r = ma_decoder_read_pcm_frames(&dec, buf.data(), CHUNK, &got);
+      if (got > 0) snd->pcm.insert(snd->pcm.end(), buf.data(), buf.data() + got * snd->channels);
+      if (r != MA_SUCCESS || got < CHUNK) break;
+    }
+    ma_decoder_uninit(&dec);
+    snd->frames = snd->pcm.size() / snd->channels;
+    if (!snd->frames) { smp_err(qid, "sampler: " + path + " decoded to no audio"); return; }
+    {
+      std::lock_guard<std::mutex> lock(g_smp_bank_mutex);
+      g_smp_bank[name] = snd;              // replacing re-decodes; old PCM freed here
+    }
+    send_got(qid, "{\"ok\":true,\"frames\":" + std::to_string(snd->frames) +
+                  ",\"channels\":" + std::to_string(snd->channels) + "}");
+  }).detach();
+}
+
+// PLAY <vid>\t<name>\t<vol>\t<pan>\t<rate>\t<loop> — fire-and-forget: the
+// bridge assigns voice ids (it owns the manifest and can refuse unknown
+// names itself), so a play is one wire line with no round trip.
+static void smp_play(const std::string& rest) {
+  auto f = split_tabs(rest);
+  uint32_t vid = (uint32_t)strtoul(tab_field(f, 0).c_str(), nullptr, 10);
+  std::string name = wire_unescape(tab_field(f, 1));
+  std::shared_ptr<SmpSound> snd;
+  {
+    std::lock_guard<std::mutex> lock(g_smp_bank_mutex);
+    auto it = g_smp_bank.find(name);
+    if (it == g_smp_bank.end()) return;    // bridge-side check makes this rare
+    snd = it->second;
+  }
+  double vol = atof(tab_field(f, 2).c_str());
+  double pan = atof(tab_field(f, 3).c_str());
+  double rate = atof(tab_field(f, 4).c_str());
+  bool loop = tab_field(f, 5) == "1";
+  if (rate <= 0) rate = 1;
+  std::lock_guard<std::mutex> lock(g_smp_mutex);
+  // Voice cap with oldest-first stealing: play() never fails for "too many".
+  // The stolen voice fades (~5ms) in its slot; the new one takes a free slot.
+  int live = 0;
+  for (SmpVoice& v : g_smp_voices) if (v.active && !v.fading) live++;
+  if (live >= SMP_MAX_VOICES) {
+    SmpVoice* oldest = nullptr;
+    for (SmpVoice& v : g_smp_voices)
+      if (v.active && !v.fading && (!oldest || v.serial < oldest->serial)) oldest = &v;
+    if (oldest) {
+      oldest->fading = true;
+      oldest->tLL = oldest->tRL = oldest->tLR = oldest->tRR = 0;
+    }
+  }
+  SmpVoice* slot = nullptr;
+  for (SmpVoice& v : g_smp_voices) if (!v.active) { slot = &v; break; }
+  if (!slot) {                             // every slot fading too — hard steal
+    for (SmpVoice& v : g_smp_voices)
+      if (!slot || v.serial < slot->serial) slot = &v;
+  }
+  SmpVoice& v = *slot;
+  v.snd = snd;
+  v.vid = vid;
+  v.serial = g_smp_serial++;
+  v.pos = 0;
+  v.rate = rate;
+  v.loop = loop;
+  v.vol = (float)vol;
+  v.pan = (float)pan;
+  v.fading = false;
+  v.cLL = v.cRL = v.cLR = v.cRR = 0;       // ramp in from silence (declick)
+  smp_voice_targets(v);
+  v.active = true;
+}
+
+// SET <vid>\t<vol|_>\t<pan|_>\t<rate|_> — live, no restart; '_' leaves a
+// field alone. Gains glide (~5ms); rate steps outright (a step is a pitch
+// change, not a click).
+static void smp_set(const std::string& rest) {
+  auto f = split_tabs(rest);
+  uint32_t vid = (uint32_t)strtoul(tab_field(f, 0).c_str(), nullptr, 10);
+  std::lock_guard<std::mutex> lock(g_smp_mutex);
+  for (SmpVoice& v : g_smp_voices) {
+    if (!v.active || v.vid != vid || v.fading) continue;
+    if (tab_field(f, 1) != "_") v.vol = (float)atof(tab_field(f, 1).c_str());
+    if (tab_field(f, 2) != "_") v.pan = (float)atof(tab_field(f, 2).c_str());
+    if (tab_field(f, 3) != "_") {
+      double r = atof(tab_field(f, 3).c_str());
+      if (r > 0) v.rate = r;
+    }
+    smp_voice_targets(v);
+    return;
+  }
+}
+
+static void smp_stop_voice(uint32_t vid) {
+  std::lock_guard<std::mutex> lock(g_smp_mutex);
+  for (SmpVoice& v : g_smp_voices) {
+    if (!v.active || v.vid != vid) continue;
+    v.fading = true;
+    v.tLL = v.tRL = v.tLR = v.tRR = 0;     // short fade-out, no click
+    return;
+  }
+}
+
+static void smp_stop_all() {
+  std::lock_guard<std::mutex> lock(g_smp_mutex);
+  for (SmpVoice& v : g_smp_voices) {
+    if (!v.active) continue;
+    v.fading = true;
+    v.tLL = v.tRL = v.tLR = v.tRR = 0;
+  }
+}
+
+static void smp_master(double val) {
+  std::lock_guard<std::mutex> lock(g_smp_mutex);
+  g_smp_master_target = val < 0 ? 0.0f : val > 8 ? 8.0f : (float)val;
+}
+
+// UNLOAD cuts voices still playing the sound (documented; simpler and
+// predictable) — outright, because the fade path would read PCM the erase
+// below is about to free. The shared_ptr swap means the actual free happens
+// here on the control thread, never on the RT thread.
+static void smp_unload(const std::string& name) {
+  std::shared_ptr<SmpSound> snd;
+  {
+    std::lock_guard<std::mutex> lock(g_smp_bank_mutex);
+    auto it = g_smp_bank.find(name);
+    if (it == g_smp_bank.end()) return;
+    snd = it->second;
+    g_smp_bank.erase(it);
+  }
+  std::lock_guard<std::mutex> lock(g_smp_mutex);
+  for (SmpVoice& v : g_smp_voices) {
+    if (v.snd == snd) { v.active = false; v.fading = false; v.snd.reset(); }
+  }
+}
+
+#else  // !TINYJS_PIPEWIRE
+
+static void smp_stop() {}
+
+#endif
+
+// Dispatch for both wire shapes: "SAMPLER <qid> LOAD\t…" (qid-answered — the
+// caller must learn whether the decode worked) and the fire-and-forget verbs
+// "SAMPLER PLAY|SET|STOP|STOPALL|MASTER|UNLOAD …".
+static void do_sampler_line(const std::string& rest) {
+#ifdef TINYJS_PIPEWIRE
+  if (rest.rfind("PLAY ", 0) == 0) { smp_play(rest.substr(5)); return; }
+  if (rest.rfind("SET ", 0) == 0) { smp_set(rest.substr(4)); return; }
+  if (rest.rfind("STOPALL", 0) == 0) { smp_stop_all(); return; }
+  if (rest.rfind("STOP ", 0) == 0) {
+    smp_stop_voice((uint32_t)strtoul(rest.c_str() + 5, nullptr, 10));
+    return;
+  }
+  if (rest.rfind("MASTER ", 0) == 0) { smp_master(atof(rest.c_str() + 7)); return; }
+  if (rest.rfind("UNLOAD ", 0) == 0) { smp_unload(wire_unescape(rest.substr(7))); return; }
+  size_t sp = rest.find(' ');
+  if (sp == std::string::npos) return;
+  do_sampler_load(rest.substr(0, sp), rest.substr(sp + 1));
+#else
+  // Fire-and-forget verbs drop silently; LOAD must answer so the app's
+  // await doesn't hang.
+  const char* verbs[] = {"PLAY ", "SET ", "STOP", "MASTER ", "UNLOAD "};
+  for (const char* v : verbs) if (rest.rfind(v, 0) == 0) return;
+  size_t sp = rest.find(' ');
+  if (sp != std::string::npos)
+    got_unsupported(rest.substr(0, sp), "sampler: launcher built without PipeWire");
+#endif
+}
+
+static const char B64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+static std::string base64(const unsigned char* data, size_t len) {
+  std::string out;
+  out.reserve((len + 2) / 3 * 4);
+  for (size_t i = 0; i < len; i += 3) {
+    unsigned v = data[i] << 16;
+    if (i + 1 < len) v |= data[i + 1] << 8;
+    if (i + 2 < len) v |= data[i + 2];
+    out += B64[(v >> 18) & 63];
+    out += B64[(v >> 12) & 63];
+    out += i + 1 < len ? B64[(v >> 6) & 63] : '=';
+    out += i + 2 < len ? B64[v & 63] : '=';
+  }
+  return out;
+}
+
+static gboolean tap_tick(gpointer) {
+  // one chunk per interval; silence keeps the cadence when no data arrived
+  size_t want = (size_t)g_tap_rate * g_tap_interval / 1000 * g_tap_channels * 2;
+  std::string chunk;
+  {
+    std::lock_guard<std::mutex> lock(g_tap_mutex);
+    if (g_tap_buf.size() >= want) {
+      // keep only the freshest interval's worth (drop backlog)
+      if (g_tap_buf.size() > want * 4) {
+        g_tap_buf.erase(0, g_tap_buf.size() - want);
+      }
+      chunk = g_tap_buf.substr(0, want);
+      g_tap_buf.erase(0, want);
+    }
+  }
+  if (chunk.empty()) chunk.assign(want, '\0');
+  int frames = (int)(chunk.size() / (g_tap_channels * 2));
+  char head[128];
+  snprintf(head, sizeof head, "\t%d\t%d\t%d\t%lld", g_tap_rate, g_tap_channels,
+           frames, (long long)(g_get_monotonic_time() / 1000));
+  pipe_write_line("AUDIOTAP " +
+                  base64((const unsigned char*)chunk.data(), chunk.size()) + head);
+  return G_SOURCE_CONTINUE;
+}
+
+static void tap_stop() {
+  if (g_tap_timer) { g_source_remove(g_tap_timer); g_tap_timer = 0; }
+  if (g_tap_link_timer) { g_source_remove(g_tap_link_timer); g_tap_link_timer = 0; }
+  if (g_tap_watch) { g_source_remove(g_tap_watch); g_tap_watch = 0; }
+  if (g_tap_fd >= 0) { close(g_tap_fd); g_tap_fd = -1; }
+  if (g_tap_pid) {
+    kill(g_tap_pid, SIGTERM);
+    g_spawn_close_pid(g_tap_pid);
+    g_tap_pid = 0;
+  }
+  tap_destroy_sink();
+  std::lock_guard<std::mutex> lock(g_tap_mutex);
+  g_tap_buf.clear();
+}
+
+static gboolean tap_readable(gint fd, GIOCondition cond, gpointer) {
+  if (cond & (G_IO_HUP | G_IO_ERR)) { g_tap_watch = 0; return G_SOURCE_REMOVE; }
+  char buf[16384];
+  ssize_t n = read(fd, buf, sizeof buf);
+  if (n <= 0) { g_tap_watch = 0; return G_SOURCE_REMOVE; }
+  std::lock_guard<std::mutex> lock(g_tap_mutex);
+  g_tap_buf.append(buf, (size_t)n);
+  if (g_tap_buf.size() > (size_t)g_tap_rate * g_tap_channels * 2 * 4) {
+    g_tap_buf.erase(0, g_tap_buf.size() / 2);  // hard cap ~4s
+  }
+  return G_SOURCE_CONTINUE;
+}
+
+static void do_audiotap(const std::string& qid, const std::string& rest) {
+  auto f = split_tabs(rest);
+  std::string scope = tab_field(f, 0);
+  int interval = atoi(tab_field(f, 2).c_str());
+  if (interval < 20) interval = 20;
+  if (interval > 500) interval = 500;
+  tap_stop();
+
+  std::string rate_s = std::to_string(g_tap_rate);
+  std::vector<std::string> cmd;
+
+  // scope:'app' — capture only our own output. Needs the PipeWire tools
+  // (pw-cli to make the null sink, pw-link to fan our streams in, pw-cat to
+  // read the sink's monitor) and a known app id to name our streams by. If any
+  // of that is missing, fall through to the system-monitor capture below —
+  // honest degradation, the same the docs describe.
+  char* pwcli = g_find_program_in_path("pw-cli");
+  char* pwcat = g_find_program_in_path("pw-cat");
+  char* pwlink = g_find_program_in_path("pw-link");
+  bool app_ok = scope == "app" && pwcli && pwcat && pwlink && !g_app_id.empty();
+  if (app_ok) {
+    tap_sweep_stale();   // collect any orphaned by a previous run that was killed
+    g_tap_sink = "tinyjs-tap-" + std::to_string(getpid());
+    // Create a private null sink. object.linger keeps it alive after pw-cli
+    // exits; tap_stop destroys it by name.
+    std::string spec =
+        "{ factory.name=support.null-audio-sink node.name=" + g_tap_sink +
+        " media.class=Audio/Sink object.linger=true audio.position=[FL FR] }";
+    const gchar* mkargv[] = {pwcli, "create-node", "adapter", spec.c_str(), nullptr};
+    g_spawn_sync(nullptr, (gchar**)mkargv, nullptr,
+                 (GSpawnFlags)(G_SPAWN_STDOUT_TO_DEV_NULL | G_SPAWN_STDERR_TO_DEV_NULL),
+                 nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+    // Capture the tap sink's monitor (not the default sink).
+    cmd = {pwcat, "--record", "--format", "s16", "--rate", rate_s,
+           "--channels", "2", "-P", "{ stream.capture.sink=true }",
+           "--target", g_tap_sink, "-"};
+    tap_link_tick(nullptr);                                   // link what's already playing
+    g_tap_link_timer = g_timeout_add(250, tap_link_tick, nullptr);  // and whatever appears
+  }
+  g_free(pwcli); g_free(pwlink);
+
+  // System scope (or app-scope fallback): capture the default sink's monitor.
+  // parec (PulseAudio compat) if present, else pw-cat.
+  char* exe = nullptr;
+  if (cmd.empty() && (exe = g_find_program_in_path("parec"))) {
+    cmd = {exe, "-d", "@DEFAULT_MONITOR@", "--format=s16le",
+           "--rate=" + rate_s, "--channels=2", "--raw"};
+    g_free(exe);
+  } else if (cmd.empty() && pwcat) {
+    // No --raw: pipewire dropped the flag, and writing to "-" is raw PCM
+    // anyway. Passing it made pw-cat exit immediately with "unrecognized
+    // option", which the tick below then papered over with silence.
+    cmd = {pwcat, "--record", "--format", "s16", "--rate", rate_s,
+           "--channels", "2", "-P", "{ stream.capture.sink=true }", "-"};
+  } else if (cmd.empty()) {
+    g_free(pwcat);
+    send_got(qid, "{\"ok\":false,\"code\":\"unsupported\","
+                  "\"message\":\"no parec or pw-cat on PATH\"}");
+    return;
+  }
+  g_free(pwcat);
+
+  std::vector<const gchar*> argv;
+  for (auto& a : cmd) argv.push_back(a.c_str());
+  argv.push_back(nullptr);
+  gint out_fd = -1;
+  GError* err = nullptr;
+  if (!g_spawn_async_with_pipes(nullptr, (gchar**)argv.data(), nullptr,
+        (GSpawnFlags)(G_SPAWN_DO_NOT_REAP_CHILD | G_SPAWN_STDERR_TO_DEV_NULL),
+        nullptr, nullptr, &g_tap_pid, nullptr, &out_fd, nullptr, &err)) {
+    g_clear_error(&err);
+    send_got(qid, "{\"ok\":false,\"code\":\"failed\"}");
+    return;
+  }
+  g_tap_fd = out_fd;
+  g_tap_interval = interval;
+  // A tick with nothing buffered emits silence to keep the cadence steady,
+  // which is right for a brief underrun but would otherwise hide a capture
+  // tool that died on startup behind an endless silent stream. Stop the
+  // stream if the child exits so "no audio" can't masquerade as "silence".
+  g_child_watch_add(g_tap_pid, [](GPid pid, gint status, gpointer) {
+    if (g_tap_pid != pid) { g_spawn_close_pid(pid); return; }
+    fprintf(stderr, "[tinyjs] audio capture exited (status %d) — stopping tap\n", status);
+    g_tap_pid = 0;          // tap_stop() must not signal a reaped pid
+    tap_stop();
+    g_spawn_close_pid(pid);
+  }, nullptr);
+  g_tap_watch = g_unix_fd_add(out_fd, (GIOCondition)(G_IO_IN | G_IO_HUP | G_IO_ERR),
+                              tap_readable, nullptr);
+  g_tap_timer = g_timeout_add(interval, tap_tick, nullptr);
+  send_got(qid, "{\"ok\":true,\"sampleRate\":" + std::to_string(g_tap_rate) +
+                ",\"channels\":" + std::to_string(g_tap_channels) + "}");
+}
+
+// --- keystroke / hotkeys (X11) ------------------------------------------------
+
+struct KeyCombo { unsigned mods = 0; unsigned long keysym = 0; bool ok = false; };
+
+#ifdef TINYJS_X11
+static KeyCombo parse_combo(const std::string& combo) {
+  KeyCombo out;
+  std::string key;
+  size_t start = 0;
+  std::vector<std::string> parts;
+  for (;;) {
+    size_t i = combo.find('+', start);
+    if (i == std::string::npos) { parts.push_back(combo.substr(start)); break; }
+    parts.push_back(combo.substr(start, i - start));
+    start = i + 1;
+  }
+  for (auto& raw : parts) {
+    std::string p;
+    for (char c : raw) p += g_ascii_tolower(c);
+    if (p == "cmd" || p == "command" || p == "meta" || p == "ctrl" || p == "control") {
+      out.mods |= ControlMask;
+    } else if (p == "alt" || p == "opt" || p == "option") {
+      out.mods |= Mod1Mask;
+    } else if (p == "shift") {
+      out.mods |= ShiftMask;
+    } else if (p == "win" || p == "super") {
+      out.mods |= Mod4Mask;
+    } else {
+      key = p;
+    }
+  }
+  if (key.empty()) return out;
+  static const std::map<std::string, unsigned long> named = {
+    {"enter", XK_Return}, {"return", XK_Return}, {"tab", XK_Tab},
+    {"space", XK_space}, {"esc", XK_Escape}, {"escape", XK_Escape},
+    {"delete", XK_BackSpace}, {"backspace", XK_BackSpace},
+    {"forwarddelete", XK_Delete}, {"up", XK_Up}, {"down", XK_Down},
+    {"left", XK_Left}, {"right", XK_Right}, {"home", XK_Home}, {"end", XK_End},
+    {"pageup", XK_Page_Up}, {"pagedown", XK_Page_Down},
+  };
+  auto it = named.find(key);
+  if (it != named.end()) out.keysym = it->second;
+  // Function keys: the parts were lowercased above (letters need that), and
+  // XStringToKeysym is case-sensitive — "f12" is NoSymbol where "F12" is a
+  // key, so without this every F-key silently answered ok:false here while
+  // macOS and Windows both accept them.
+  else if (key.size() >= 2 && key[0] == 'f' &&
+           key.find_first_not_of("0123456789", 1) == std::string::npos) {
+    int n = atoi(key.c_str() + 1);
+    if (n >= 1 && n <= 35) out.keysym = XK_F1 + (n - 1);
+  }
+  else out.keysym = XStringToKeysym(key.c_str());
+  out.ok = out.keysym != 0 && out.keysym != NoSymbol;
+  return out;
+}
+
+static Display* xtest_display() {
+  static Display* dpy = XOpenDisplay(nullptr);
+  return dpy;
+}
+
+static bool do_keystroke(const std::string& combo) {
+  Display* dpy = xtest_display();
+  if (!dpy) return false;
+  int ev, err, maj, min;
+  if (!XTestQueryExtension(dpy, &ev, &err, &maj, &min)) return false;
+  KeyCombo c = parse_combo(combo);
+  if (!c.ok) return false;
+  KeyCode key = XKeysymToKeycode(dpy, c.keysym);
+  if (!key) return false;
+  auto mod_key = [&](unsigned mask) -> KeyCode {
+    if (mask == ControlMask) return XKeysymToKeycode(dpy, XK_Control_L);
+    if (mask == Mod1Mask) return XKeysymToKeycode(dpy, XK_Alt_L);
+    if (mask == ShiftMask) return XKeysymToKeycode(dpy, XK_Shift_L);
+    if (mask == Mod4Mask) return XKeysymToKeycode(dpy, XK_Super_L);
+    return 0;
+  };
+  unsigned masks[] = {ControlMask, Mod1Mask, ShiftMask, Mod4Mask};
+  for (unsigned m : masks) {
+    if (c.mods & m) XTestFakeKeyEvent(dpy, mod_key(m), True, 0);
+  }
+  XTestFakeKeyEvent(dpy, key, True, 0);
+  XTestFakeKeyEvent(dpy, key, False, 0);
+  for (unsigned m : masks) {
+    if (c.mods & m) XTestFakeKeyEvent(dpy, mod_key(m), False, 0);
+  }
+  XFlush(dpy);
+  return true;
+}
+
+// global hotkeys via XGrabKey on the root window (X11/XWayland sessions)
+struct Hotkey { KeyCode code; unsigned mods; };
+static std::map<std::string, Hotkey> g_hotkeys;
+
+static GdkFilterReturn hotkey_filter(GdkXEvent* xev, GdkEvent*, gpointer) {
+  XEvent* e = (XEvent*)xev;
+  if (e->type != KeyPress) return GDK_FILTER_CONTINUE;
+  unsigned mods = e->xkey.state & (ControlMask | Mod1Mask | ShiftMask | Mod4Mask);
+  for (auto& kv : g_hotkeys) {
+    if (kv.second.code == e->xkey.keycode && kv.second.mods == mods) {
+      pipe_write_line("HOTKEY " + kv.first);
+      return GDK_FILTER_REMOVE;
+    }
+  }
+  return GDK_FILTER_CONTINUE;
+}
+
+static bool g_hotkey_filter_installed = false;
+
+static void grab_key(Display* dpy, Window root, KeyCode code, unsigned mods, bool grab) {
+  unsigned ignorable[] = {0, LockMask, Mod2Mask, LockMask | Mod2Mask};
+  for (unsigned extra : ignorable) {
+    if (grab) {
+      XGrabKey(dpy, code, mods | extra, root, False, GrabModeAsync, GrabModeAsync);
+    } else {
+      XUngrabKey(dpy, code, mods | extra, root);
+    }
+  }
+}
+
+static bool on_x11() {
+  GdkDisplay* gd = gdk_display_get_default();
+#ifdef GDK_WINDOWING_X11
+  return GDK_IS_X11_DISPLAY(gd);
+#else
+  (void)gd;
+  return false;
+#endif
+}
+
+static void x11_hotkey_register(const std::string& id, const std::string& combo) {
+  GdkDisplay* gd = gdk_display_get_default();
+#ifdef GDK_WINDOWING_X11
+  if (!GDK_IS_X11_DISPLAY(gd)) return;
+  Display* dpy = GDK_DISPLAY_XDISPLAY(gd);
+  KeyCombo c = parse_combo(combo);
+  if (!c.ok) return;
+  KeyCode code = XKeysymToKeycode(dpy, c.keysym);
+  if (!code) return;
+  Window root = DefaultRootWindow(dpy);
+  auto it = g_hotkeys.find(id);
+  if (it != g_hotkeys.end()) {
+    grab_key(dpy, root, it->second.code, it->second.mods, false);
+    g_hotkeys.erase(it);
+  }
+  grab_key(dpy, root, code, c.mods, true);
+  XFlush(dpy);
+  g_hotkeys[id] = {code, c.mods};
+  if (!g_hotkey_filter_installed) {
+    g_hotkey_filter_installed = true;
+    GdkScreen* screen = gdk_screen_get_default();
+    GdkWindow* rootwin = gdk_screen_get_root_window(screen);
+    XSelectInput(dpy, root, KeyPressMask);
+    gdk_window_add_filter(rootwin, hotkey_filter, nullptr);
+  }
+#endif
+}
+
+static void x11_hotkey_unregister(const std::string& id) {
+  GdkDisplay* gd = gdk_display_get_default();
+#ifdef GDK_WINDOWING_X11
+  if (!GDK_IS_X11_DISPLAY(gd)) return;
+  auto it = g_hotkeys.find(id);
+  if (it == g_hotkeys.end()) return;
+  Display* dpy = GDK_DISPLAY_XDISPLAY(gd);
+  grab_key(dpy, DefaultRootWindow(dpy), it->second.code, it->second.mods, false);
+  XFlush(dpy);
+  g_hotkeys.erase(it);
+#endif
+}
+#else
+static bool do_keystroke(const std::string&) { return false; }
+static bool on_x11() { return false; }
+static void x11_hotkey_register(const std::string&, const std::string&) {}
+static void x11_hotkey_unregister(const std::string&) {}
+#endif
+
+// --- Wayland global hotkeys: org.freedesktop.portal.GlobalShortcuts ----------
+// The portal is dialog-driven (the user approves/rebinds shortcuts once, by
+// Wayland's design), and binds the whole set at once — so we accumulate the
+// app's shortcuts and (re)bind after the session is ready. Presses arrive as
+// Activated signals → HOTKEY <id>.
+
+static std::map<std::string, std::string> g_portal_shortcuts;  // id -> combo
+static std::string g_gs_session;      // portal session handle (empty until ready)
+static bool g_gs_creating = false;
+static bool g_gs_activated_wired = false;
+
+// "cmd+shift+k" -> the portal trigger syntax "CTRL+SHIFT+k"
+static std::string portal_trigger(const std::string& combo) {
+  std::string out, key;
+  size_t start = 0;
+  std::vector<std::string> parts;
+  for (;;) {
+    size_t i = combo.find('+', start);
+    if (i == std::string::npos) { parts.push_back(combo.substr(start)); break; }
+    parts.push_back(combo.substr(start, i - start));
+    start = i + 1;
+  }
+  for (auto& raw : parts) {
+    std::string p;
+    for (char c : raw) p += g_ascii_tolower(c);
+    const char* mod = nullptr;
+    if (p == "cmd" || p == "command" || p == "meta" || p == "ctrl" || p == "control") mod = "CTRL";
+    else if (p == "alt" || p == "opt" || p == "option") mod = "ALT";
+    else if (p == "shift") mod = "SHIFT";
+    else if (p == "win" || p == "super") mod = "LOGO";
+    if (mod) { out += out.empty() ? "" : "+"; out += mod; }
+    else key = raw;  // keep the key's original case
+  }
+  if (!key.empty()) { out += out.empty() ? "" : "+"; out += key; }
+  return out;
+}
+
+static void gs_bind_shortcuts();
+
+static void gs_on_activated(GDBusConnection*, const gchar*, const gchar*, const gchar*,
+                            const gchar*, GVariant* params, gpointer) {
+  const gchar* session = nullptr;
+  const gchar* shortcut_id = nullptr;
+  g_variant_get(params, "(&o&s@a{sv})", &session, &shortcut_id, nullptr);
+  if (shortcut_id) pipe_write_line(std::string("HOTKEY ") + shortcut_id);
+}
+
+static void gs_wire_activated(GDBusConnection* bus) {
+  if (g_gs_activated_wired) return;
+  g_gs_activated_wired = true;
+  g_dbus_connection_signal_subscribe(bus, "org.freedesktop.portal.Desktop",
+      "org.freedesktop.portal.GlobalShortcuts", "Activated",
+      "/org/freedesktop/portal/desktop", nullptr, G_DBUS_SIGNAL_FLAGS_NONE,
+      gs_on_activated, nullptr, nullptr);
+}
+
+// subscribe to a portal Request's Response, invoking cb(results) once (then
+// unsubscribing itself). cb runs only on a success (code 0) response.
+struct PortalWait {
+  GDBusConnection* bus;
+  guint sub;
+  std::function<void(GVariant*)> cb;
+};
+
+static void portal_await_response(GDBusConnection* bus, const std::string& request_path,
+                                  std::function<void(GVariant*)> cb) {
+  auto* w = new PortalWait{bus, 0, std::move(cb)};
+  w->sub = g_dbus_connection_signal_subscribe(bus, "org.freedesktop.portal.Desktop",
+      "org.freedesktop.portal.Request", "Response", request_path.c_str(), nullptr,
+      G_DBUS_SIGNAL_FLAGS_NONE,
+      [](GDBusConnection*, const gchar*, const gchar*, const gchar*, const gchar*,
+         GVariant* params, gpointer data) {
+        auto* w = (PortalWait*)data;
+        guint32 code = 0;
+        GVariant* results = nullptr;
+        g_variant_get(params, "(u@a{sv})", &code, &results);
+        if (code == 0) w->cb(results);
+        if (results) g_variant_unref(results);
+        g_dbus_connection_signal_unsubscribe(w->bus, w->sub);  // one-shot
+      }, w, [](gpointer data) { delete (PortalWait*)data; });
+}
+
+static std::string portal_sender_token(GDBusConnection* bus, const char* prefix,
+                                       std::string& out_token) {
+  const char* unique = g_dbus_connection_get_unique_name(bus);
+  std::string sender = unique ? unique + 1 : "";
+  for (auto& c : sender) if (c == '.') c = '_';
+  out_token = std::string(prefix) + std::to_string(g_get_monotonic_time() % 1000000);
+  return "/org/freedesktop/portal/desktop/request/" + sender + "/" + out_token;
+}
+
+static void gs_bind_shortcuts() {
+  GDBusConnection* bus = session_bus();
+  if (!bus || g_gs_session.empty()) return;
+  GVariantBuilder shortcuts;
+  g_variant_builder_init(&shortcuts, G_VARIANT_TYPE("a(sa{sv})"));
+  for (auto& kv : g_portal_shortcuts) {
+    GVariantBuilder meta;
+    g_variant_builder_init(&meta, G_VARIANT_TYPE("a{sv}"));
+    g_variant_builder_add(&meta, "{sv}", "description",
+        g_variant_new_string((g_app_name + ": " + kv.first).c_str()));
+    std::string trig = portal_trigger(kv.second);
+    if (!trig.empty()) {
+      g_variant_builder_add(&meta, "{sv}", "preferred_trigger",
+          g_variant_new_string(trig.c_str()));
+    }
+    g_variant_builder_add(&shortcuts, "(sa{sv})", kv.first.c_str(), &meta);
+  }
+  std::string token;
+  std::string req = portal_sender_token(bus, "tjbind", token);
+  GVariantBuilder opts;
+  g_variant_builder_init(&opts, G_VARIANT_TYPE("a{sv}"));
+  g_variant_builder_add(&opts, "{sv}", "handle_token", g_variant_new_string(token.c_str()));
+  g_dbus_connection_call(bus, "org.freedesktop.portal.Desktop",
+      "/org/freedesktop/portal/desktop", "org.freedesktop.portal.GlobalShortcuts",
+      "BindShortcuts",
+      g_variant_new("(oa(sa{sv})sa{sv})", g_gs_session.c_str(), &shortcuts, "", &opts),
+      G_VARIANT_TYPE("(o)"), G_DBUS_CALL_FLAGS_NONE, 30000, nullptr, nullptr, nullptr);
+}
+
+static void gs_create_session() {
+  if (g_gs_creating || !g_gs_session.empty()) return;
+  GDBusConnection* bus = session_bus();
+  if (!bus) return;
+  g_gs_creating = true;
+  gs_wire_activated(bus);
+  std::string session_token = "tjgs" + std::to_string(g_get_monotonic_time() % 1000000);
+  std::string handle_token;
+  std::string req = portal_sender_token(bus, "tjgscreate", handle_token);
+  portal_await_response(bus, req, [](GVariant* results) {
+    const gchar* handle = nullptr;
+    if (results && g_variant_lookup(results, "session_handle", "&s", &handle) && handle) {
+      g_gs_session = handle;
+    }
+    g_gs_creating = false;
+    if (!g_gs_session.empty()) gs_bind_shortcuts();
+  });
+  GVariantBuilder opts;
+  g_variant_builder_init(&opts, G_VARIANT_TYPE("a{sv}"));
+  g_variant_builder_add(&opts, "{sv}", "handle_token", g_variant_new_string(handle_token.c_str()));
+  g_variant_builder_add(&opts, "{sv}", "session_handle_token",
+      g_variant_new_string(session_token.c_str()));
+  g_dbus_connection_call(bus, "org.freedesktop.portal.Desktop",
+      "/org/freedesktop/portal/desktop", "org.freedesktop.portal.GlobalShortcuts",
+      "CreateSession", g_variant_new("(a{sv})", &opts),
+      G_VARIANT_TYPE("(o)"), G_DBUS_CALL_FLAGS_NONE, 30000, nullptr, nullptr, nullptr);
+}
+
+static void hotkey_register(const std::string& id, const std::string& combo) {
+  if (on_x11()) { x11_hotkey_register(id, combo); return; }
+  g_portal_shortcuts[id] = combo;
+  if (g_gs_session.empty()) gs_create_session();  // binds once ready
+  else gs_bind_shortcuts();
+}
+
+static void hotkey_unregister(const std::string& id) {
+  if (on_x11()) { x11_hotkey_unregister(id); return; }
+  g_portal_shortcuts.erase(id);
+  if (!g_gs_session.empty()) gs_bind_shortcuts();
+}
+
+// --- opt-in outside-the-window mouse tracking: ScreenCast portal -------------
+// The one sanctioned route to global cursor coords on Wayland: a ScreenCast
+// session with cursor_mode METADATA — the compositor asks the user once (a
+// restore token round-trips through the backend's store so re-runs skip the
+// dialog), shows its sharing indicator while armed, and cursor positions ride
+// the PipeWire stream as spa_meta_cursor; the pixels are never mapped. Armed
+// ONLY by an explicit MOUSETRACK from mouseTracking.start(). On X11 the plain
+// path is already global, so start() is a cheap ok; built without libpipewire
+// it answers 'unsupported'.
+
+#ifdef TINYJS_PIPEWIRE
+
+static std::vector<std::string> g_mt_qids;  // starts awaiting the portal dance
+static std::string g_mt_session;            // portal session object path
+static std::string g_mt_token;              // restore token from the last grant
+static bool g_mt_starting = false;
+static pw_thread_loop* g_mt_pw_loop = nullptr;
+static pw_context* g_mt_pw_ctx = nullptr;
+static pw_core* g_mt_pw_core = nullptr;
+static pw_stream* g_mt_pw_stream = nullptr;
+static spa_hook g_mt_pw_listener;
+static std::atomic<int> g_mt_off_x{0}, g_mt_off_y{0};  // stream origin (logical)
+static std::atomic<int> g_mt_log_w{0}, g_mt_log_h{0};  // stream size (logical)
+static std::atomic<int> g_mt_buf_w{0}, g_mt_buf_h{0};  // negotiated buffer size
+
+static void mt_reply_all(const std::string& json) {
+  g_mt_starting = false;
+  for (auto& q : g_mt_qids) send_got(q, json);
+  g_mt_qids.clear();
+}
+static void mt_fail_all(const char* code, const std::string& msg) {
+  mt_reply_all("{\"ok\":false,\"code\":\"" + std::string(code) +
+               "\",\"message\":" + json_escape(msg) + "}");
+}
+static void mt_ok_all() {
+  mt_reply_all("{\"ok\":true,\"restoreToken\":" +
+               (g_mt_token.empty() ? "null" : json_escape(g_mt_token)) + "}");
+}
+
+// like portal_await_response, but the callback also sees denials (code != 0)
+struct MtWait {
+  GDBusConnection* bus;
+  guint sub;
+  std::function<void(guint32, GVariant*)> cb;
+};
+static void mt_await(GDBusConnection* bus, const std::string& request_path,
+                     std::function<void(guint32, GVariant*)> cb) {
+  auto* w = new MtWait{bus, 0, std::move(cb)};
+  w->sub = g_dbus_connection_signal_subscribe(bus, "org.freedesktop.portal.Desktop",
+      "org.freedesktop.portal.Request", "Response", request_path.c_str(), nullptr,
+      G_DBUS_SIGNAL_FLAGS_NONE,
+      [](GDBusConnection*, const gchar*, const gchar*, const gchar*, const gchar*,
+         GVariant* params, gpointer data) {
+        auto* w = (MtWait*)data;
+        guint32 code = 0;
+        GVariant* results = nullptr;
+        g_variant_get(params, "(u@a{sv})", &code, &results);
+        w->cb(code, results);
+        if (results) g_variant_unref(results);
+        g_dbus_connection_signal_unsubscribe(w->bus, w->sub);  // one-shot
+      }, w, [](gpointer data) { delete (MtWait*)data; });
+}
+
+static void mt_on_param_changed(void*, uint32_t id, const struct spa_pod* param) {
+  if (!param || id != SPA_PARAM_Format) return;
+  uint32_t mtype = 0, msub = 0;
+  if (spa_format_parse(param, &mtype, &msub) < 0 || mtype != SPA_MEDIA_TYPE_video)
+    return;
+  struct spa_video_info_raw raw;
+  memset(&raw, 0, sizeof raw);
+  if (spa_format_video_raw_parse(param, &raw) >= 0) {
+    g_mt_buf_w = (int)raw.size.width;
+    g_mt_buf_h = (int)raw.size.height;
+  }
+  // announce that we take cursor metadata on the buffers (bitmap included in
+  // the size range because compositors attach one whether or not we care)
+  uint8_t buf[1024];
+  struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buf, sizeof buf);
+  int base = (int)(sizeof(struct spa_meta_cursor) + sizeof(struct spa_meta_bitmap));
+  const struct spa_pod* params[1];
+  params[0] = (const struct spa_pod*)spa_pod_builder_add_object(&b,
+      SPA_TYPE_OBJECT_ParamMeta, SPA_PARAM_Meta,
+      SPA_PARAM_META_type, SPA_POD_Id(SPA_META_Cursor),
+      SPA_PARAM_META_size,
+      SPA_POD_CHOICE_RANGE_Int(base + 64 * 64 * 4, base, base + 512 * 512 * 4));
+  pw_stream_update_params(g_mt_pw_stream, params, 1);
+}
+
+static void mt_on_process(void*) {
+  // drain the queue — only the newest cursor fix matters
+  struct pw_buffer* b = nullptr;
+  struct pw_buffer* last = nullptr;
+  while ((b = pw_stream_dequeue_buffer(g_mt_pw_stream))) {
+    if (last) pw_stream_queue_buffer(g_mt_pw_stream, last);
+    last = b;
+  }
+  if (!last) return;
+  struct spa_meta_cursor* mc = (struct spa_meta_cursor*)spa_buffer_find_meta_data(
+      last->buffer, SPA_META_Cursor, sizeof(struct spa_meta_cursor));
+  if (mc && spa_meta_cursor_is_valid(mc)) {
+    // metadata is in buffer pixels; the stream may be physical-resolution
+    // while the desktop talks logical — rescale by the portal-reported size
+    double x = mc->position.x, y = mc->position.y;
+    int bw = g_mt_buf_w.load(), bh = g_mt_buf_h.load();
+    int lw = g_mt_log_w.load(), lh = g_mt_log_h.load();
+    if (bw > 0 && lw > 0 && bw != lw) x = x * lw / bw;
+    if (bh > 0 && lh > 0 && bh != lh) y = y * lh / bh;
+    g_mt_px = g_mt_off_x.load() + (int)(x + 0.5);
+    g_mt_py = g_mt_off_y.load() + (int)(y + 0.5);
+    g_mt_have = true;
+  }
+  pw_stream_queue_buffer(g_mt_pw_stream, last);
+}
+
+static const struct pw_stream_events g_mt_stream_events = [] {
+  pw_stream_events ev{};
+  ev.version = PW_VERSION_STREAM_EVENTS;
+  ev.param_changed = mt_on_param_changed;
+  ev.process = mt_on_process;
+  return ev;
+}();
+
+static void mt_pw_teardown() {
+  if (g_mt_pw_loop) pw_thread_loop_stop(g_mt_pw_loop);
+  if (g_mt_pw_stream) { pw_stream_destroy(g_mt_pw_stream); g_mt_pw_stream = nullptr; }
+  if (g_mt_pw_core) { pw_core_disconnect(g_mt_pw_core); g_mt_pw_core = nullptr; }
+  if (g_mt_pw_ctx) { pw_context_destroy(g_mt_pw_ctx); g_mt_pw_ctx = nullptr; }
+  if (g_mt_pw_loop) { pw_thread_loop_destroy(g_mt_pw_loop); g_mt_pw_loop = nullptr; }
+}
+
+static bool mt_pw_connect(int fd, guint32 node) {
+  static bool pw_inited = false;
+  if (!pw_inited) { pw_init(nullptr, nullptr); pw_inited = true; }
+  g_mt_pw_loop = pw_thread_loop_new("tinyjs-mousetrack", nullptr);
+  if (!g_mt_pw_loop) return false;
+  g_mt_pw_ctx = pw_context_new(pw_thread_loop_get_loop(g_mt_pw_loop), nullptr, 0);
+  if (!g_mt_pw_ctx || pw_thread_loop_start(g_mt_pw_loop) < 0) { mt_pw_teardown(); return false; }
+  pw_thread_loop_lock(g_mt_pw_loop);
+  g_mt_pw_core = pw_context_connect_fd(g_mt_pw_ctx, fd, nullptr, 0);
+  if (!g_mt_pw_core) { pw_thread_loop_unlock(g_mt_pw_loop); mt_pw_teardown(); return false; }
+  g_mt_pw_stream = pw_stream_new(g_mt_pw_core, "tinyjs mouse tracking",
+      pw_properties_new(PW_KEY_MEDIA_TYPE, "Video", PW_KEY_MEDIA_CATEGORY, "Capture",
+                        PW_KEY_MEDIA_ROLE, "Screen", nullptr));
+  if (!g_mt_pw_stream) { pw_thread_loop_unlock(g_mt_pw_loop); mt_pw_teardown(); return false; }
+  pw_stream_add_listener(g_mt_pw_stream, &g_mt_pw_listener, &g_mt_stream_events, nullptr);
+  uint8_t buf[1024];
+  struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buf, sizeof buf);
+  struct spa_rectangle rdef{1920, 1080}, rmin{1, 1}, rmax{16384, 16384};
+  struct spa_fraction fdef{30, 1}, fmin{0, 1}, fmax{1000, 1};
+  const struct spa_pod* params[1];
+  params[0] = (const struct spa_pod*)spa_pod_builder_add_object(&b,
+      SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat,
+      SPA_FORMAT_mediaType, SPA_POD_Id(SPA_MEDIA_TYPE_video),
+      SPA_FORMAT_mediaSubtype, SPA_POD_Id(SPA_MEDIA_SUBTYPE_raw),
+      SPA_FORMAT_VIDEO_format, SPA_POD_CHOICE_ENUM_Id(5,
+          SPA_VIDEO_FORMAT_BGRx, SPA_VIDEO_FORMAT_BGRx, SPA_VIDEO_FORMAT_RGBx,
+          SPA_VIDEO_FORMAT_BGRA, SPA_VIDEO_FORMAT_RGBA),
+      SPA_FORMAT_VIDEO_size, SPA_POD_CHOICE_RANGE_Rectangle(&rdef, &rmin, &rmax),
+      SPA_FORMAT_VIDEO_framerate, SPA_POD_CHOICE_RANGE_Fraction(&fdef, &fmin, &fmax));
+  int rc = pw_stream_connect(g_mt_pw_stream, PW_DIRECTION_INPUT, node,
+                             PW_STREAM_FLAG_AUTOCONNECT, params, 1);
+  pw_thread_loop_unlock(g_mt_pw_loop);
+  if (rc < 0) { mt_pw_teardown(); return false; }
+  return true;
+}
+
+static void mt_open_remote(guint32 node) {
+  GDBusConnection* bus = session_bus();
+  GVariantBuilder opts;
+  g_variant_builder_init(&opts, G_VARIANT_TYPE("a{sv}"));
+  GError* err = nullptr;
+  GUnixFDList* fds = nullptr;
+  GVariant* r = g_dbus_connection_call_with_unix_fd_list_sync(bus,
+      "org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
+      "org.freedesktop.portal.ScreenCast", "OpenPipeWireRemote",
+      g_variant_new("(oa{sv})", g_mt_session.c_str(), &opts),
+      G_VARIANT_TYPE("(h)"), G_DBUS_CALL_FLAGS_NONE, 10000, nullptr, &fds,
+      nullptr, &err);
+  if (!r || !fds) {
+    mt_fail_all("failed", err ? err->message : "OpenPipeWireRemote failed");
+    g_clear_error(&err);
+    return;
+  }
+  gint32 hidx = -1;
+  g_variant_get(r, "(h)", &hidx);
+  g_variant_unref(r);
+  int fd = g_unix_fd_list_get(fds, hidx, nullptr);
+  g_object_unref(fds);
+  if (fd < 0) { mt_fail_all("failed", "no PipeWire fd in portal reply"); return; }
+  if (!mt_pw_connect(fd, node)) {  // connect_fd owns fd on success
+    mt_fail_all("failed", "PipeWire connect failed");
+    return;
+  }
+  g_mt_active = true;
+  mt_ok_all();
+}
+
+static void mt_portal_start(const std::string& restore) {
+  GDBusConnection* bus = session_bus();
+  if (!bus) { mt_fail_all("failed", "no session bus"); return; }
+  std::string session_token = "tjmt" + std::to_string(g_get_monotonic_time() % 1000000);
+  std::string handle_token;
+  std::string req = portal_sender_token(bus, "tjmtc", handle_token);
+  std::string restore_copy = restore;
+  mt_await(bus, req, [bus, restore_copy](guint32 code, GVariant* results) {
+    if (code != 0) { mt_fail_all("denied", "screen-cast session refused"); return; }
+    const gchar* handle = nullptr;
+    if (!results || !g_variant_lookup(results, "session_handle", "&s", &handle) || !handle) {
+      mt_fail_all("failed", "portal returned no session");
+      return;
+    }
+    g_mt_session = handle;
+    std::string tok2;
+    std::string req2 = portal_sender_token(bus, "tjmts", tok2);
+    mt_await(bus, req2, [bus](guint32 code2, GVariant*) {
+      if (code2 != 0) { mt_fail_all("denied", "source selection refused"); return; }
+      std::string tok3;
+      std::string req3 = portal_sender_token(bus, "tjmtg", tok3);
+      mt_await(bus, req3, [](guint32 code3, GVariant* res3) {
+        if (code3 != 0) { mt_fail_all("denied", "screen share not granted"); return; }
+        GVariant* streams = res3
+            ? g_variant_lookup_value(res3, "streams", G_VARIANT_TYPE("a(ua{sv})")) : nullptr;
+        guint32 node = 0;
+        bool got = false;
+        if (streams) {
+          GVariantIter it;
+          g_variant_iter_init(&it, streams);
+          GVariant* props = nullptr;
+          if (g_variant_iter_next(&it, "(u@a{sv})", &node, &props)) {
+            got = true;
+            // the source's place in the desktop's logical layout — maps
+            // stream coords to the same global space screens() speaks
+            gint32 sx = 0, sy = 0, sw = 0, sh = 0;
+            if (props && g_variant_lookup(props, "position", "(ii)", &sx, &sy)) {
+              g_mt_off_x = sx;
+              g_mt_off_y = sy;
+            }
+            if (props && g_variant_lookup(props, "size", "(ii)", &sw, &sh)) {
+              g_mt_log_w = sw;
+              g_mt_log_h = sh;
+            }
+            if (props) g_variant_unref(props);
+          }
+          g_variant_unref(streams);
+        }
+        const gchar* rtok = nullptr;
+        if (res3 && g_variant_lookup(res3, "restore_token", "&s", &rtok) && rtok)
+          g_mt_token = rtok;
+        if (!got) { mt_fail_all("failed", "no stream in portal response"); return; }
+        mt_open_remote(node);
+      });
+      GVariantBuilder o3;
+      g_variant_builder_init(&o3, G_VARIANT_TYPE("a{sv}"));
+      g_variant_builder_add(&o3, "{sv}", "handle_token", g_variant_new_string(tok3.c_str()));
+      g_dbus_connection_call(bus, "org.freedesktop.portal.Desktop",
+          "/org/freedesktop/portal/desktop", "org.freedesktop.portal.ScreenCast", "Start",
+          g_variant_new("(osa{sv})", g_mt_session.c_str(), "", &o3),
+          G_VARIANT_TYPE("(o)"), G_DBUS_CALL_FLAGS_NONE, 120000, nullptr, nullptr, nullptr);
+    });
+    GVariantBuilder o2;
+    g_variant_builder_init(&o2, G_VARIANT_TYPE("a{sv}"));
+    g_variant_builder_add(&o2, "{sv}", "handle_token", g_variant_new_string(tok2.c_str()));
+    g_variant_builder_add(&o2, "{sv}", "types", g_variant_new_uint32(1));        // MONITOR
+    g_variant_builder_add(&o2, "{sv}", "multiple", g_variant_new_boolean(FALSE));
+    g_variant_builder_add(&o2, "{sv}", "cursor_mode", g_variant_new_uint32(4));  // METADATA
+    g_variant_builder_add(&o2, "{sv}", "persist_mode", g_variant_new_uint32(2)); // until revoked
+    if (!restore_copy.empty())
+      g_variant_builder_add(&o2, "{sv}", "restore_token",
+                            g_variant_new_string(restore_copy.c_str()));
+    g_dbus_connection_call(bus, "org.freedesktop.portal.Desktop",
+        "/org/freedesktop/portal/desktop", "org.freedesktop.portal.ScreenCast",
+        "SelectSources", g_variant_new("(oa{sv})", g_mt_session.c_str(), &o2),
+        G_VARIANT_TYPE("(o)"), G_DBUS_CALL_FLAGS_NONE, 30000, nullptr, nullptr, nullptr);
+  });
+  GVariantBuilder opts;
+  g_variant_builder_init(&opts, G_VARIANT_TYPE("a{sv}"));
+  g_variant_builder_add(&opts, "{sv}", "handle_token",
+                        g_variant_new_string(handle_token.c_str()));
+  g_variant_builder_add(&opts, "{sv}", "session_handle_token",
+                        g_variant_new_string(session_token.c_str()));
+  g_dbus_connection_call(bus, "org.freedesktop.portal.Desktop",
+      "/org/freedesktop/portal/desktop", "org.freedesktop.portal.ScreenCast",
+      "CreateSession", g_variant_new("(a{sv})", &opts),
+      G_VARIANT_TYPE("(o)"), G_DBUS_CALL_FLAGS_NONE, 30000, nullptr, nullptr, nullptr);
+}
+
+#endif  // TINYJS_PIPEWIRE
+
+static void mt_start(const std::string& qid, const std::string& restore) {
+  // A REAL X11 session tracks globally already — nothing to arm. XWayland
+  // (GDK on x11 with a Wayland compositor underneath, the windowPlacement
+  // case) does NOT count: its pointer query freezes whenever the cursor is
+  // over a native Wayland surface, so it takes the portal like everyone else.
+  if (on_x11() && !g_getenv("WAYLAND_DISPLAY")) {
+    send_got(qid, "{\"ok\":true,\"restoreToken\":null}");
+    return;
+  }
+#ifndef TINYJS_PIPEWIRE
+  (void)restore;
+  // Compiled out, not missing at runtime — no package the USER installs can
+  // add code to this binary, so unlike the EQ's spawned pw-cli tools there is
+  // nothing for system.requirements to prompt for. Name both fixes: a source
+  // build wants the dev package + rebuild; a download this old wants updating
+  // (CI ships PipeWire compiled in now).
+  send_got(qid, "{\"ok\":false,\"code\":\"unsupported\",\"message\":"
+                "\"this launcher was built without PipeWire — for a source "
+                "build, install libpipewire-0.3-dev (or your distro's "
+                "equivalent) and re-run setup.sh; for a downloaded tinyjs, "
+                "update it (current releases ship with PipeWire)\"}");
+#else
+  if (g_mt_active) {
+    send_got(qid, "{\"ok\":true,\"restoreToken\":" +
+                  (g_mt_token.empty() ? "null" : json_escape(g_mt_token)) + "}");
+    return;
+  }
+  g_mt_qids.push_back(qid);
+  if (g_mt_starting) return;  // one dance; every waiter gets the answer
+  g_mt_starting = true;
+  mt_portal_start(restore);
+#endif
+}
+
+static void mt_stop() {
+#ifdef TINYJS_PIPEWIRE
+  g_mt_active = false;
+  g_mt_have = false;
+  g_mt_calib.clear();
+  mt_pw_teardown();
+  if (!g_mt_session.empty()) {
+    // closing the session stops the stream and drops the sharing indicator
+    GDBusConnection* bus = session_bus();
+    if (bus)
+      g_dbus_connection_call(bus, "org.freedesktop.portal.Desktop",
+          g_mt_session.c_str(), "org.freedesktop.portal.Session", "Close",
+          nullptr, nullptr, G_DBUS_CALL_FLAGS_NONE, 5000, nullptr, nullptr, nullptr);
+    g_mt_session.clear();
+  }
+#endif
+}
+
+// --- shell / login / sound / capture / pdf / thumb / say ---------------------
+
+static void do_shell(const std::string& qid, const std::string& rest) {
+  auto f = split_tabs(rest);
+  std::string op = tab_field(f, 0);
+  std::string target = wire_unescape(tab_field(f, 1));
+  auto ok = [&]() { send_got(qid, "{\"ok\":true,\"error\":null}"); };
+  auto fail = [&](const std::string& e) {
+    send_got(qid, "{\"ok\":false,\"error\":" + json_escape(e) + "}");
+  };
+
+  if (op == "open") {
+    std::string uri = target;
+    if (!uri.empty() && uri[0] == '/') {
+      if (!file_exists(uri)) { fail("no such file"); return; }
+      char* u = g_filename_to_uri(uri.c_str(), nullptr, nullptr);
+      if (!u) { fail("bad path"); return; }
+      uri = u;
+      g_free(u);
+    }
+    GError* err = nullptr;
+    if (g_app_info_launch_default_for_uri(uri.c_str(), nullptr, &err)) ok();
+    else {
+      fail(err ? err->message : "no application registered for URL");
+      g_clear_error(&err);
+    }
+    return;
+  }
+
+  if (op == "reveal") {
+    if (!file_exists(target)) { fail("no such file"); return; }
+    char* uri = g_filename_to_uri(target.c_str(), nullptr, nullptr);
+    GDBusConnection* bus = session_bus();
+    bool done = false;
+    if (bus && uri) {
+      GVariantBuilder uris;
+      g_variant_builder_init(&uris, G_VARIANT_TYPE("as"));
+      g_variant_builder_add(&uris, "s", uri);
+      GVariant* r = g_dbus_connection_call_sync(bus,
+          "org.freedesktop.FileManager1", "/org/freedesktop/FileManager1",
+          "org.freedesktop.FileManager1", "ShowItems",
+          g_variant_new("(ass)", &uris, ""), nullptr,
+          G_DBUS_CALL_FLAGS_NONE, 3000, nullptr, nullptr);
+      if (r) { g_variant_unref(r); done = true; }
+    }
+    if (uri) g_free(uri);
+    if (!done) {
+      // fall back to opening the parent directory
+      char* dir = g_path_get_dirname(target.c_str());
+      char* duri = g_filename_to_uri(dir, nullptr, nullptr);
+      done = duri && g_app_info_launch_default_for_uri(duri, nullptr, nullptr);
+      g_free(dir);
+      if (duri) g_free(duri);
+    }
+    done ? ok() : fail("could not reveal");
+    return;
+  }
+
+  if (op == "trash") {
+    GFile* file = g_file_new_for_path(target.c_str());
+    GError* err = nullptr;
+    bool done = g_file_trash(file, nullptr, &err);
+    g_object_unref(file);
+    if (done) ok();
+    else {
+      fail(err ? err->message : "could not trash");
+      g_clear_error(&err);
+    }
+    return;
+  }
+
+  fail("unknown shell op");
+}
+
+// launch-at-login: an autostart .desktop for the app the backend runs as.
+// The launcher's parent IS the backend (the built app binary in packaged
+// apps; tjs in dev — which we refuse, matching Windows).
+static std::string parent_exe() {
+  char buf[4096];
+  std::string link = "/proc/" + std::to_string(getppid()) + "/exe";
+  ssize_t n = readlink(link.c_str(), buf, sizeof buf - 1);
+  if (n <= 0) return "";
+  buf[n] = 0;
+  return buf;
+}
+
+static std::string autostart_path() {
+  const char* cfg = getenv("XDG_CONFIG_HOME");
+  std::string base = cfg && *cfg ? cfg : home_dir() + "/.config";
+  return base + "/autostart/" + (g_app_id.empty() ? "tinyjs-app" : g_app_id) + ".desktop";
+}
+
+static void do_login(const std::string& qid, const std::string& rest) {
+  std::string op = rest.substr(0, rest.find('\t'));
+  std::string exe = parent_exe();
+  std::string base = exe.substr(exe.rfind('/') + 1);
+  if (exe.empty() || base == "tjs") {
+    send_got(qid, "{\"status\":\"unsupported\",\"ok\":false,\"error\":null}");
+    return;
+  }
+  std::string path = autostart_path();
+  if (op == "get") {
+    send_got(qid, std::string("{\"status\":\"") +
+             (file_exists(path) ? "enabled" : "disabled") + "\",\"ok\":true,\"error\":null}");
+    return;
+  }
+  if (op.rfind("set ", 0) == 0) {
+    bool enable = op.substr(4, 1) == "1";
+    if (!enable) {
+      unlink(path.c_str());
+      send_got(qid, "{\"status\":\"disabled\",\"ok\":true,\"error\":null}");
+      return;
+    }
+    char* dir = g_path_get_dirname(path.c_str());
+    g_mkdir_with_parents(dir, 0755);
+    g_free(dir);
+    std::string desktop = "[Desktop Entry]\nType=Application\nName=" + g_app_name +
+        "\nExec=\"" + exe + "\"\nTerminal=false\nX-GNOME-Autostart-enabled=true\n";
+    bool ok = g_file_set_contents(path.c_str(), desktop.c_str(), desktop.size(), nullptr);
+    send_got(qid, ok ? "{\"status\":\"enabled\",\"ok\":true,\"error\":null}"
+                     : "{\"status\":\"disabled\",\"ok\":false,\"error\":\"write failed\"}");
+    return;
+  }
+  send_got(qid, "{\"status\":\"unsupported\",\"ok\":false,\"error\":null}");
+}
+
+static void do_sound(const std::string& qid, const std::string& rest) {
+  std::string target = wire_unescape(rest);
+  if (target.empty()) {
+    gdk_display_beep(gdk_display_get_default());
+    send_got(qid, "{\"ok\":true}");
+    return;
+  }
+  std::string path = target;
+  if (!file_exists(path)) {
+    // a system sound name — try the freedesktop sound theme
+    for (const char* ext : {".oga", ".ogg", ".wav"}) {
+      std::string cand = "/usr/share/sounds/freedesktop/stereo/" + target + ext;
+      if (file_exists(cand)) { path = cand; break; }
+    }
+  }
+  if (!file_exists(path)) { send_got(qid, "{\"ok\":false}"); return; }
+  for (const char* player : {"paplay", "pw-play", "aplay"}) {
+    char* exe_path = g_find_program_in_path(player);
+    if (!exe_path) continue;
+    std::string cmd = std::string(exe_path);
+    g_free(exe_path);
+    const gchar* argv[] = {cmd.c_str(), path.c_str(), nullptr};
+    GError* err = nullptr;
+    if (g_spawn_async(nullptr, (gchar**)argv, nullptr,
+                      (GSpawnFlags)(G_SPAWN_STDOUT_TO_DEV_NULL | G_SPAWN_STDERR_TO_DEV_NULL),
+                      nullptr, nullptr, nullptr, &err)) {
+      send_got(qid, "{\"ok\":true}");
+      return;
+    }
+    g_clear_error(&err);
+  }
+  send_got(qid, "{\"ok\":false}");
+}
+
+static void do_capture(const std::string& qid, const std::string&) {
+  // X11/XWayland: grab the root window. Pure Wayland: the root pixmap is
+  // black/unavailable — report unsupported (the Screenshot portal needs a
+  // user dialog; see TODO-linux.md).
+  GdkWindow* root = gdk_screen_get_root_window(gdk_screen_get_default());
+  int w = gdk_window_get_width(root), h = gdk_window_get_height(root);
+  GdkPixbuf* pix = gdk_pixbuf_get_from_window(root, 0, 0, w, h);
+  if (!pix) {
+    send_got(qid, "{\"ok\":false,\"error\":\"screen capture needs an X11 session (Wayland: unsupported)\"}");
+    return;
+  }
+  std::string path = std::string(g_get_tmp_dir()) + "/tinyjs-capture-" +
+                     std::to_string(getpid()) + "-" +
+                     std::to_string(g_get_monotonic_time()) + ".png";
+  bool ok = gdk_pixbuf_save(pix, path.c_str(), "png", nullptr, NULL);
+  int pw = gdk_pixbuf_get_width(pix), ph = gdk_pixbuf_get_height(pix);
+  g_object_unref(pix);
+  if (!ok) { send_got(qid, "{\"ok\":false,\"error\":\"could not save capture\"}"); return; }
+  send_got(qid, "{\"ok\":true,\"path\":" + json_escape(path) +
+                ",\"width\":" + std::to_string(pw) +
+                ",\"height\":" + std::to_string(ph) + "}");
+}
+
+// winid empty = the main window; a secondary window prints ITS page (a
+// multi-window app's ⌘P belongs to the document window, not the main one).
+static void do_pdf(const std::string& qid, const std::string& rest,
+                   const std::string& winid) {
+  std::string path = wire_unescape(rest);
+  if (path.empty()) { send_got(qid, "{\"ok\":false,\"error\":\"no path\"}"); return; }
+  WebKitWebView* target = wv_for(winid);
+  if (!target) { send_got(qid, "{\"ok\":false,\"error\":\"no such window\"}"); return; }
+  WebKitPrintOperation* op = webkit_print_operation_new(target);
+  GtkPrintSettings* settings = gtk_print_settings_new();
+  gtk_print_settings_set(settings, GTK_PRINT_SETTINGS_PRINTER, "Print to File");
+  gtk_print_settings_set(settings, GTK_PRINT_SETTINGS_OUTPUT_FILE_FORMAT, "pdf");
+  char* uri = g_filename_to_uri(path.c_str(), nullptr, nullptr);
+  if (uri) {
+    gtk_print_settings_set(settings, GTK_PRINT_SETTINGS_OUTPUT_URI, uri);
+    g_free(uri);
+  }
+  webkit_print_operation_set_print_settings(op, settings);
+  g_object_unref(settings);
+  // "finished" fires even after "failed" — judge success by the output file.
+  struct Ctx { std::string qid, path; };
+  Ctx* ctx = new Ctx{qid, path};
+  g_signal_connect_data(op, "finished",
+    G_CALLBACK(+[](WebKitPrintOperation*, gpointer data) {
+      Ctx* c = (Ctx*)data;
+      if (file_exists(c->path)) {
+        send_got(c->qid, "{\"ok\":true,\"path\":" + json_escape(c->path) + ",\"error\":null}");
+      } else {
+        send_got(c->qid, "{\"ok\":false,\"error\":\"pdf failed\"}");
+      }
+      delete c;
+    }), ctx, nullptr, (GConnectFlags)0);
+  webkit_print_operation_print(op);
+  g_object_unref(op);
+}
+
+static void do_thumb(const std::string& qid, const std::string& rest) {
+  auto f = split_tabs(rest);
+  std::string path = wire_unescape(tab_field(f, 0));
+  int size = atoi(tab_field(f, 1).c_str());
+  if (size <= 0) size = 256;
+  if (!file_exists(path)) { send_got(qid, "{\"ok\":false,\"error\":\"no such file\"}"); return; }
+  GdkPixbuf* pix = gdk_pixbuf_new_from_file(path.c_str(), nullptr);
+  if (!pix) { send_got(qid, "{\"ok\":false,\"error\":\"no thumbnail\"}"); return; }
+  int w = gdk_pixbuf_get_width(pix), h = gdk_pixbuf_get_height(pix);
+  double s = (double)size * 2 / (w > h ? w : h);  // rendered @2x like macOS
+  if (s > 1) s = 1;
+  int tw = (int)(w * s), th = (int)(h * s);
+  GdkPixbuf* scaled = gdk_pixbuf_scale_simple(pix, tw > 0 ? tw : 1,
+                                              th > 0 ? th : 1, GDK_INTERP_BILINEAR);
+  g_object_unref(pix);
+  std::string out = std::string(g_get_tmp_dir()) + "/tinyjs-thumb-" +
+                    std::to_string(getpid()) + "-" +
+                    std::to_string(g_get_monotonic_time()) + ".png";
+  bool ok = scaled && gdk_pixbuf_save(scaled, out.c_str(), "png", nullptr, NULL);
+  if (scaled) g_object_unref(scaled);
+  if (!ok) { send_got(qid, "{\"ok\":false,\"error\":\"no thumbnail\"}"); return; }
+  send_got(qid, "{\"ok\":true,\"path\":" + json_escape(out) +
+                ",\"width\":" + std::to_string(tw) +
+                ",\"height\":" + std::to_string(th) + "}");
+}
+
+// say/voices via speech-dispatcher's spd-say when installed
+static GPid g_say_pid = 0;
+
+static void do_say(const std::string& qid, const std::string& rest) {
+  auto f = split_tabs(rest);
+  std::string text = wire_unescape(tab_field(f, 0));
+  std::string voice = wire_unescape(tab_field(f, 1));
+  double rate = atof(tab_field(f, 2).c_str());
+  char* exe = g_find_program_in_path("spd-say");
+  if (!exe) { send_got(qid, "{\"ok\":false}"); return; }
+  // spd-say rate: -100..100; tinyjs rate: 0..1 with ~0.5 normal
+  int spd_rate = (int)((rate <= 0 ? 0.5 : rate) * 200 - 100);
+  std::string rate_s = std::to_string(spd_rate);
+  std::vector<const gchar*> argv = {exe, "-w", "-r", rate_s.c_str()};
+  if (!voice.empty()) {
+    // `voice` is either an id from voices() (a spd synthesis voice name, -y) or
+    // a language tag like 'en-AU' (-l). Anything shaped like a bare ISO code
+    // is treated as the latter.
+    bool lang_tag = voice.size() <= 6;
+    for (size_t i = 0; lang_tag && i < voice.size(); i++) {
+      char ch = voice[i];
+      if (!isalpha((unsigned char)ch) && ch != '-' && ch != '_') lang_tag = false;
+    }
+    argv.push_back(lang_tag ? "-l" : "-y");
+    argv.push_back(voice.c_str());
+  }
+  argv.push_back(text.c_str());
+  argv.push_back(nullptr);
+  GPid pid = 0;
+  GError* err = nullptr;
+  if (!g_spawn_async(nullptr, (gchar**)argv.data(), nullptr,
+                     (GSpawnFlags)(G_SPAWN_DO_NOT_REAP_CHILD |
+                                   G_SPAWN_STDOUT_TO_DEV_NULL | G_SPAWN_STDERR_TO_DEV_NULL),
+                     nullptr, nullptr, &pid, &err)) {
+    g_clear_error(&err);
+    g_free(exe);
+    send_got(qid, "{\"ok\":false}");
+    return;
+  }
+  g_free(exe);
+  g_say_pid = pid;
+  char* qid_heap = g_strdup(qid.c_str());
+  g_child_watch_add(pid, [](GPid pid, gint status, gpointer data) {
+    char* q = (char*)data;
+    if (g_say_pid == pid) g_say_pid = 0;
+    send_got(q, status == 0 ? "{\"ok\":true}" : "{\"ok\":false}");
+    g_free(q);
+    g_spawn_close_pid(pid);
+  }, qid_heap);
+}
+
+// Drain a child's stdout pipe into `into`, returning true once it has hit EOF
+// (or errored) and the caller should wrap up. GLib can report G_IO_IN and
+// G_IO_HUP in the *same* callback when a short-lived child writes and exits
+// between polls, so a handler that acts on HUP before reading throws the whole
+// result away. Always drain first, then honour HUP. Requires a non-blocking fd
+// (the callers set O_NONBLOCK) so the final read can't stall the UI thread.
+static bool drain_pipe(int fd, std::string& into) {
+  for (;;) {
+    char buf[8192];
+    ssize_t r = read(fd, buf, sizeof buf);
+    if (r > 0) { into.append(buf, (size_t)r); continue; }
+    if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return false;
+    if (r < 0 && errno == EINTR) continue;
+    return true;  // 0 = EOF, or a real error
+  }
+}
+
+// `spd-say -L` prints a header row then one synthesis voice per line, in three
+// right-aligned whitespace-separated columns (NAME LANGUAGE VARIANT). NAME
+// itself can contain spaces ("Chinese (Cantonese, latin as Jyutping)+croak"),
+// so peel LANGUAGE/VARIANT off the end and keep the rest as the name. The name
+// is what `-y` takes, so it doubles as the voice id.
+struct VoicesCtx {
+  std::string qid;
+  GPid pid = 0;
+  int fd = -1;
+  guint watch = 0, timer = 0;
+  std::string buf;
+  bool done = false;
+};
+
+static void voices_finish(VoicesCtx* c) {
+  if (c->done) return;
+  c->done = true;
+  if (c->watch) { g_source_remove(c->watch); c->watch = 0; }
+  if (c->timer) { g_source_remove(c->timer); c->timer = 0; }
+  if (c->fd >= 0) { close(c->fd); c->fd = -1; }
+  if (c->pid) { kill(c->pid, SIGTERM); g_spawn_close_pid(c->pid); c->pid = 0; }
+
+  std::string json = "[";
+  int n = 0;
+  size_t start = 0;
+  bool header = true;
+  while (start < c->buf.size()) {
+    size_t nl = c->buf.find('\n', start);
+    if (nl == std::string::npos) break;  // ignore a trailing partial line
+    std::string line = c->buf.substr(start, nl - start);
+    start = nl + 1;
+    if (header) { header = false; continue; }  // NAME LANGUAGE VARIANT
+
+    // Split off the last two whitespace-separated fields.
+    auto rtrim = [](std::string& s) {
+      while (!s.empty() && isspace((unsigned char)s.back())) s.pop_back();
+    };
+    auto pop_field = [&](std::string& s) {
+      rtrim(s);
+      size_t sp = s.find_last_of(" \t");
+      if (sp == std::string::npos) { std::string f = s; s.clear(); return f; }
+      std::string f = s.substr(sp + 1);
+      s.erase(sp);
+      return f;
+    };
+    rtrim(line);
+    if (line.empty()) continue;
+    std::string variant = pop_field(line);
+    std::string lang = pop_field(line);
+    rtrim(line);
+    size_t lead = line.find_first_not_of(" \t");
+    std::string name = lead == std::string::npos ? "" : line.substr(lead);
+    if (name.empty() || lang.empty()) continue;
+    (void)variant;  // encoded in the name already ("Afrikaans+Adam")
+
+    if (n) json += ",";
+    json += "{\"id\":" + json_escape(name) +
+            ",\"name\":" + json_escape(name) +
+            ",\"lang\":" + json_escape(lang) +
+            ",\"quality\":\"default\"}";
+    n++;
+  }
+  json += "]";
+  send_got(c->qid, "{\"ok\":true,\"voices\":" + json + "}");
+  delete c;
+}
+
+static gboolean voices_readable(gint fd, GIOCondition cond, gpointer data) {
+  VoicesCtx* c = (VoicesCtx*)data;
+  bool eof = drain_pipe(fd, c->buf);
+  if (eof || (cond & (G_IO_HUP | G_IO_ERR))) {
+    c->watch = 0;
+    voices_finish(c);
+    return G_SOURCE_REMOVE;
+  }
+  return G_SOURCE_CONTINUE;
+}
+
+static void do_voices(const std::string& qid) {
+  char* exe = g_find_program_in_path("spd-say");
+  if (!exe) { send_got(qid, "{\"ok\":true,\"voices\":[]}"); return; }
+  const gchar* argv[] = {exe, "-L", nullptr};
+  gint out_fd = -1;
+  GPid pid = 0;
+  gboolean ok = g_spawn_async_with_pipes(nullptr, (gchar**)argv, nullptr,
+      (GSpawnFlags)(G_SPAWN_DO_NOT_REAP_CHILD | G_SPAWN_STDERR_TO_DEV_NULL),
+      nullptr, nullptr, &pid, nullptr, &out_fd, nullptr, nullptr);
+  g_free(exe);
+  if (!ok) { send_got(qid, "{\"ok\":true,\"voices\":[]}"); return; }
+  fcntl(out_fd, F_SETFL, fcntl(out_fd, F_GETFL, 0) | O_NONBLOCK);
+  VoicesCtx* c = new VoicesCtx();
+  c->qid = qid;
+  c->pid = pid;
+  c->fd = out_fd;
+  c->watch = g_unix_fd_add(out_fd, (GIOCondition)(G_IO_IN | G_IO_HUP | G_IO_ERR),
+                           voices_readable, c);
+  // speech-dispatcher autospawns on first contact; don't let a wedged daemon
+  // hang the caller.
+  c->timer = g_timeout_add(4000, [](gpointer d) -> gboolean {
+    VoicesCtx* c = (VoicesCtx*)d;
+    c->timer = 0;
+    voices_finish(c);
+    return G_SOURCE_REMOVE;
+  }, c);
+}
+
+static void do_saystop() {
+  if (g_say_pid) kill(g_say_pid, SIGTERM);
+  char* exe = g_find_program_in_path("spd-say");
+  if (exe) {
+    const gchar* argv[] = {exe, "-S", nullptr};  // stop all speech-dispatcher output
+    g_spawn_async(nullptr, (gchar**)argv, nullptr,
+                  (GSpawnFlags)(G_SPAWN_STDOUT_TO_DEV_NULL | G_SPAWN_STDERR_TO_DEV_NULL),
+                  nullptr, nullptr, nullptr, nullptr);
+    g_free(exe);
+  }
+}
+
+// pick a color via the Screenshot portal (works on X11 + Wayland)
+static void do_pickcolor(const std::string& qid) {
+  GDBusConnection* bus = session_bus();
+  if (!bus) { got_unsupported(qid); return; }
+  std::string token = "tinyjs" + std::to_string(g_get_monotonic_time() % 1000000);
+  const char* unique = g_dbus_connection_get_unique_name(bus);
+  std::string sender = unique ? unique + 1 : "";  // strip ':'
+  for (auto& c : sender) if (c == '.') c = '_';
+  std::string request_path = "/org/freedesktop/portal/desktop/request/" + sender + "/" + token;
+
+  char* qid_heap = g_strdup(qid.c_str());
+  guint sub = g_dbus_connection_signal_subscribe(bus,
+      "org.freedesktop.portal.Desktop", "org.freedesktop.portal.Request",
+      "Response", request_path.c_str(), nullptr, G_DBUS_SIGNAL_FLAGS_NONE,
+      [](GDBusConnection* bus2, const gchar*, const gchar*, const gchar*, const gchar*,
+         GVariant* params, gpointer data) {
+        char* q = (char*)data;
+        guint32 code = 0;
+        GVariant* results = nullptr;
+        g_variant_get(params, "(u@a{sv})", &code, &results);
+        if (code != 0) {
+          send_got(q, "{\"ok\":true,\"color\":null}");  // user cancelled
+        } else {
+          GVariant* color = results ? g_variant_lookup_value(results, "color",
+                                        G_VARIANT_TYPE("(ddd)")) : nullptr;
+          if (color) {
+            double r = 0, g = 0, b = 0;
+            g_variant_get(color, "(ddd)", &r, &g, &b);
+            char hex[16];
+            snprintf(hex, sizeof hex, "#%02x%02x%02x",
+                     (int)(r * 255 + 0.5), (int)(g * 255 + 0.5), (int)(b * 255 + 0.5));
+            send_got(q, std::string("{\"ok\":true,\"color\":\"") + hex + "\"}");
+            g_variant_unref(color);
+          } else {
+            send_got(q, "{\"ok\":true,\"color\":null}");
+          }
+        }
+        if (results) g_variant_unref(results);
+        g_free(q);
+        // one-shot: unsubscribe ourselves
+        guint* subp = (guint*)g_object_get_data(G_OBJECT(bus2), "tinyjs-pickcolor-sub");
+        if (subp) {
+          g_dbus_connection_signal_unsubscribe(bus2, *subp);
+          g_free(subp);
+          g_object_set_data(G_OBJECT(bus2), "tinyjs-pickcolor-sub", nullptr);
+        }
+      }, qid_heap, nullptr);
+  guint* subp = g_new(guint, 1);
+  *subp = sub;
+  g_object_set_data(G_OBJECT(bus), "tinyjs-pickcolor-sub", subp);
+
+  GVariantBuilder opts;
+  g_variant_builder_init(&opts, G_VARIANT_TYPE("a{sv}"));
+  g_variant_builder_add(&opts, "{sv}", "handle_token",
+                        g_variant_new_string(token.c_str()));
+  GVariant* r = g_dbus_connection_call_sync(bus,
+      "org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
+      "org.freedesktop.portal.Screenshot", "PickColor",
+      g_variant_new("(sa{sv})", "", &opts),
+      G_VARIANT_TYPE("(o)"), G_DBUS_CALL_FLAGS_NONE, 3000, nullptr, nullptr);
+  if (!r) {
+    g_dbus_connection_signal_unsubscribe(bus, sub);
+    g_object_set_data(G_OBJECT(bus), "tinyjs-pickcolor-sub", nullptr);
+    g_free(subp);
+    got_unsupported(qid);
+    return;
+  }
+  g_variant_unref(r);
+}
+
+// spotlight: a name search — the indexed `plocate`/`locate` when present,
+// else a bounded `find` under $HOME. Capped at 100 paths and a 4s wall-clock
+// so a cold `find` can't wedge the caller. (macOS also matches content; a
+// name match is the honest Linux degradation.)
+struct SpotlightCtx {
+  std::string qid;
+  GPid pid = 0;
+  int fd = -1;
+  guint watch = 0, timer = 0;
+  std::string buf;
+  bool done = false;
+};
+
+static void spotlight_finish(SpotlightCtx* c) {
+  if (c->done) return;
+  c->done = true;
+  if (c->watch) { g_source_remove(c->watch); c->watch = 0; }
+  if (c->timer) { g_source_remove(c->timer); c->timer = 0; }
+  if (c->fd >= 0) { close(c->fd); c->fd = -1; }
+  if (c->pid) { kill(c->pid, SIGTERM); g_spawn_close_pid(c->pid); c->pid = 0; }
+  std::string json = "[";
+  int n = 0;
+  size_t start = 0;
+  while (n < 100) {
+    size_t nl = c->buf.find('\n', start);
+    if (nl == std::string::npos) break;
+    std::string path = c->buf.substr(start, nl - start);
+    start = nl + 1;
+    if (path.empty()) continue;
+    if (n) json += ",";
+    json += json_escape(path);
+    n++;
+  }
+  json += "]";
+  send_got(c->qid, "{\"ok\":true,\"paths\":" + json + "}");
+  delete c;
+}
+
+static gboolean spotlight_readable(gint fd, GIOCondition cond, gpointer data) {
+  SpotlightCtx* c = (SpotlightCtx*)data;
+  bool eof = drain_pipe(fd, c->buf);
+  if (eof || (cond & (G_IO_HUP | G_IO_ERR))) {
+    c->watch = 0;
+    spotlight_finish(c);
+    return G_SOURCE_REMOVE;
+  }
+  int nls = 0;
+  for (char ch : c->buf) if (ch == '\n') nls++;
+  if (nls >= 100) { c->watch = 0; spotlight_finish(c); return G_SOURCE_REMOVE; }
+  return G_SOURCE_CONTINUE;
+}
+
+static void do_spotlight(const std::string& qid, const std::string& rest) {
+  std::string query = wire_unescape(rest);
+  if (query.empty()) { send_got(qid, "{\"ok\":true,\"paths\":[]}"); return; }
+
+  std::vector<std::string> cmd;
+  char* exe = g_find_program_in_path("plocate");
+  if (!exe) exe = g_find_program_in_path("locate");
+  if (exe) {
+    cmd = {exe, "-i", "-l", "100", query};
+    g_free(exe);
+  } else if ((exe = g_find_program_in_path("find"))) {
+    // No index available — a bounded, pruned find under $HOME. Depth-capped
+    // and skipping hidden trees / build caches so it surfaces real hits fast
+    // (find is depth-first; without pruning it can spend the whole 4s budget
+    // inside one big node_modules). Best-effort, name-only.
+    cmd = {exe, home_dir(), "-maxdepth", "6",
+           "(", "-name", ".*", "-o", "-name", "node_modules",
+           "-o", "-name", "__pycache__", ")", "-prune", "-o",
+           "-iname", "*" + query + "*", "-print"};
+    g_free(exe);
+  } else {
+    send_got(qid, "{\"ok\":true,\"paths\":[]}");
+    return;
+  }
+
+  std::vector<const gchar*> argv;
+  for (auto& a : cmd) argv.push_back(a.c_str());
+  argv.push_back(nullptr);
+  gint out_fd = -1;
+  GPid pid = 0;
+  if (!g_spawn_async_with_pipes(nullptr, (gchar**)argv.data(), nullptr,
+        (GSpawnFlags)(G_SPAWN_DO_NOT_REAP_CHILD | G_SPAWN_STDERR_TO_DEV_NULL),
+        nullptr, nullptr, &pid, nullptr, &out_fd, nullptr, nullptr)) {
+    send_got(qid, "{\"ok\":true,\"paths\":[]}");
+    return;
+  }
+  fcntl(out_fd, F_SETFL, fcntl(out_fd, F_GETFL, 0) | O_NONBLOCK);
+  SpotlightCtx* c = new SpotlightCtx();
+  c->qid = qid;
+  c->pid = pid;
+  c->fd = out_fd;
+  c->watch = g_unix_fd_add(out_fd, (GIOCondition)(G_IO_IN | G_IO_HUP | G_IO_ERR),
+                           spotlight_readable, c);
+  c->timer = g_timeout_add(4000, [](gpointer d) -> gboolean {
+    SpotlightCtx* c = (SpotlightCtx*)d;
+    c->timer = 0;
+    spotlight_finish(c);
+    return G_SOURCE_REMOVE;
+  }, c);
+}
+
+// ------------------------------------------------------- secondary windows --
+
+static void load_target_into(WebKitWebView* wv, const std::string& target) {
+  if (target.rfind("http://", 0) == 0 || target.rfind("https://", 0) == 0) {
+    webkit_web_view_load_uri(wv, target.c_str());
+    return;
+  }
+  char* uri = g_filename_to_uri(target.c_str(), nullptr, nullptr);
+  if (uri) {
+    webkit_web_view_load_uri(wv, uri);
+    g_free(uri);
+  }
+}
+
+// Show the inspector in its OWN window — small app windows can't fit an
+// attached pane.
+//
+// A detach() in the same turn as show() does NOT do it (measured, WebKitGTK
+// 2.44/webkit2gtk-4.1): show() only creates the frontend page, and the
+// attach decision is taken later, when that page finishes loading — so the
+// detach lands while nothing is attached yet, returns a no-op, and the
+// inspector then attaches as a pane inside the app window anyway. The
+// "attach" signal is the first moment the decision is observable; returning
+// FALSE lets WebKit do the attach it wants, and the idle right after bounces
+// it straight back out into its own window.
+static gboolean inspector_detach_idle(gpointer data) {
+  WebKitWebInspector* insp = WEBKIT_WEB_INSPECTOR(data);
+  webkit_web_inspector_detach(insp);
+  g_object_unref(insp);
+  return G_SOURCE_REMOVE;
+}
+
+static gboolean on_inspector_attach(WebKitWebInspector* insp, gpointer) {
+  g_idle_add(inspector_detach_idle, g_object_ref(insp));
+  return FALSE;  // let the default handler attach; the idle undoes it
+}
+
+static void inspector_open(WebKitWebView* wv) {
+  WebKitWebInspector* insp = webkit_web_view_get_inspector(wv);
+  if (!insp) return;
+  if (!g_object_get_data(G_OBJECT(insp), "tinyjs-detach-wired")) {
+    g_object_set_data(G_OBJECT(insp), "tinyjs-detach-wired", (gpointer)1);
+    g_signal_connect(insp, "attach", G_CALLBACK(on_inspector_attach), nullptr);
+  }
+  webkit_web_inspector_show(insp);
+  webkit_web_inspector_detach(insp);  // covers a re-show of an attached one
+}
+
+// Launcher-owned devtools key: F12 on every platform (the engine shortcut
+// only exists when developer extras are on, which is the same gate).
+static gboolean on_debug_key(GtkWidget* w, GdkEventKey* ev, gpointer) {
+  if (ev->keyval != GDK_KEY_F12) return FALSE;
+  inspector_open(WEBKIT_WEB_VIEW(w));
+  return TRUE;
+}
+
+// --- browser affordances (Linux) --------------------------------------------
+// Everything a *browser* does that a local-page app never needed, for wrapping
+// hosted web apps: JS dialogs (alert/confirm/prompt), downloads, navigation
+// events + policy, window.open, find-in-page. Same wire as the macOS/Windows
+// twins (see TODO-site-wrapper.md):
+//   launcher -> backend:
+//     NAV {"window","kind","url","error"?}     kind: start|commit|finish|fail|crash
+//     NAVQ <qid> <winid>\t<url>                main-frame http(s) policy ask;
+//                                              unanswered after 400ms = allow
+//     DOWNLOAD {"id","url","filename","path","state","error"?}
+//     POPUP {"window","url","action"}          action: window|external|deny
+//   backend -> launcher:
+//     NAVR <qid> allow|deny|external
+//     POPUPR <qid> window|external|deny
+//     FIND <id> <term>\t<forward>\t<matchCase> (call-style; resolved via RET path)
+//     STOPFIND <id>
+
+static std::string g_downloads_mode;  // TINYJS_DOWNLOADS: "" = auto | ask | deny
+static std::string g_popup_mode;      // TINYJS_POPUPS: "" = external | window | deny
+
+static WebKitWebView* make_webview(const std::string& winid,
+                                   WebKitWebView* related = nullptr);
+static gboolean on_secwin_delete(GtkWidget*, GdkEvent*, gpointer);
+static void on_secwin_destroy(GtkWidget*, gpointer);
+
+static std::string tiny_winid_for_wv(WebKitWebView* wv) {
+  if (wv == g_wv) return "main";
+  for (auto& kv : g_secwins)
+    if (kv.second->wv == wv) return kv.first;
+  return "main";
+}
+
+// scheme://host[:port] with default ports elided, bare "file://", literal
+// "null" when unknown — the same shape the macOS/Windows launchers stamp.
+static std::string origin_from_uri(const char* uri) {
+  if (!uri || !*uri) return "null";
+  if (!strncmp(uri, "file://", 7)) return "file://";
+  GUri* u = g_uri_parse(uri, G_URI_FLAGS_NONE, nullptr);
+  if (!u) return "null";
+  std::string out = "null";
+  const char* scheme = g_uri_get_scheme(u);
+  const char* host = g_uri_get_host(u);
+  int port = g_uri_get_port(u);
+  if (scheme && host && *host) {
+    out = std::string(scheme) + "://" + host;
+    bool dflt = port == -1 || (!strcmp(scheme, "http") && port == 80) ||
+                (!strcmp(scheme, "https") && port == 443);
+    if (!dflt) out += ":" + std::to_string(port);
+  }
+  g_uri_unref(u);
+  return out;
+}
+
+// TINYJS_TEST_AUTODLG=ok|cancel — answer the next modal dialog the way a user
+// would, so dialog paths run headless (test hook, inert without the env var;
+// the macOS/Windows launchers carry the same one). Polls: gtk_dialog_run
+// spins a nested main loop, and timeouts keep dispatching inside it, so a
+// source armed just before the run fires into the open dialog. Gives up
+// after ~6s so a wedged test still ends.
+static gboolean test_autodlg_tick(gpointer data) {
+  auto* st = static_cast<std::pair<std::string, int>*>(data);
+  GList* tops = gtk_window_list_toplevels();
+  GtkDialog* dlg = nullptr;
+  for (GList* l = tops; l; l = l->next) {
+    GtkWidget* w = GTK_WIDGET(l->data);
+    if (GTK_IS_DIALOG(w) && gtk_widget_get_visible(w) &&
+        gtk_window_get_modal(GTK_WINDOW(w))) {
+      dlg = GTK_DIALOG(w);
+      break;
+    }
+  }
+  g_list_free(tops);
+  if (!dlg) {
+    if (--st->second > 0) return G_SOURCE_CONTINUE;
+    delete st;
+    return G_SOURCE_REMOVE;
+  }
+  bool cancel = st->first == "cancel";
+  // File choosers answer ACCEPT, message/prompt dialogs OK. gtk_dialog_response
+  // works whether or not a button carries the id, so a plain alert() (no
+  // Cancel button) still closes on the cancel drill — returning CANCEL, which
+  // the alert path ignores. That is what a user's Escape does too.
+  gint resp = GTK_IS_FILE_CHOOSER(dlg)
+                  ? (cancel ? GTK_RESPONSE_CANCEL : GTK_RESPONSE_ACCEPT)
+                  : (cancel ? GTK_RESPONSE_CANCEL : GTK_RESPONSE_OK);
+  gtk_dialog_response(dlg, resp);
+  delete st;
+  return G_SOURCE_REMOVE;
+}
+
+static void test_autodlg_arm() {
+  const char* mode = getenv("TINYJS_TEST_AUTODLG");
+  if (!mode || !*mode) return;
+  g_timeout_add(200, test_autodlg_tick, new std::pair<std::string, int>(mode, 30));
+}
+
+// -- JS dialogs (alert / confirm / prompt) --
+// Synchronous page primitives (`confirm()` must return a bool NOW) — nothing
+// tiny.dialog's async RPC can shim. WebKitGTK does ship default dialogs, but
+// ours match do_dialog's styling, headline the page's origin (honest
+// attribution for a wrapped third-party site; the app name for its own
+// file:// pages) and are drivable by TINYJS_TEST_AUTODLG.
+
+static std::string js_dialog_title(WebKitWebView* wv) {
+  const char* uri = webkit_web_view_get_uri(wv);
+  if (uri) {
+    GUri* u = g_uri_parse(uri, G_URI_FLAGS_NONE, nullptr);
+    if (u) {
+      const char* host = g_uri_get_host(u);
+      std::string h = host ? host : "";
+      g_uri_unref(u);
+      if (!h.empty()) return h;
+    }
+  }
+  return g_app_name;
+}
+
+static gboolean on_script_dialog(WebKitWebView* wv, WebKitScriptDialog* sd, gpointer) {
+  WebKitScriptDialogType t = webkit_script_dialog_get_dialog_type(sd);
+  const char* m = webkit_script_dialog_get_message(sd);
+  std::string msg = m ? m : "";
+  std::string title = js_dialog_title(wv);
+  GtkWidget* top = gtk_widget_get_toplevel(GTK_WIDGET(wv));
+  GtkWindow* parent = GTK_IS_WINDOW(top) ? GTK_WINDOW(top) : g_win;
+
+  // gtk_dialog_run spins a NESTED main loop, so the socket keeps dispatching
+  // inside it — a backend WINCLOSE (or a page's own window.close) can destroy
+  // this window, and the view under it, while the dialog is still up. Hold a
+  // ref on both so nothing is freed under us, and watch for the destroy: the
+  // answer goes to a page that no longer exists, so skip it rather than write
+  // into a torn-down web page.
+  bool destroyed = false;
+  g_object_ref(wv);
+  webkit_script_dialog_ref(sd);
+  gulong destroy_h = g_signal_connect_swapped(
+      wv, "destroy", G_CALLBACK(+[](gpointer d) { *(bool*)d = true; }), &destroyed);
+  struct Guard {
+    WebKitWebView* wv;
+    WebKitScriptDialog* sd;
+    gulong h;
+    ~Guard() {
+      g_signal_handler_disconnect(wv, h);
+      webkit_script_dialog_unref(sd);
+      g_object_unref(wv);
+    }
+  } guard{wv, sd, destroy_h};
+
+  if (t == WEBKIT_SCRIPT_DIALOG_PROMPT) {
+    const char* d = webkit_script_dialog_prompt_get_default_text(sd);
+    GtkWidget* dlg = gtk_dialog_new_with_buttons(title.c_str(), parent,
+        GTK_DIALOG_MODAL, "Cancel", GTK_RESPONSE_CANCEL, "OK", GTK_RESPONSE_OK,
+        NULL);
+    gtk_dialog_set_default_response(GTK_DIALOG(dlg), GTK_RESPONSE_OK);
+    GtkWidget* content = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
+    GtkWidget* label = gtk_label_new(msg.c_str());
+    gtk_label_set_xalign(GTK_LABEL(label), 0);
+    GtkWidget* entry = gtk_entry_new();
+    gtk_entry_set_text(GTK_ENTRY(entry), d ? d : "");
+    gtk_entry_set_activates_default(GTK_ENTRY(entry), TRUE);
+    gtk_container_set_border_width(GTK_CONTAINER(content), 12);
+    gtk_box_set_spacing(GTK_BOX(content), 8);
+    gtk_box_pack_start(GTK_BOX(content), label, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(content), entry, FALSE, FALSE, 0);
+    gtk_widget_show_all(dlg);
+    test_autodlg_arm();
+    gint res = gtk_dialog_run(GTK_DIALOG(dlg));
+    // Text set only on OK: an unset prompt result IS the null a cancelled
+    // prompt() returns.
+    if (res == GTK_RESPONSE_OK && !destroyed)
+      webkit_script_dialog_prompt_set_text(sd, gtk_entry_get_text(GTK_ENTRY(entry)));
+    gtk_widget_destroy(dlg);
+    return TRUE;
+  }
+
+  bool is_confirm = t == WEBKIT_SCRIPT_DIALOG_CONFIRM ||
+                    t == WEBKIT_SCRIPT_DIALOG_BEFORE_UNLOAD_CONFIRM;
+  GtkWidget* dlg = gtk_message_dialog_new(parent, GTK_DIALOG_MODAL,
+      is_confirm ? GTK_MESSAGE_QUESTION : GTK_MESSAGE_INFO,
+      GTK_BUTTONS_NONE, "%s", title.c_str());
+  if (!msg.empty())
+    gtk_message_dialog_format_secondary_text(GTK_MESSAGE_DIALOG(dlg), "%s",
+                                             msg.c_str());
+  if (is_confirm)
+    gtk_dialog_add_button(GTK_DIALOG(dlg), "Cancel", GTK_RESPONSE_CANCEL);
+  gtk_dialog_add_button(GTK_DIALOG(dlg), "OK", GTK_RESPONSE_OK);
+  gtk_dialog_set_default_response(GTK_DIALOG(dlg), GTK_RESPONSE_OK);
+  test_autodlg_arm();
+  gint res = gtk_dialog_run(GTK_DIALOG(dlg));
+  gtk_widget_destroy(dlg);
+  if (is_confirm && !destroyed)
+    webkit_script_dialog_confirm_set_confirmed(sd, res == GTK_RESPONSE_OK);
+  return TRUE;
+}
+
+// -- navigation events --
+
+static void find_forget(WebKitWebView* wv);  // find section, below
+
+static void nav_event(WebKitWebView* wv, const char* kind, const char* url,
+                      const char* err) {
+  std::string u = url ? url : "";
+  // Internal schemes stay off the wire (tiny-media, popup setup noise);
+  // file/http(s)/about:blank are the app's actual documents.
+  if (!u.empty() && u.rfind("http://", 0) != 0 && u.rfind("https://", 0) != 0 &&
+      u.rfind("file://", 0) != 0 && u != "about:blank")
+    return;
+  std::string j = "{\"window\":" + json_escape(tiny_winid_for_wv(wv)) +
+                  ",\"kind\":\"" + kind + "\",\"url\":" + json_escape(u);
+  if (err && *err) j += ",\"error\":" + json_escape(err);
+  pipe_write_line("NAV " + j + "}");
+}
+
+static void on_load_changed(WebKitWebView* wv, WebKitLoadEvent ev, gpointer) {
+  const char* uri = webkit_web_view_get_uri(wv);
+  if (ev == WEBKIT_LOAD_STARTED) {
+    nav_event(wv, "start", uri, nullptr);
+  } else if (ev == WEBKIT_LOAD_COMMITTED) {
+    // The document exists now (document-start scripts have run, so the shim
+    // is there to receive it) — hand this page its call token.
+    assign_call_token(wv, tiny_winid_for_wv(wv));
+    // The old document's find results describe text that is gone.
+    find_forget(wv);
+    nav_event(wv, "commit", uri, nullptr);
+  } else if (ev == WEBKIT_LOAD_FINISHED) {
+    // Popup windows carry the page's own title (like a browser would); other
+    // windows' titles belong to the app (setTitle / WINOPEN).
+    std::string wid = tiny_winid_for_wv(wv);
+    if (wid.rfind("popup", 0) == 0) {
+      const char* t = webkit_web_view_get_title(wv);
+      GtkWindow* win = win_for(wid);
+      if (t && *t && win) gtk_window_set_title(win, t);
+    }
+    nav_event(wv, "finish", uri, nullptr);
+  }
+}
+
+// Not failures: our own policy cancels / rapid re-navigation, a navigation
+// that became a download (painting an offline screen because the user
+// exported a CSV would be exactly wrong), and the preliminary media-load
+// error WebKit retries itself.
+static bool nav_error_is_noise(GError* e) {
+  if (!e) return false;
+  if (e->domain == WEBKIT_NETWORK_ERROR && e->code == WEBKIT_NETWORK_ERROR_CANCELLED)
+    return true;
+  if (e->domain == WEBKIT_POLICY_ERROR &&
+      e->code == WEBKIT_POLICY_ERROR_FRAME_LOAD_INTERRUPTED_BY_POLICY_CHANGE)
+    return true;
+  if (e->domain == WEBKIT_PLUGIN_ERROR && e->code == WEBKIT_PLUGIN_ERROR_WILL_HANDLE_LOAD)
+    return true;
+  return false;
+}
+
+static gboolean on_load_failed(WebKitWebView* wv, WebKitLoadEvent,
+                               gchar* failing_uri, GError* error, gpointer) {
+  // TRUE for noise = also no built-in error page over a page that is fine.
+  if (nav_error_is_noise(error)) return TRUE;
+  nav_event(wv, "fail", failing_uri, error ? error->message : "");
+  return FALSE;  // keep WebKit's error page
+}
+
+static void on_web_process_terminated(WebKitWebView* wv,
+                                      WebKitWebProcessTerminationReason, gpointer) {
+  nav_event(wv, "crash", webkit_web_view_get_uri(wv), nullptr);
+}
+
+// -- navigation policy (NAVQ/NAVR) --
+// The ask lives at the RESPONSE stage, not the action stage: WebKitGTK fires
+// NAVIGATION_ACTION for subframe navigations too and gives no way to tell
+// them apart (measured 2026-08-05 — frame_name is NULL for both), while the
+// response decision has is_main_frame_main_resource. The decision is held
+// (ref'd) until NAVR or a 400ms timeout default-allows, so a wrapper can't
+// deadlock its own first load. CAVEAT this stage creates: by ask time the
+// request has already been issued and answered — a deny discards the
+// response but the server saw the request (the Windows leg has the same
+// family of hole, shaped as asked POSTs re-issuing as GETs; macOS holds the
+// original action and has neither). A navigation whose response is an
+// un-renderable MIME type becomes a download WITHOUT a policy ask — the
+// download events are that path's hook.
+
+struct NavPending {
+  WebKitPolicyDecision* decision;
+  std::string url;
+};
+static long g_nav_seq = 0;
+static std::map<std::string, NavPending> g_nav_pending;
+
+static void nav_resolve(const std::string& qid, int verdict) {  // 0 allow 1 deny 2 external
+  auto it = g_nav_pending.find(qid);
+  if (it == g_nav_pending.end()) return;  // timeout beat the reply, or vice versa
+  NavPending p = it->second;
+  g_nav_pending.erase(it);
+  if (verdict == 2)
+    g_app_info_launch_default_for_uri(p.url.c_str(), nullptr, nullptr);
+  if (verdict == 0) webkit_policy_decision_use(p.decision);
+  else webkit_policy_decision_ignore(p.decision);
+  g_object_unref(p.decision);
+}
+
+// -- window.open / target=_blank (POPUPQ/POPUPR) --
+// The `create` signal must answer synchronously (return a webview or null),
+// but the DECISION doesn't have to be: "popups" config fixes what's
+// returned, then a POPUPQ ask lets onWindowOpen refine it — unanswered
+// after 400ms = the configured mode. In window mode the popup is built (and
+// starts loading) but stays HIDDEN until the verdict; in external/deny
+// modes nothing exists to show, so the hook can only choose between those
+// two. The window-mode webview is constructed with "related-view" (same web
+// process — the only way window.open's return value, window.opener and
+// postMessage keep working) but a FRESH user content manager: the parent's
+// carries the parent's tiny shim with the parent's window id baked in,
+// which would cross-wire the two windows' RPC promise tables.
+
+static long g_popup_seq = 0, g_popup_qseq = 0;
+static std::map<std::string, std::function<void(const std::string&)>> g_popup_pending;
+
+static void popup_resolve(const std::string& qid, const std::string& verdict) {
+  auto it = g_popup_pending.find(qid);
+  if (it == g_popup_pending.end()) return;
+  auto fn = it->second;
+  g_popup_pending.erase(it);
+  fn(verdict);
+}
+
+static void popup_ask(const std::string& pid, const std::string& opener,
+                      const std::string& u, const std::string& mode,
+                      std::function<void(const std::string&)> fn) {
+  if (g_sock < 0) {  // backend not attached: the configured mode stands
+    fn(mode);
+    return;
+  }
+  std::string qid = "p" + std::to_string(++g_popup_qseq);
+  g_popup_pending[qid] = std::move(fn);
+  pipe_write_line("POPUPQ " + qid + " " + (pid.empty() ? "-" : pid) + "\t" +
+                  opener + "\t" + u + "\t" + mode);
+  struct Arg { std::string qid, mode; };
+  g_timeout_add(400, +[](gpointer d) -> gboolean {
+    Arg* a = (Arg*)d;
+    popup_resolve(a->qid, a->mode);
+    delete a;
+    return G_SOURCE_REMOVE;
+  }, new Arg{qid, mode});
+}
+
+static void popup_event(const std::string& pid, const std::string& u,
+                        const std::string& action) {
+  pipe_write_line("POPUP {\"window\":" + (pid.empty() ? "null" : json_escape(pid)) +
+                  ",\"url\":" + json_escape(u) + ",\"action\":\"" + action + "\"}");
+}
+
+// window.open's width/height/left/top arrive via the window properties,
+// which WebKit fills in by ready-to-show time.
+static void on_popup_ready_to_show(WebKitWebView* wv, gpointer) {
+  GtkWidget* top = gtk_widget_get_toplevel(GTK_WIDGET(wv));
+  if (!GTK_IS_WINDOW(top)) return;
+  WebKitWindowProperties* wp = webkit_web_view_get_window_properties(wv);
+  if (!wp) return;
+  GdkRectangle geo;
+  webkit_window_properties_get_geometry(wp, &geo);
+  if (geo.width >= 120 && geo.height >= 90)
+    gtk_window_set_default_size(GTK_WINDOW(top), geo.width, geo.height);
+  // 0,0 is indistinguishable from unset here; treat any nonzero as intent
+  // (X11 honors it, Wayland ignores moves anyway).
+  if (geo.x || geo.y) gtk_window_move(GTK_WINDOW(top), geo.x, geo.y);
+}
+
+// A popup page's own window.close() — WebKitGTK surfaces it, unlike WebView2.
+static void on_popup_close(WebKitWebView* wv, gpointer) {
+  GtkWidget* top = gtk_widget_get_toplevel(GTK_WIDGET(wv));
+  if (GTK_IS_WINDOW(top)) gtk_widget_destroy(top);
+}
+
+static GtkWidget* on_create_webview(WebKitWebView* parent,
+                                    WebKitNavigationAction* action, gpointer) {
+  WebKitURIRequest* req = webkit_navigation_action_get_request(action);
+  const char* uri = req ? webkit_uri_request_get_uri(req) : nullptr;
+  std::string u = uri ? uri : "";
+  bool web = u.rfind("http://", 0) == 0 || u.rfind("https://", 0) == 0;
+  std::string mode = g_popup_mode.empty() ? "external" : g_popup_mode;
+  std::string opener = tiny_winid_for_wv(parent);
+
+  if (mode == "window") {
+    std::string wid = "popup" + std::to_string(++g_popup_seq);
+    while (g_secwins.count(wid)) wid = "popup" + std::to_string(++g_popup_seq);
+    SecWin* sec = new SecWin();
+    sec->id = wid;
+    sec->win = GTK_WINDOW(gtk_window_new(GTK_WINDOW_TOPLEVEL));
+    gtk_window_set_title(sec->win, g_app_name.c_str());
+    gtk_window_set_default_size(sec->win, 900, 600);
+    gtk_window_set_position(sec->win, GTK_WIN_POS_CENTER);
+    apply_rgba_visual(GTK_WIDGET(sec->win));
+    const char* icon = getenv("TINYJS_ICON");
+    if (icon && *icon) set_window_icon(sec->win, icon);
+    sec->req_w = 900;
+    sec->req_h = 600;
+    // Same box shape as every other window so nothing downstream special-
+    // cases popups; the bar stays hidden (browsers give popups no menu).
+    sec->menu.accel = gtk_accel_group_new();
+    gtk_window_add_accel_group(sec->win, sec->menu.accel);
+    GtkWidget* vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_container_add(GTK_CONTAINER(sec->win), vbox);
+    sec->menu.bar = gtk_menu_bar_new();
+    gtk_box_pack_start(GTK_BOX(vbox), sec->menu.bar, FALSE, FALSE, 0);
+    // The popup MUST be built as a related view: WebKit takes the new page's
+    // configuration from the opener, and a plain view returned from `create`
+    // trips an assertion in the web process (measured 2026-08-06 —
+    // WindowFeatures unengaged). The cost is the shared content manager the
+    // call tokens exist to survive.
+    sec->wv = make_webview(wid, parent);
+    sec->shared_ucm = webkit_web_view_get_user_content_manager(parent);
+    g_shared_ucms[sec->shared_ucm]++;  // counted: one opener, several popups
+    gtk_box_pack_start(GTK_BOX(vbox), GTK_WIDGET(sec->wv), TRUE, TRUE, 0);
+    g_signal_connect(sec->win, "window-state-event", G_CALLBACK(on_window_state), nullptr);
+    g_signal_connect(sec->win, "delete-event", G_CALLBACK(on_secwin_delete), nullptr);
+    g_signal_connect_data(sec->win, "destroy", G_CALLBACK(on_secwin_destroy),
+        g_strdup(wid.c_str()), [](gpointer d, GClosure*) { g_free(d); },
+        (GConnectFlags)0);
+    g_signal_connect(sec->wv, "ready-to-show", G_CALLBACK(on_popup_ready_to_show), nullptr);
+    g_signal_connect(sec->wv, "close", G_CALLBACK(on_popup_close), nullptr);
+    g_secwins[wid] = sec;
+
+    // Backstop for a document that never commits. On a SHARED manager an
+    // untokened call is dropped with no reply, so a page holding a token-less
+    // document would hang every promise it made. WebKitGTK does commit the
+    // about:blank of a `window.open('')` (measured 2026-08-06 — that popup's
+    // calls settle as denials, origin "null"), so this normally does nothing;
+    // it fills in when nothing else did. A real navigation committing first
+    // wins, and re-mints anyway.
+    g_timeout_add(120, +[](gpointer d) -> gboolean {
+      std::string* id = (std::string*)d;
+      SecWin* sw = sec_for(*id);
+      if (sw && !g_win_token.count(*id)) assign_call_token(sw->wv, *id);
+      delete id;
+      return G_SOURCE_REMOVE;
+    }, new std::string(wid));
+
+    // NOT shown yet — the verdict decides (loading proceeds meanwhile, the
+    // same tradeoff as the nav-policy hold).
+    popup_ask(wid, opener, u, "window", [wid, u, web](const std::string& v) {
+      std::string a = (v == "external" || v == "deny") ? v : "window";
+      SecWin* sw = sec_for(wid);
+      if (a == "window") {
+        if (sw) {
+          gtk_widget_show_all(GTK_WIDGET(sw->win));
+          gtk_widget_hide(sw->menu.bar);
+        }
+      } else {
+        if (a == "external" && web)
+          g_app_info_launch_default_for_uri(u.c_str(), nullptr, nullptr);
+        if (sw) gtk_widget_destroy(GTK_WIDGET(sw->win));  // WINCLOSED + slot cleanup
+      }
+      popup_event(wid, u, a);
+    });
+    return GTK_WIDGET(sec->wv);  // WebKit issues the load itself
+  }
+
+  // external / deny: nothing to return either way, so the ask is free.
+  popup_ask("", opener, u, mode, [u, web, mode](const std::string& v) {
+    // 'window' can't be honored here (null already returned) — coerce to the
+    // configured mode.
+    std::string a = (v == "external" || v == "deny") ? v : mode;
+    if (a == "external" && web)
+      g_app_info_launch_default_for_uri(u.c_str(), nullptr, nullptr);
+    popup_event("", u, a);
+  });
+  return nullptr;
+}
+
+// -- policy decisions (downloads at RESPONSE, NAVQ ask, popups untouched) --
+
+static gboolean on_decide_policy(WebKitWebView* wv, WebKitPolicyDecision* decision,
+                                 WebKitPolicyDecisionType type, gpointer) {
+  if (type != WEBKIT_POLICY_DECISION_TYPE_RESPONSE)
+    return FALSE;  // NEW_WINDOW_ACTION's default use makes `create` fire
+  WebKitResponsePolicyDecision* rd = WEBKIT_RESPONSE_POLICY_DECISION(decision);
+  // Anything the webview can't render inline (attachments, CSV exports,
+  // unknown MIME types) becomes a download instead of a silent nothing.
+  if (!webkit_response_policy_decision_is_mime_type_supported(rd)) {
+    webkit_policy_decision_download(decision);
+    return TRUE;
+  }
+  if (!webkit_response_policy_decision_is_main_frame_main_resource(rd) || g_sock < 0)
+    return FALSE;
+  WebKitURIResponse* resp = webkit_response_policy_decision_get_response(rd);
+  const char* uri = resp ? webkit_uri_response_get_uri(resp) : nullptr;
+  std::string u = uri ? uri : "";
+  // file:// pages are the app's own frontend — no ask.
+  if (u.rfind("http://", 0) != 0 && u.rfind("https://", 0) != 0) return FALSE;
+  std::string qid = "n" + std::to_string(++g_nav_seq);
+  g_object_ref(decision);
+  g_nav_pending[qid] = {decision, u};
+  pipe_write_line("NAVQ " + qid + " " + tiny_winid_for_wv(wv) + "\t" + u);
+  g_timeout_add(400, +[](gpointer d) -> gboolean {
+    std::string* q = (std::string*)d;
+    nav_resolve(*q, 0);
+    delete q;
+    return G_SOURCE_REMOVE;
+  }, new std::string(qid));
+  return TRUE;  // decision held; NAVR or the timeout releases it
+}
+
+// -- downloads --
+
+struct DlInfo {
+  long id;
+  std::string url, filename, path;
+  gint64 last_emit = 0;  // µs, progress throttle
+};
+static std::map<WebKitDownload*, DlInfo> g_dl_info;
+static long g_download_seq = 0;
+
+static void download_event(long id, const std::string& url,
+                           const std::string& filename, const std::string& path,
+                           const char* state, const std::string& err,
+                           long long bytes = -1, long long total = -1) {
+  std::string j = "{\"id\":" + std::to_string(id) + ",\"url\":" + json_escape(url) +
+                  ",\"filename\":" + json_escape(filename) +
+                  ",\"path\":" + (path.empty() ? "null" : json_escape(path)) +
+                  ",\"state\":\"" + state + "\"";
+  if (bytes >= 0) {
+    j += ",\"bytes\":" + std::to_string(bytes);
+    j += ",\"total\":" + std::to_string(total > 0 ? total : -1);
+  }
+  if (!err.empty()) j += ",\"error\":" + json_escape(err);
+  pipe_write_line("DOWNLOAD " + j + "}");
+}
+
+static std::string downloads_dir() {
+  const char* d = g_get_user_special_dir(G_USER_DIRECTORY_DOWNLOAD);
+  if (d && *d) return d;
+  return home_dir() + "/Downloads";
+}
+
+// MIME → extension for names that arrive without one. GLib knows content
+// types but not preferred extensions, so this is a small honest map of what
+// actually crosses the wire (macOS asks UTType, Windows lets the engine do
+// it); an unknown type just keeps the bare name.
+static std::string ext_for_mime(std::string mime) {
+  size_t sc = mime.find(';');
+  if (sc != std::string::npos) mime = mime.substr(0, sc);
+  static const struct { const char *m, *e; } table[] = {
+      {"application/pdf", "pdf"}, {"application/zip", "zip"},
+      {"application/json", "json"}, {"application/gzip", "gz"},
+      {"text/csv", "csv"}, {"text/plain", "txt"}, {"text/html", "html"},
+      {"image/png", "png"}, {"image/jpeg", "jpg"}, {"image/gif", "gif"},
+      {"image/webp", "webp"}, {"image/svg+xml", "svg"},
+      {"audio/mpeg", "mp3"}, {"audio/wav", "wav"}, {"audio/ogg", "ogg"},
+      {"video/mp4", "mp4"}, {"video/webm", "webm"},
+  };
+  for (auto& t : table)
+    if (mime == t.m) return t.e;
+  return "";
+}
+
+static gboolean on_decide_destination(WebKitDownload* dl, gchar* suggested, gpointer) {
+  WebKitURIResponse* resp = webkit_download_get_response(dl);
+  WebKitURIRequest* req = webkit_download_get_request(dl);
+  const char* ru = resp ? webkit_uri_response_get_uri(resp) : nullptr;
+  if (!ru && req) ru = webkit_uri_request_get_uri(req);
+  std::string url = ru ? ru : "";
+  std::string mode = g_downloads_mode.empty() ? "auto" : g_downloads_mode;
+  std::string name = suggested && *suggested ? suggested : "download";
+
+  if (mode == "deny") {
+    download_event(++g_download_seq, url, name, "", "denied", "");
+    webkit_download_cancel(dl);
+    return TRUE;
+  }
+
+  std::string dir = downloads_dir();
+  std::string full;
+  if (mode == "ask") {
+    // A plain GtkFileChooserDialog, NOT gtk_file_chooser_native: the native
+    // chooser rides the portal (out of process) where TINYJS_TEST_AUTODLG
+    // can't reach it — the same lesson macOS's out-of-process save panel
+    // taught. The launcher isn't sandboxed, so nothing is lost.
+    GtkWidget* dlg = gtk_file_chooser_dialog_new(g_app_name.c_str(), g_win,
+        GTK_FILE_CHOOSER_ACTION_SAVE, "Cancel", GTK_RESPONSE_CANCEL,
+        "Save", GTK_RESPONSE_ACCEPT, NULL);
+    gtk_window_set_modal(GTK_WINDOW(dlg), TRUE);
+    gtk_file_chooser_set_do_overwrite_confirmation(GTK_FILE_CHOOSER(dlg), TRUE);
+    gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(dlg), dir.c_str());
+    gtk_file_chooser_set_current_name(GTK_FILE_CHOOSER(dlg), name.c_str());
+    test_autodlg_arm();
+    gint res = gtk_dialog_run(GTK_DIALOG(dlg));
+    char* path = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dlg));
+    gtk_widget_destroy(dlg);
+    if (res != GTK_RESPONSE_ACCEPT || !path) {
+      g_free(path);
+      download_event(++g_download_seq, url, name, "", "cancelled", "");
+      webkit_download_cancel(dl);
+      return TRUE;
+    }
+    full = path;
+    g_free(path);
+    size_t slash = full.rfind('/');
+    name = slash == std::string::npos ? full : full.substr(slash + 1);
+  } else {
+    // auto: ~/Downloads (XDG), extension derived from the MIME type when the
+    // name has none, de-duplicated rather than overwritten.
+    if (name.find('.') == std::string::npos && resp) {
+      const char* mt = webkit_uri_response_get_mime_type(resp);
+      std::string ext = ext_for_mime(mt ? mt : "");
+      if (!ext.empty()) name += "." + ext;
+    }
+    size_t dot = name.rfind('.');
+    std::string base = dot == std::string::npos ? name : name.substr(0, dot);
+    std::string ext = dot == std::string::npos ? "" : name.substr(dot);
+    std::string cand = name;
+    for (int n = 2; file_exists(dir + "/" + cand) && n < 1000; n++)
+      cand = base + " (" + std::to_string(n) + ")" + ext;
+    name = cand;
+    full = dir + "/" + name;
+  }
+
+  long id = ++g_download_seq;
+  g_dl_info[dl] = {id, url, name, full};
+  // The dedup / ask already decided the fate of an existing file; without
+  // this a name collision fails the whole download instead.
+  webkit_download_set_allow_overwrite(dl, TRUE);
+  // An absolute PATH, not a file:// URI: 4.1 takes either, but the 6.0 API
+  // asserts on anything that isn't an absolute path.
+  webkit_download_set_destination(dl, full.c_str());
+  download_event(id, url, name, full, "started", "");
+  return TRUE;
+}
+
+static void on_download_data(WebKitDownload* dl, guint64, gpointer) {
+  auto it = g_dl_info.find(dl);
+  if (it == g_dl_info.end()) return;
+  gint64 now = g_get_monotonic_time();
+  if (now - it->second.last_emit < 250000) return;  // ~4 events/s
+  it->second.last_emit = now;
+  WebKitURIResponse* resp = webkit_download_get_response(dl);
+  long long total = resp ? (long long)webkit_uri_response_get_content_length(resp) : 0;
+  download_event(it->second.id, it->second.url, it->second.filename,
+                 it->second.path, "progress", "",
+                 (long long)webkit_download_get_received_data_length(dl),
+                 total > 0 ? total : -1);
+}
+
+static void on_download_failed(WebKitDownload* dl, GError* error, gpointer) {
+  auto it = g_dl_info.find(dl);
+  if (it == g_dl_info.end()) return;  // denied/cancelled pre-destination — already reported
+  download_event(it->second.id, it->second.url, it->second.filename,
+                 it->second.path, "failed",
+                 error && error->message ? error->message : "download failed");
+  g_dl_info.erase(it);  // "finished" fires after "failed" too; keep it silent
+}
+
+static void on_download_finished(WebKitDownload* dl, gpointer) {
+  auto it = g_dl_info.find(dl);
+  if (it == g_dl_info.end()) return;
+  download_event(it->second.id, it->second.url, it->second.filename,
+                 it->second.path, "done", "");
+  g_dl_info.erase(it);
+}
+
+static void on_download_started(WebKitWebContext*, WebKitDownload* dl, gpointer) {
+  g_signal_connect(dl, "decide-destination", G_CALLBACK(on_decide_destination), nullptr);
+  g_signal_connect(dl, "received-data", G_CALLBACK(on_download_data), nullptr);
+  g_signal_connect(dl, "failed", G_CALLBACK(on_download_failed), nullptr);
+  g_signal_connect(dl, "finished", G_CALLBACK(on_download_finished), nullptr);
+}
+
+// -- find-in-page (FIND/STOPFIND, call-style like DLG) --
+// WebKitFindController does the search AND the counting (the one launcher
+// where match counts come from the engine instead of the mac/win JS
+// text-walk approximation). The active index is tracked here: 1 after a
+// fresh search (count on a fresh backwards search — the engine lands on the
+// last match), then stepped with wraparound on repeat finds.
+
+struct FindState {
+  std::string callid;   // the FIND awaiting found-text / failed-to-find
+  std::string term;
+  bool matchCase = false;
+  bool fresh = false;   // pending op is a new search(), not a step
+  bool forward = true;  // direction of the pending op
+  int matches = 0, active = 0;
+  bool wired = false;
+};
+static std::map<WebKitWebView*, FindState> g_find_state;
+
+// A navigation invalidates the term and the counts, but not `wired` — those
+// signal connections live on the view's find controller, which outlives the
+// document. Called from the commit handler.
+static void find_forget(WebKitWebView* wv) {
+  auto it = g_find_state.find(wv);
+  if (it == g_find_state.end()) return;
+  it->second.term.clear();
+  it->second.matches = 0;
+  it->second.active = 0;
+  it->second.fresh = false;
+}
+
+static void find_reply(FindState& st, bool found) {
+  if (st.callid.empty()) return;
+  std::string j = found ? "{\"found\":true,\"matches\":" + std::to_string(st.matches) +
+                              ",\"activeMatch\":" + std::to_string(st.active) + "}"
+                        : "{\"found\":false,\"matches\":0,\"activeMatch\":0}";
+  reply_to_call(st.callid, 0, j);
+  st.callid.clear();
+}
+
+static void on_found_text(WebKitFindController* fc, guint count, gpointer data) {
+  auto it = g_find_state.find((WebKitWebView*)data);
+  if (it == g_find_state.end()) return;
+  FindState& st = it->second;
+  if (st.fresh) {
+    st.matches = (int)count;
+    st.active = st.forward ? 1 : (int)count;
+    st.fresh = false;
+  } else {
+    st.active += st.forward ? 1 : -1;
+    if (st.active > st.matches) st.active = 1;
+    if (st.active < 1) st.active = st.matches;
+  }
+  find_reply(st, true);
+}
+
+static void on_failed_to_find(WebKitFindController* fc, gpointer data) {
+  auto it = g_find_state.find((WebKitWebView*)data);
+  if (it == g_find_state.end()) return;
+  FindState& st = it->second;
+  st.matches = 0;
+  st.active = 0;
+  st.term.clear();  // a later FIND with this term is a fresh search
+  find_reply(st, false);
+}
+
+static void do_find(const std::string& callid, const std::string& term,
+                    bool forward, bool matchCase) {
+  size_t c = callid.find(':');
+  std::string winid = c == std::string::npos ? "main" : callid.substr(0, c);
+  WebKitWebView* wv = wv_for(winid);
+  if (!wv || term.empty()) {
+    reply_to_call(callid, 0, "{\"found\":false,\"matches\":0,\"activeMatch\":0}");
+    return;
+  }
+  WebKitFindController* fc = webkit_web_view_get_find_controller(wv);
+  FindState& st = g_find_state[wv];
+  if (!st.wired) {
+    st.wired = true;
+    g_signal_connect(fc, "found-text", G_CALLBACK(on_found_text), wv);
+    g_signal_connect(fc, "failed-to-find-text", G_CALLBACK(on_failed_to_find), wv);
+  }
+  find_reply(st, false);  // a stale pending call resolves rather than leaks
+  st.callid = callid;
+  st.forward = forward;
+  if (term == st.term && matchCase == st.matchCase && st.matches > 0) {
+    st.fresh = false;
+    if (forward) webkit_find_controller_search_next(fc);
+    else webkit_find_controller_search_previous(fc);
+  } else {
+    st.term = term;
+    st.matchCase = matchCase;
+    st.fresh = true;
+    guint32 opts = WEBKIT_FIND_OPTIONS_WRAP_AROUND |
+                   (matchCase ? 0 : WEBKIT_FIND_OPTIONS_CASE_INSENSITIVE) |
+                   (forward ? 0 : WEBKIT_FIND_OPTIONS_BACKWARDS);
+    webkit_find_controller_search(fc, term.c_str(), opts, G_MAXUINT);
+  }
+}
+
+static void do_stopfind(const std::string& callid) {
+  size_t c = callid.find(':');
+  std::string winid = c == std::string::npos ? "main" : callid.substr(0, c);
+  WebKitWebView* wv = wv_for(winid);
+  if (wv) {
+    webkit_find_controller_search_finish(webkit_web_view_get_find_controller(wv));
+    auto it = g_find_state.find(wv);
+    if (it != g_find_state.end()) {
+      it->second.term.clear();
+      it->second.matches = 0;
+    }
+  }
+  reply_to_call(callid, 0, "true");
+}
+
+static WebKitWebView* make_webview(const std::string& winid, WebKitWebView* related) {
+  WebKitUserContentManager* ucm = make_ucm(winid);
+  WebKitSettings* settings = make_settings();
+  enable_features(settings);
+  WebKitWebsitePolicies* policies = webkit_website_policies_new_with_policies(
+      "autoplay", WEBKIT_AUTOPLAY_ALLOW, NULL);
+  // "related-view" keeps a popup in its opener's web process (window.opener /
+  // postMessage survive); it and the plain path are the same construction
+  // otherwise.
+  WebKitWebView* wv = related
+      ? WEBKIT_WEB_VIEW(g_object_new(WEBKIT_TYPE_WEB_VIEW,
+            "related-view", related,
+            "user-content-manager", ucm,
+            "settings", settings,
+            "website-policies", policies,
+            NULL))
+      : WEBKIT_WEB_VIEW(g_object_new(WEBKIT_TYPE_WEB_VIEW,
+            "user-content-manager", ucm,
+            "settings", settings,
+            "website-policies", policies,
+            NULL));
+  g_object_unref(ucm);
+  g_object_unref(settings);
+  g_object_unref(policies);
+  g_signal_connect(wv, "context-menu", G_CALLBACK(on_context_menu), nullptr);
+  g_signal_connect(wv, "permission-request", G_CALLBACK(on_permission_request), nullptr);
+  g_signal_connect(wv, "script-dialog", G_CALLBACK(on_script_dialog), nullptr);
+  g_signal_connect(wv, "load-changed", G_CALLBACK(on_load_changed), nullptr);
+  g_signal_connect(wv, "load-failed", G_CALLBACK(on_load_failed), nullptr);
+  g_signal_connect(wv, "web-process-terminated",
+                   G_CALLBACK(on_web_process_terminated), nullptr);
+  g_signal_connect(wv, "decide-policy", G_CALLBACK(on_decide_policy), nullptr);
+  g_signal_connect(wv, "create", G_CALLBACK(on_create_webview), nullptr);
+  g_signal_connect_after(wv, "drag-data-received",
+                         G_CALLBACK(on_drag_data_received), nullptr);
+  // Track the live left-button press so DRAGWIN can start a real move-drag
+  // (needs the press's device + serial, lost by the round-trip otherwise).
+  gtk_widget_add_events(GTK_WIDGET(wv), GDK_BUTTON_PRESS_MASK);
+  g_signal_connect(wv, "button-press-event", G_CALLBACK(on_button_press), nullptr);
+  if (debug_mode()) {
+    gtk_widget_add_events(GTK_WIDGET(wv), GDK_KEY_PRESS_MASK);
+    g_signal_connect(wv, "key-press-event", G_CALLBACK(on_debug_key), nullptr);
+  }
+  return wv;
+}
+
+static gboolean on_secwin_delete(GtkWidget* w, GdkEvent*, gpointer data) {
+  (void)w;
+  (void)data;
+  return FALSE;  // destroy handler does the cleanup
+}
+
+static void on_secwin_destroy(GtkWidget*, gpointer data) {
+  char* id = (char*)data;
+  auto it = g_secwins.find(id);
+  if (it != g_secwins.end()) {
+    pipe_write_line(std::string("WINCLOSED ") + id);
+    g_last_winstate.erase(id);
+    g_find_state.erase(it->second->wv);
+    // The window's call token and its shared-manager mark go with it —
+    // a later manager could otherwise land on the same address and inherit
+    // the "ambiguous" verdict.
+    auto tok = g_win_token.find(id);
+    if (tok != g_win_token.end()) {
+      g_call_tokens.erase(tok->second);
+      g_win_token.erase(tok);
+    }
+    // Un-mark the manager we actually marked (the OPENER's), and only when the
+    // last popup riding it is gone: erasing the popup's own manager left the
+    // opener flagged for the process's life, and erasing on the first close
+    // re-opened the misattribution hole while a second popup was still alive.
+    if (it->second->shared_ucm) {
+      auto sh = g_shared_ucms.find(it->second->shared_ucm);
+      if (sh != g_shared_ucms.end() && --sh->second <= 0) g_shared_ucms.erase(sh);
+    }
+    // This window's menu items go with it — their widgets are already gone,
+    // and a later app-wide MENUUPD would otherwise walk into them.
+    clear_registry_kind("menu", it->second->win);
+    delete it->second;
+    g_secwins.erase(it);
+  }
+}
+
+static void do_winopen(const std::string& rest) {
+  auto f = split_tabs(rest);
+  std::string id = tab_field(f, 0);
+  if (id.empty() || id == "main") return;
+  auto existing = g_secwins.find(id);
+  if (existing != g_secwins.end()) {
+    gtk_window_present(existing->second->win);
+    return;
+  }
+  std::string page = tab_field(f, 1);
+  std::string title = tab_field(f, 2);
+  if (title.empty()) title = id;
+  int w = 600, h = 400;
+  sscanf(tab_field(f, 3).c_str(), "%dx%d", &w, &h);
+
+  SecWin* sec = new SecWin();
+  sec->id = id;
+  sec->win = GTK_WINDOW(gtk_window_new(GTK_WINDOW_TOPLEVEL));
+  gtk_window_set_title(sec->win, title.c_str());
+  gtk_window_set_default_size(sec->win, w, h);
+  apply_rgba_visual(GTK_WIDGET(sec->win));
+  const char* icon = getenv("TINYJS_ICON");
+  if (icon && *icon) set_window_icon(sec->win, icon);
+  sec->req_w = w;
+  sec->req_h = h;
+  // Same shape as main: a vertical box with the (initially empty) menu bar
+  // above the webview. Built up front rather than reparented later — a
+  // window that never shows a bar just never shows this widget.
+  sec->menu.accel = gtk_accel_group_new();
+  gtk_window_add_accel_group(sec->win, sec->menu.accel);
+  GtkWidget* vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+  gtk_container_add(GTK_CONTAINER(sec->win), vbox);
+  sec->menu.bar = gtk_menu_bar_new();
+  gtk_box_pack_start(GTK_BOX(vbox), sec->menu.bar, FALSE, FALSE, 0);
+  sec->wv = make_webview(id);
+  gtk_box_pack_start(GTK_BOX(vbox), GTK_WIDGET(sec->wv), TRUE, TRUE, 0);
+  g_signal_connect(sec->win, "window-state-event", G_CALLBACK(on_window_state), nullptr);
+  g_signal_connect(sec->win, "delete-event", G_CALLBACK(on_secwin_delete), nullptr);
+  g_signal_connect_data(sec->win, "destroy", G_CALLBACK(on_secwin_destroy),
+    g_strdup(id.c_str()), [](gpointer d, GClosure*) { g_free(d); }, (GConnectFlags)0);
+  g_secwins[id] = sec;
+
+  // chrome + position BEFORE showing (no flash / no jump). Field 12 is
+  // chrome.menu — '0' opens the window with no bar at all.
+  std::vector<std::string> chrome = {tab_field(f, 4), tab_field(f, 5), tab_field(f, 6),
+                                     tab_field(f, 7), tab_field(f, 8), tab_field(f, 9),
+                                     tab_field(f, 12)};
+  apply_chrome(id, chrome);
+  std::string xs = tab_field(f, 10), ys = tab_field(f, 11);
+  bool has_pos = !xs.empty() && !ys.empty();
+  if (has_pos) gtk_window_move(sec->win, atoi(xs.c_str()), atoi(ys.c_str()));
+  else gtk_window_set_position(sec->win, GTK_WIN_POS_CENTER);
+
+  // Field 14: parent (win.open parent:) — the WM keeps a transient above its
+  // parent (but not above other apps), skips the taskbar for it, and
+  // destroy-with-parent matches Win32 owned-window teardown. Field 13 is
+  // windowControlsPos (macOS-only).
+  std::string parent = tab_field(f, 14);
+  if (!parent.empty()) {
+    GtkWindow* pw = nullptr;
+    if (parent == "main") pw = g_win;
+    else {
+      auto pit = g_secwins.find(parent);
+      if (pit != g_secwins.end()) pw = pit->second->win;
+    }
+    if (pw && pw != sec->win) {
+      gtk_window_set_transient_for(sec->win, pw);
+      gtk_window_set_destroy_with_parent(sec->win, TRUE);
+    }
+  }
+
+  load_target_into(sec->wv, page);
+  gtk_widget_show_all(GTK_WIDGET(sec->win));
+  // show_all just revealed the bar too. Fill it in from the app menu (or
+  // hide it again if there is nothing to show / the window opted out).
+  apply_menus(id);
+  if (debug_mode() == 2) inspector_open(sec->wv);
+}
+
+static void do_winclose(const std::string& id) {
+  auto it = g_secwins.find(id);
+  if (it == g_secwins.end()) return;
+  gtk_widget_destroy(GTK_WIDGET(it->second->win));
+}
+
+// -------------------------------------------------------------- read loop ---
+
+static void handle_line(const std::string& line);
+
+static void reader_thread() {
+  std::string buf;
+  char chunk[4096];
+  for (;;) {
+    ssize_t n = read(g_sock, chunk, sizeof chunk);
+    if (n <= 0) break;
+    buf.append(chunk, (size_t)n);
+    size_t i;
+    while ((i = buf.find('\n')) != std::string::npos) {
+      std::string line = buf.substr(0, i);
+      buf.erase(0, i + 1);
+      if (!line.empty()) {
+        ui_dispatch([line]() { handle_line(line); });
+      }
+    }
+  }
+  ui_dispatch([]() {
+    g_quitting = true;
+    gtk_main_quit();
+  });
+}
+
+// peel "@<winid>" from an op like "EVAL@side js…"; returns {winid, rest}
+static bool peel_target(const std::string& line, const std::string& op,
+                        std::string& winid, std::string& rest) {
+  if (line.rfind(op + " ", 0) == 0) {
+    winid = "main";
+    rest = line.substr(op.size() + 1);
+    return true;
+  }
+  if (line.rfind(op + "@", 0) == 0) {
+    size_t sp = line.find(' ', op.size() + 1);
+    if (sp == std::string::npos) {
+      winid = line.substr(op.size() + 1);
+      rest = "";
+    } else {
+      winid = line.substr(op.size() + 1, sp - op.size() - 1);
+      rest = line.substr(sp + 1);
+    }
+    return true;
+  }
+  if (line == op) {
+    winid = "main";
+    rest = "";
+    return true;
+  }
+  return false;
+}
+
+static void handle_line(const std::string& line) {
+  std::string winid, rest;
+
+  // block-builder context (menu / tray / ctx declarations)
+  if (g_build_mode != 0) {
+    if (line.rfind("ITEM ", 0) == 0) { build_item_line("ITEM", line.substr(5)); return; }
+    if (line.rfind("SUB ", 0) == 0) { build_item_line("SUB", line.substr(4)); return; }
+    if (line == "SUBEND") { build_item_line("SUBEND", ""); return; }
+    if (line == "SEP") { build_item_line("SEP", ""); return; }
+    if (line.rfind("ROLEITEM ", 0) == 0) { build_item_line("ROLEITEM", line.substr(9)); return; }
+    if (g_build_mode == 1) {
+      if (line.rfind("MENU ", 0) == 0) {
+        g_build_menubar.push_back({line.substr(5), {}});
+        g_build_stack.clear();
+        g_build_stack.push_back(&g_build_menubar.back().items);
+        return;
+      }
+      // A standard-menu slot (MENUROLE edit, macOS's Edit menu). GTK has no
+      // launcher-owned Edit menu (WebKitGTK handles Ctrl+C/V itself), so a
+      // bare slot is skipped — but the items an app puts in it (its own, and
+      // stock ROLEITEMs) become an "Edit" menu in that slot. The macOS-only
+      // `nostd` flag field is never sent here. First edit block only, as on
+      // macOS; other roles (`app`) have nowhere to go and their items drop.
+      if (line.rfind("MENUROLE ", 0) == 0) {
+        g_build_stack.clear();
+        if (line.substr(9) == "edit" && g_build_edit_idx < 0) {
+          g_build_edit_idx = (int)g_build_menubar.size();
+          g_build_menubar.push_back({"Edit", {}});
+          g_build_stack.push_back(&g_build_menubar.back().items);
+        }
+        return;
+      }
+      if (line == "MENUEND") {
+        g_build_mode = 0;
+        g_build_stack.clear();
+        // An edit slot nobody filled draws nothing, as before.
+        if (g_build_edit_idx >= 0 && g_build_menubar[g_build_edit_idx].items.empty())
+          g_build_menubar.erase(g_build_menubar.begin() + g_build_edit_idx);
+        g_build_edit_idx = -1;
+        if (g_build_menu_win.empty()) {
+          g_app_menu = g_build_menubar;
+          apply_app_menu_everywhere();
+        } else if (WinMenu* wm = menu_for(g_build_menu_win)) {
+          wm->own = g_build_menubar;
+          wm->has_own = true;
+          apply_menus(g_build_menu_win);
+        }
+        return;
+      }
+    }
+    if (g_build_mode == 2 && line == "TRAYEND") {
+      g_build_mode = 0;
+      g_build_stack.clear();
+      apply_tray();
+      return;
+    }
+    if (g_build_mode == 3 && line == "CTXEND") {
+      g_build_mode = 0;
+      g_build_stack.clear();
+      g_ctx_custom = true;
+      return;
+    }
+    // fall through: a non-block line ends nothing; process it normally
+  }
+
+  if (line.rfind("RET ", 0) == 0) {
+    size_t sp1 = line.find(' ', 4);
+    if (sp1 == std::string::npos) return;
+    size_t sp2 = line.find(' ', sp1 + 1);
+    if (sp2 == std::string::npos) return;
+    std::string callid = line.substr(4, sp1 - 4);
+    int status = atoi(line.substr(sp1 + 1, sp2 - sp1 - 1).c_str());
+    reply_to_call(callid, status, line.substr(sp2 + 1));
+    return;
+  }
+
+  if (line.rfind("EVAL@* ", 0) == 0) { eval_all(wire_unescape(line.substr(7))); return; }
+  if (peel_target(line, "EVAL", winid, rest)) { eval_in(winid, wire_unescape(rest)); return; }
+
+  if (peel_target(line, "TITLE", winid, rest)) {
+    GtkWindow* win = win_for(winid);
+    if (win) gtk_window_set_title(win, rest.c_str());
+    return;
+  }
+
+  if (peel_target(line, "SIZE", winid, rest)) {
+    int w = 0, h = 0;
+    if (sscanf(rest.c_str(), "%d %d", &w, &h) == 2) set_content_size(winid, w, h);
+    return;
+  }
+
+  if (line.rfind("DLG ", 0) == 0) {
+    size_t sp = line.find(' ', 4);
+    if (sp == std::string::npos) return;
+    do_dialog(line.substr(4, sp - 4), line.substr(sp + 1));
+    return;
+  }
+
+  // browser affordances (TODO-site-wrapper.md)
+  if (line.rfind("NAVR ", 0) == 0) {
+    // NAVR <qid> allow|deny|external — answer to a held NAVQ policy ask.
+    size_t sp = line.find(' ', 5);
+    if (sp == std::string::npos) return;
+    std::string v = line.substr(sp + 1);
+    nav_resolve(line.substr(5, sp - 5), v == "deny" ? 1 : v == "external" ? 2 : 0);
+    return;
+  }
+  if (line.rfind("POPUPR ", 0) == 0) {
+    // POPUPR <qid> window|external|deny — answer to a POPUPQ ask.
+    size_t sp = line.find(' ', 7);
+    if (sp == std::string::npos) return;
+    popup_resolve(line.substr(7, sp - 7), line.substr(sp + 1));
+    return;
+  }
+  if (line.rfind("FIND ", 0) == 0) {
+    // FIND <id> <term>\t<forward>\t<matchCase> — call-style, RET via id.
+    size_t sp = line.find(' ', 5);
+    if (sp == std::string::npos) return;
+    auto p = split_tabs(line.substr(sp + 1));
+    do_find(line.substr(5, sp - 5), tab_field(p, 0),
+            tab_field(p, 1) != "0", tab_field(p, 2) == "1");
+    return;
+  }
+  if (line.rfind("STOPFIND ", 0) == 0) {
+    do_stopfind(line.substr(9));
+    return;
+  }
+
+  if (line == "QUIT") { g_quitting = true; gtk_main_quit(); return; }
+  if (line == "RELOAD") { webkit_web_view_reload_bypass_cache(g_wv); return; }
+  // PRINT | PRINT@<winid> — the asking window is the one that prints.
+  if (line == "PRINT" || line.rfind("PRINT@", 0) == 0) {
+    std::string wid = line.size() > 6 ? line.substr(6) : "";
+    WebKitWebView* target = wv_for(wid);
+    GtkWindow* parent = win_for(wid);
+    if (!target) return;
+    WebKitPrintOperation* op = webkit_print_operation_new(target);
+    webkit_print_operation_run_dialog(op, parent);
+    g_object_unref(op);
+    return;
+  }
+
+  // Bare: the app menu, shown by every window that hasn't overridden.
+  // @<win>: that window's own, main included (main has to name itself — a
+  // bare MENUBEGIN already means something else).
+  if (line == "MENUBEGIN" || line.rfind("MENUBEGIN@", 0) == 0) {
+    g_build_mode = 1;
+    g_build_menu_win = line.size() > 10 ? line.substr(10) : "";
+    g_build_menubar.clear();
+    g_build_stack.clear();
+    g_build_edit_idx = -1;
+    return;
+  }
+  // MENURESET@<win>: drop the override, back to inheriting the app menu.
+  if (line.rfind("MENURESET@", 0) == 0) {
+    std::string id = line.substr(10);
+    if (WinMenu* wm = menu_for(id)) {
+      wm->own.clear();
+      wm->has_own = false;
+      apply_menus(id);
+    }
+    return;
+  }
+  if (line.rfind("MENUUPD ", 0) == 0) { menu_update(line.substr(8)); return; }
+  // MENUUPD@<win> <fields> — just that window's copy of the id.
+  if (line.rfind("MENUUPD@", 0) == 0) {
+    size_t sp = line.find(' ', 8);
+    if (sp != std::string::npos)
+      menu_update(line.substr(sp + 1), line.substr(8, sp - 8));
+    return;
+  }
+
+  if (line.rfind("TRAYBEGIN", 0) == 0) {
+    g_build_mode = 2;
+    g_build_tray = TraySpec();
+    auto f = split_tabs(line.size() > 10 ? line.substr(10) : "");
+    g_build_tray.title = tab_field(f, 0);
+    g_build_tray.icon = tab_field(f, 1);
+    g_build_tray.template_icon = tab_field(f, 2) != "0";
+    g_build_tray.tooltip = tab_field(f, 3);
+    g_build_tray.primary = tab_field(f, 4) == "1";
+    g_build_stack.clear();
+    g_build_stack.push_back(&g_build_tray.items);
+    return;
+  }
+  if (line == "TRAYREMOVE") { remove_tray(); return; }
+
+  if (line == "CTXBEGIN") {
+    g_build_mode = 3;
+    g_ctx_items.clear();
+    clear_registry_kind("ctx");
+    g_build_stack.clear();
+    g_build_stack.push_back(&g_ctx_items);
+    return;
+  }
+  if (line == "CTXCLEAR") {
+    g_ctx_custom = false;
+    g_ctx_items.clear();
+    return;
+  }
+  if (line.rfind("CTXSUPPRESS", 0) == 0) {
+    g_ctx_suppress = line.size() > 12 && line.substr(12) == "1";
+    return;
+  }
+
+  if (peel_target(line, "WINOP", winid, rest)) { do_winop(winid, rest); return; }
+  if (peel_target(line, "CHROME", winid, rest)) { apply_chrome(winid, split_tabs(rest)); return; }
+
+  if (peel_target(line, "DRAGWIN", winid, rest)) {
+    GtkWindow* win = win_for(winid);
+    if (!win) return;
+    GdkDisplay* d = gtk_widget_get_display(GTK_WIDGET(win));
+    GdkSeat* seat = gdk_display_get_default_seat(d);
+    // Prefer the device from the actual press (valid grab serial); fall back
+    // to the seat pointer if we somehow never saw one.
+    GdkDevice* dev = g_last_press_device ? g_last_press_device
+                                         : (seat ? gdk_seat_get_pointer(seat) : nullptr);
+    if (!dev) return;
+    GdkWindow* gw = gtk_widget_get_window(GTK_WIDGET(win));
+    if (!gw) return;
+    int x = 0, y = 0;
+    gdk_device_get_position(dev, nullptr, &x, &y);
+    guint32 t = g_last_press_time ? g_last_press_time : gtk_get_current_event_time();
+    gdk_window_begin_move_drag_for_device(gw, dev, 1, x, y, t);
+    return;
+  }
+
+  // Same dance as DRAGWIN (the live press carries the grab serial Wayland
+  // needs), but resizing from a named edge.
+  if (peel_target(line, "RESIZEWIN", winid, rest)) {
+    GtkWindow* win = win_for(winid);
+    if (!win) return;
+    static const struct { const char* name; GdkWindowEdge edge; } EDGES[] = {
+      {"nw", GDK_WINDOW_EDGE_NORTH_WEST}, {"n", GDK_WINDOW_EDGE_NORTH},
+      {"ne", GDK_WINDOW_EDGE_NORTH_EAST}, {"w", GDK_WINDOW_EDGE_WEST},
+      {"e", GDK_WINDOW_EDGE_EAST}, {"sw", GDK_WINDOW_EDGE_SOUTH_WEST},
+      {"s", GDK_WINDOW_EDGE_SOUTH}, {"se", GDK_WINDOW_EDGE_SOUTH_EAST},
+    };
+    GdkWindowEdge edge = GDK_WINDOW_EDGE_SOUTH_EAST;
+    for (const auto& e : EDGES) if (rest == e.name) { edge = e.edge; break; }
+    if (!gtk_window_get_resizable(win)) return;
+    GdkDisplay* d = gtk_widget_get_display(GTK_WIDGET(win));
+    GdkSeat* seat = gdk_display_get_default_seat(d);
+    GdkDevice* dev = g_last_press_device ? g_last_press_device
+                                         : (seat ? gdk_seat_get_pointer(seat) : nullptr);
+    if (!dev) return;
+    GdkWindow* gw = gtk_widget_get_window(GTK_WIDGET(win));
+    if (!gw) return;
+    int x = 0, y = 0;
+    gdk_device_get_position(dev, nullptr, &x, &y);
+    guint32 t = g_last_press_time ? g_last_press_time : gtk_get_current_event_time();
+    gdk_window_begin_resize_drag_for_device(gw, edge, dev, 1, x, y, t);
+    return;
+  }
+
+  // AUDIOFILTERS <type,freq,q,gain>\t… — replace the chain (empty = clear)
+  if (line.rfind("AUDIOFILTERS", 0) == 0 && line.rfind("AUDIOFILTERSET", 0) != 0) {
+    std::string rest = line.size() > 13 ? line.substr(13) : "";
+    std::vector<EqFilter> prev = g_eq;
+    g_eq.clear();
+    for (const std::string& f : split_tabs(rest)) {
+      if (f.empty()) continue;
+      std::vector<std::string> p;
+      size_t start = 0;
+      for (;;) {
+        size_t c = f.find(',', start);
+        p.push_back(f.substr(start, c == std::string::npos ? c : c - start));
+        if (c == std::string::npos) break;
+        start = c + 1;
+      }
+      if (p.size() < 4) continue;
+      EqFilter e;
+      e.label = p[0];
+      e.freq = atof(p[1].c_str());
+      e.q = atof(p[2].c_str());
+      e.gain = atof(p[3].c_str());
+      e.gainR = e.gain;
+      if (p.size() >= 5 && !p[4].empty()) { e.gainR = atof(p[4].c_str()); e.split = true; }
+      g_eq.push_back(e);
+    }
+    bool anySplit = false;
+    for (const EqFilter& f : g_eq) if (f.split) { anySplit = true; break; }
+    size_t cap = anySplit ? EQ_MAX_SPLIT : EQ_MAX_MONO;
+    if (g_eq.size() > cap) g_eq.resize(cap);
+    if (g_eq.empty()) { eq_stop(); return; }
+    // Same shape (same filters in the same order)? Then this is a retune, and
+    // rebuilding would drop audio for no reason — push the values instead.
+    // Same labels AND same splitness: splitness changes the node naming, so
+    // it is a shape change even though the filters look alike.
+    bool sameShape = !g_eq_sink.empty() && prev.size() == g_eq.size()
+                     && (anySplit == !g_eq_mono);
+    for (size_t i = 0; sameShape && i < prev.size(); i++)
+      if (prev[i].label != g_eq[i].label || prev[i].split != g_eq[i].split)
+        sameShape = false;
+    if (sameShape) eq_push_soon(); else eq_start();
+    return;
+  }
+  // AUDIOBALANCE <-1..1> — stereo balance on the chain's output stream
+  if (line.rfind("AUDIOBALANCE", 0) == 0) {
+    g_eq_balance = line.size() > 13 ? atof(line.substr(13).c_str()) : 0;
+    eq_apply_balance();
+    return;
+  }
+  // AUDIOFILTERSET <index>\t<freq>\t<q>\t<gain> — retune one, no rebuild
+  if (line.rfind("AUDIOFILTERSET ", 0) == 0) {
+    auto f = split_tabs(line.substr(15));
+    if (f.size() < 4) return;
+    size_t i = (size_t)atoi(f[0].c_str());
+    if (i >= g_eq.size()) return;
+    g_eq[i].freq = atof(f[1].c_str());
+    g_eq[i].q = atof(f[2].c_str());
+    g_eq[i].gain = atof(f[3].c_str());
+    eq_push_params((int)i);
+    return;
+  }
+
+  if (line.rfind("WINOPEN ", 0) == 0) { do_winopen(line.substr(8)); return; }
+  if (line.rfind("WINCLOSE ", 0) == 0) { do_winclose(line.substr(9)); return; }
+
+  if (line.rfind("CLIPWRITE ", 0) == 0) { do_clipwrite(line.substr(10)); return; }
+  if (line.rfind("CLIPWATCH ", 0) == 0) {
+    g_clip_watching = atoi(line.substr(10).c_str()) > 0;
+    return;
+  }
+
+  if (line.rfind("GET ", 0) == 0) {
+    size_t sp = line.find(' ', 4);
+    if (sp == std::string::npos) return;
+    answer_get(line.substr(4, sp - 4), line.substr(sp + 1));
+    return;
+  }
+
+  if (line.rfind("NOTIFY ", 0) == 0) { do_notify(line.substr(7)); return; }
+
+  auto qid_op = [&](const char* op, std::string& qid, std::string& body) -> bool {
+    std::string prefix = std::string(op) + " ";
+    if (line.rfind(prefix, 0) != 0) return false;
+    size_t sp = line.find(' ', prefix.size());
+    if (sp == std::string::npos) {
+      qid = line.substr(prefix.size());
+      body = "";
+    } else {
+      qid = line.substr(prefix.size(), sp - prefix.size());
+      body = line.substr(sp + 1);
+    }
+    return true;
+  };
+
+  std::string qid, body;
+  if (qid_op("KEYSTROKE", qid, body)) {
+    bool ok = do_keystroke(body);
+    send_got(qid, std::string("{\"ok\":") + (ok ? "true" : "false") +
+                  ",\"trusted\":" + (ok ? "true" : "false") + "}");
+    return;
+  }
+  if (qid_op("PERMCHK", qid, body) || qid_op("PERMREQ", qid, body)) {
+    static const char* known[] = {"accessibility", "screen", "notifications",
+                                  "microphone", "camera"};
+    bool is_known = false;
+    for (const char* k : known) if (body == k) is_known = true;
+    send_got(qid, is_known ? "{\"status\":\"granted\"}"
+                           : "{\"status\":\"unsupported\"}");
+    return;
+  }
+  if (qid_op("SHELL", qid, body)) { do_shell(qid, body); return; }
+  if (qid_op("LOGIN", qid, body)) { do_login(qid, body); return; }
+  if (qid_op("POWER", qid, body)) { do_power(qid, body); return; }
+  if (qid_op("SOUND", qid, body)) { do_sound(qid, body); return; }
+  if (qid_op("SECRET", qid, body)) { do_secret(qid, body); return; }
+  if (qid_op("CAPTURE", qid, body)) { do_capture(qid, body); return; }
+  if (qid_op("PDF", qid, body)) { do_pdf(qid, body, ""); return; }
+  if (line.rfind("PDF@", 0) == 0) {                  // PDF@<winid> <qid> <path>
+    size_t sp0 = line.find(' ', 4);
+    size_t sp1 = sp0 == std::string::npos ? sp0 : line.find(' ', sp0 + 1);
+    if (sp1 != std::string::npos) {
+      do_pdf(line.substr(sp0 + 1, sp1 - sp0 - 1), line.substr(sp1 + 1),
+             line.substr(4, sp0 - 4));
+    }
+    return;
+  }
+  if (qid_op("THUMB", qid, body)) { do_thumb(qid, body); return; }
+  // No portable "prove it's the user" gate on Linux (polkit authorizes
+  // specific actions, not identity). Fail closed — an app gating a sensitive
+  // action on this sees false and blocks, which is the safe default.
+  if (qid_op("AUTH", qid, body)) { send_got(qid, "{\"ok\":false}"); return; }
+  if (qid_op("SAY", qid, body)) { do_say(qid, body); return; }
+  if (line == "SAYSTOP") { do_saystop(); return; }
+  if (qid_op("VOICES", qid, body)) { do_voices(qid); return; }
+  if (qid_op("PICKCOLOR", qid, body)) { do_pickcolor(qid); return; }
+  if (qid_op("OCR", qid, body)) {
+    got_unsupported(qid, "OCR isn't available on Linux");
+    return;
+  }
+  if (qid_op("OSA", qid, body)) {
+    got_unsupported(qid, "AppleScript is macOS-only");
+    return;
+  }
+  if (qid_op("SPOTLIGHT", qid, body)) {
+    do_spotlight(qid, body);
+    return;
+  }
+  if (qid_op("RECORD", qid, body)) {
+    got_unsupported(qid, "screen recording isn't supported on Linux yet "
+                         "(would need the ScreenCast portal)");
+    return;
+  }
+  if (qid_op("WINCTRL", qid, body)) {
+    got_unsupported(qid, "moving other apps' windows isn't supported on Linux");
+    return;
+  }
+  if (line.rfind("AI available ", 0) == 0) {
+    send_got(line.substr(13), "{\"status\":\"unsupported\"}");
+    return;
+  }
+  if (line.rfind("AI generate ", 0) == 0) {
+    std::string q = line.substr(12);
+    size_t sp = q.find(' ');
+    if (sp != std::string::npos) q = q.substr(0, sp);
+    size_t tab = q.find('\t');
+    if (tab != std::string::npos) q = q.substr(0, tab);
+    send_got(q, "{\"ok\":false,\"error\":\"not built in\"}");
+    return;
+  }
+  if (line == "AUDIOTAP STOP") { tap_stop(); return; }
+  if (qid_op("AUDIOTAP", qid, body)) { do_audiotap(qid, body); return; }
+  if (line.rfind("SAMPLER ", 0) == 0) { do_sampler_line(line.substr(8)); return; }
+  if (line == "MOUSETRACK STOP") { mt_stop(); return; }
+  if (qid_op("MOUSETRACK", qid, body)) { mt_start(qid, body); return; }
+  if (line.rfind("NOWPLAYING", 0) == 0) {
+    do_nowplaying(line.size() > 11 ? line.substr(11) : "");
+    return;
+  }
+
+  if (line.rfind("HKREG ", 0) == 0) {
+    auto f = split_tabs(line.substr(6));
+    hotkey_register(tab_field(f, 0), tab_field(f, 1));
+    return;
+  }
+  if (line.rfind("HKUNREG ", 0) == 0) { hotkey_unregister(line.substr(8)); return; }
+
+  if (line.rfind("ATTENTION", 0) == 0) {
+    gtk_window_set_urgency_hint(g_win, TRUE);
+    return;
+  }
+  if (line.rfind("APPICON ", 0) == 0) {
+    std::string path = wire_unescape(line.substr(8));
+    if (path.empty()) {
+      const char* icon = getenv("TINYJS_ICON");
+      if (icon && *icon) set_window_icon(g_win, icon);
+    } else if (file_exists(path)) {
+      set_window_icon(g_win, path);
+    }
+    return;
+  }
+  if (line.rfind("BADGE", 0) == 0) {
+    std::string t = line.size() > 6 ? wire_unescape(line.substr(6)) : "";
+    // Unity's badge is a COUNT, not free text: macOS takes any string, this
+    // takes a number. A non-numeric badge can't be represented, so it hides
+    // rather than showing something wrong.
+    char* end = nullptr;
+    long n = std::strtol(t.c_str(), &end, 10);
+    g_badge_visible = !t.empty() && end && *end == '\0';
+    g_badge_count = g_badge_visible ? n : 0;
+    unity_launcher_update();
+    return;
+  }
+  if (line.rfind("PROGRESS", 0) == 0) {
+    double v = line.size() > 9 ? std::atof(line.c_str() + 9) : -1.0;
+    g_launch_progress = v > 1.0 ? 1.0 : v;
+    unity_launcher_update();
+    return;
+  }
+  // SHARE, QUICKLOOK: no Linux equivalent; capabilities() reports them false
+  // so apps can check before calling.
+}
+
+// ------------------------------------------------------- main window close --
+
+// setHideOnClose is a macOS idea: there an app outlives its last window and
+// the Dock icon brings it back. A Linux desktop has nowhere to put that — a
+// hidden toplevel takes its taskbar entry with it — so honouring the flag with
+// nothing else on screen leaves a process the user can neither see nor quit.
+// Hide only when there IS a way back: a tray item, accessory mode, or another
+// window still up. Otherwise the close means what it means everywhere else on
+// this desktop, and the app exits.
+//
+// Only for a USER close of this window. A programmatic hide still hides
+// whatever it is told to, and the last SECONDARY closing is left alone — an
+// app that answers that by showing its main window again (nib brings the
+// Welcome screen back) would otherwise be killed in the gap before it could.
+static bool can_live_hidden() {
+  if (g_accessory || g_indicator) return true;
+  for (auto& kv : g_secwins)
+    if (kv.second->win && gtk_widget_get_visible(GTK_WIDGET(kv.second->win))) return true;
+  return false;
+}
+
+static gboolean on_main_delete(GtkWidget*, GdkEvent*, gpointer) {
+  if (g_hide_on_close && can_live_hidden()) {
+    gtk_widget_hide(GTK_WIDGET(g_win));
+    return TRUE;
+  }
+  return FALSE;
+}
+
+static void on_main_destroy(GtkWidget*, gpointer) {
+  if (!g_quitting) {
+    g_quitting = true;
+    gtk_main_quit();
+  }
+}
+
+// The urgency hint latches: once ATTENTION sets it, nothing takes it back, so
+// the window would keep demanding attention for the rest of the run. macOS's
+// bounce and Windows' flash both stop once the user looks at the window, so
+// drop the hint when focus arrives.
+static gboolean on_main_focus_in(GtkWidget*, GdkEvent*, gpointer) {
+  gtk_window_set_urgency_hint(g_win, FALSE);
+  return FALSE;
+}
+
+// ------------------------------------------------------------ --open mode ---
+
+// launcher --open <socket> <app-exe> [url-or-path]
+// Forward a deep link / file open to the running app over its instance socket,
+// starting the app first when needed. The registered .desktop Exec handler.
+static int open_mode(int argc, char** argv) {
+  if (argc < 4) {
+    fprintf(stderr, "usage: launcher --open <socket> <app-exe> [arg]\n");
+    return 1;
+  }
+  std::string sock_path = argv[2];
+  std::string app_exe = argv[3];
+  std::string arg = argc > 4 ? argv[4] : "";
+
+  std::string json;
+  if (arg.empty()) {
+    json = "{\"activate\":true}";
+  } else if (arg.find("://") != std::string::npos && arg.rfind("file://", 0) != 0 &&
+             !file_exists(arg)) {
+    json = "{\"url\":" + json_escape(arg) + "}";
+  } else {
+    std::string path = arg;
+    if (arg.rfind("file://", 0) == 0) {
+      char* p = g_filename_from_uri(arg.c_str(), nullptr, nullptr);
+      if (p) { path = p; g_free(p); }
+    }
+    json = "{\"paths\":[" + json_escape(path) + "]}";
+  }
+
+  auto try_send = [&]() -> bool {
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return false;
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof addr);
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, sock_path.c_str(), sizeof addr.sun_path - 1);
+    if (connect(fd, (struct sockaddr*)&addr, sizeof addr) != 0) {
+      close(fd);
+      return false;
+    }
+    std::string line = json + "\n";
+    const char* p = line.data();
+    size_t left = line.size();
+    while (left > 0) {
+      ssize_t n = write(fd, p, left);
+      if (n <= 0) {
+        close(fd);
+        return false;
+      }
+      p += n;
+      left -= (size_t)n;
+    }
+    close(fd);
+    return true;
+  };
+
+  if (try_send()) return 0;
+  // app not running: start it, then retry for a few seconds
+  const gchar* spawn_argv[] = {app_exe.c_str(), nullptr};
+  g_spawn_async(nullptr, (gchar**)spawn_argv, nullptr,
+                (GSpawnFlags)(G_SPAWN_STDOUT_TO_DEV_NULL | G_SPAWN_STDERR_TO_DEV_NULL),
+                nullptr, nullptr, nullptr, nullptr);
+  for (int i = 0; i < 100; i++) {
+    g_usleep(100000);  // 100ms
+    if (try_send()) return 0;
+  }
+  return 1;
+}
+
+// ------------------------------------------------------------------- main ---
+
+int main(int argc, char** argv) {
+  if (argc >= 2 && !strcmp(argv[1], "--open")) return open_mode(argc, argv);
+
+  if (argc < 3) {
+    fprintf(stderr,
+            "usage: launcher <html-file-or-url> <socket> [title] [WxH] [version]\n");
+    return 1;
+  }
+  g_target = argv[1];
+  g_target_is_url = g_target.rfind("http://", 0) == 0 || g_target.rfind("https://", 0) == 0;
+  std::string sock_path = argv[2];
+  if (argc > 3) g_app_name = argv[3];
+  if (argc > 4) sscanf(argv[4], "%dx%d", &g_width, &g_height);
+  if (argc > 5) g_app_version = argv[5];
+  const char* app_id = getenv("TINYJS_APP_ID");
+  if (app_id && *app_id) g_app_id = app_id;
+  const char* activation = getenv("TINYJS_ACTIVATION");
+  g_accessory = activation && !strcmp(activation, "accessory");
+
+  // WM_CLASS ↔ .desktop matching (StartupWMClass); must precede gtk_init
+  g_set_prgname((g_app_id.empty() ? g_app_name : g_app_id).c_str());
+
+  // No display = no webview, ever. Say so loudly and specifically: bare
+  // gtk_init() would exit with an unprefixed "cannot open display" (easily
+  // mistaken for an app bug — agents in headless sandboxes have burned real
+  // time on that). Checked BEFORE the socket connect so the bridge's
+  // "launcher exited before connecting" race reports the death instead of
+  // waiting on a peer that already gave up.
+  if (!getenv("DISPLAY") && !getenv("WAYLAND_DISPLAY")) {
+    fprintf(stderr,
+        "tinyjs: cannot create the webview window: no display "
+        "(DISPLAY and WAYLAND_DISPLAY are both unset — headless "
+        "environment?).\n"
+        "tinyjs: the app code is likely fine; run inside a desktop session "
+        "or a virtual display (e.g. xvfb-run).\n");
+    return 3;
+  }
+  if (!gtk_init_check(&argc, &argv)) {
+    const char* d = getenv("DISPLAY");
+    if (!d) d = getenv("WAYLAND_DISPLAY");
+    fprintf(stderr,
+        "tinyjs: cannot create the webview window: GTK could not open "
+        "display '%s'.\n"
+        "tinyjs: the app code is likely fine; this environment cannot show "
+        "windows.\n", d ? d : "");
+    return 3;
+  }
+
+  // connect to the backend
+  g_sock = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (g_sock < 0) { perror("socket"); return 1; }
+  struct sockaddr_un addr;
+  memset(&addr, 0, sizeof addr);
+  addr.sun_family = AF_UNIX;
+  strncpy(addr.sun_path, sock_path.c_str(), sizeof addr.sun_path - 1);
+  if (connect(g_sock, (struct sockaddr*)&addr, sizeof addr) != 0) {
+    perror("connect");
+    return 1;
+  }
+
+  // (gtk_init_check already ran, before the socket connect above)
+
+  // tiny-media:// proxy scheme must be registered on the default context
+  // before any webview exists
+  webkit_web_context_register_uri_scheme(webkit_web_context_get_default(),
+      "tiny-media", media_scheme_cb, nullptr, nullptr);
+
+  // Browser affordances config (TODO-site-wrapper.md). Linux is spawn-mode
+  // always, so the env is the whole story — same as Windows.
+  if (const char* v = getenv("TINYJS_DOWNLOADS"); v && *v) g_downloads_mode = v;
+  if (const char* v = getenv("TINYJS_POPUPS"); v && *v) g_popup_mode = v;
+  g_signal_connect(webkit_web_context_get_default(), "download-started",
+                   G_CALLBACK(on_download_started), nullptr);
+
+  // A monitor departing mid-session can strand windows in space (X11 moves
+  // nothing on its own). One pass over what's VISIBLE when the topology
+  // changes; hidden windows get their chance from the bridge when shown.
+  {
+    auto on_monitors = +[](GdkDisplay*, GdkMonitor*, gpointer) {
+      if (!g_rescue_on) return;
+      if (g_win && gtk_widget_get_visible(GTK_WIDGET(g_win))) rescue_offscreen(g_win);
+      for (auto& kv : g_secwins)
+        if (kv.second && kv.second->win &&
+            gtk_widget_get_visible(GTK_WIDGET(kv.second->win)))
+          rescue_offscreen(kv.second->win);
+    };
+    GdkDisplay* disp = gdk_display_get_default();
+    if (disp) {
+      g_signal_connect(disp, "monitor-added", G_CALLBACK(on_monitors), nullptr);
+      g_signal_connect(disp, "monitor-removed", G_CALLBACK(on_monitors), nullptr);
+    }
+  }
+
+  g_win = GTK_WINDOW(gtk_window_new(GTK_WINDOW_TOPLEVEL));
+  gtk_window_set_title(g_win, g_app_name.c_str());
+  gtk_window_set_default_size(g_win, g_width, g_height);
+  gtk_window_set_position(g_win, GTK_WIN_POS_CENTER);
+  apply_rgba_visual(GTK_WIDGET(g_win));
+  const char* icon = getenv("TINYJS_ICON");
+  if (icon && *icon) set_window_icon(g_win, icon);
+
+  g_accel = gtk_accel_group_new();
+  gtk_window_add_accel_group(g_win, g_accel);
+
+  g_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+  gtk_container_add(GTK_CONTAINER(g_win), g_vbox);
+  g_menubar = gtk_menu_bar_new();
+  gtk_box_pack_start(GTK_BOX(g_vbox), g_menubar, FALSE, FALSE, 0);
+  // main's WinMenu points at the widgets it already had; from here on every
+  // window (main included) resolves its bar the same way.
+  g_main_menu.bar = g_menubar;
+  g_main_menu.accel = g_accel;
+
+  g_wv = make_webview("main");
+  gtk_box_pack_start(GTK_BOX(g_vbox), GTK_WIDGET(g_wv), TRUE, TRUE, 0);
+
+  g_signal_connect(g_win, "window-state-event", G_CALLBACK(on_window_state), nullptr);
+  g_signal_connect(g_win, "delete-event", G_CALLBACK(on_main_delete), nullptr);
+  g_signal_connect(g_win, "destroy", G_CALLBACK(on_main_destroy), nullptr);
+  g_signal_connect(g_win, "focus-in-event", G_CALLBACK(on_main_focus_in), nullptr);
+
+  GtkClipboard* cb = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+  g_signal_connect(cb, "owner-change", G_CALLBACK(on_clip_owner_change), nullptr);
+
+  load_target_into(g_wv, g_target);
+
+  // Chrome from tinyjs.json, via the bridge's spawn env — applied before the
+  // show below so a frameless app never flashes a decorated frame (the
+  // socket CHROME line lands only after the window is up, and still arrives
+  // and re-applies harmlessly). Note set_mwm_buttons is a no-op this early
+  // (no GdkWindow yet); the socket pass covers it post-realize.
+  if (const char* ch = getenv("TINYJS_CHROME"); ch && *ch)
+    apply_chrome("", split_tabs(ch));
+
+  if (g_accessory) {
+    gtk_window_set_skip_taskbar_hint(g_win, TRUE);
+    // window stays hidden; only WINOP show reveals it
+    gtk_widget_show_all(g_vbox);
+    gtk_widget_hide(g_menubar);
+  } else {
+    gtk_widget_show_all(GTK_WIDGET(g_win));
+    gtk_widget_hide(g_menubar);  // shown only when the app declares menus
+  }
+
+  install_system_observers();
+  send_theme();
+  if (debug_mode() == 2) inspector_open(g_wv);
+
+  std::thread reader(reader_thread);
+  reader.detach();
+
+  // A terminated launcher must still run the teardown below — the tap's null
+  // sink lingers by design, so exiting without destroying it leaves a stray
+  // sink in the user's session for good. g_unix_signal_add dispatches on the
+  // main loop, so the handler can do real work instead of being signal-safe.
+  for (int sig : {SIGTERM, SIGINT, SIGHUP}) {
+    g_unix_signal_add(sig, [](gpointer) -> gboolean {
+      g_quitting = true;
+      gtk_main_quit();
+      return G_SOURCE_REMOVE;
+    }, nullptr);
+  }
+
+  gtk_main();
+
+  if (g_inhibit_fd >= 0) close(g_inhibit_fd);
+  eq_stop();
+  tap_stop();
+  smp_stop();
+  remove_tray();
+  _exit(0);
+}

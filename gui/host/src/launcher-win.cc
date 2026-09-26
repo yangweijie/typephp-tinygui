@@ -89,6 +89,18 @@
 
 static webview_t g_w = nullptr;
 static HANDLE g_pipe = INVALID_HANDLE_VALUE;
+
+// --- TypePHP / aot-compiler backend bridge ---
+// In TypePHP mode the launcher is the entry point: it spawns the PHP backend
+// (compiled by aot-compiler) as a child, hands it the pipe name, then connects
+// to that pipe as a client. All tiny.* handling, the read loop and g_pipe are
+// unchanged. Gate everything behind TYPEPHP_BACKEND so the JS backend path is
+// unaffected.
+static bool g_typephp = false;
+static PROCESS_INFORMATION g_backend_proc = {};
+static std::string spawn_typephp_backend();
+static void terminate_typephp_backend();
+
 static std::mutex g_write_mutex;
 static HWND g_hwnd = nullptr;
 static WNDPROC g_orig_wndproc = nullptr;
@@ -7705,7 +7717,58 @@ static int run_hidden() {
   return (int)code;
 }
 
+static std::string spawn_typephp_backend() {
+  // Pipe name the backend must create as a server before we connect.
+  std::string name =
+      "\\\\.\\pipe\\tinyjs-typephp-" + std::to_string(GetCurrentProcessId());
+  // Backend binary: env TYPEPHP_BACKEND, else "<launcher_dir>/backend.exe".
+  wchar_t buf[MAX_PATH];
+  std::wstring exe;
+  if (GetEnvironmentVariableW(L"TYPEPHP_BACKEND", buf, MAX_PATH)) {
+    exe = buf;
+  } else {
+    DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    std::wstring self(buf, n);
+    size_t sl = self.find_last_of(L"\\/");
+    exe = (sl == std::wstring::npos ? L"" : self.substr(0, sl + 1)) + L"backend.exe";
+  }
+  std::wstring cmd = L"\"" + exe + L"\" " + widen(name);
+  STARTUPINFOW si = {};
+  si.cb = sizeof(si);
+  PROCESS_INFORMATION pi = {};
+  if (!CreateProcessW(exe.c_str(), &cmd[0], nullptr, nullptr, FALSE,
+                      CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+    return "";
+  }
+  CloseHandle(pi.hThread);
+  g_backend_proc = pi;
+  std::atexit(terminate_typephp_backend);
+  return name;
+}
+
+static void terminate_typephp_backend() {
+  if (g_backend_proc.hProcess) {
+    TerminateProcess(g_backend_proc.hProcess, 0);
+    CloseHandle(g_backend_proc.hProcess);
+    g_backend_proc.hProcess = nullptr;
+    g_backend_proc.hThread = nullptr;
+  }
+}
+
 static int run(int argc, char **argv) {
+  // TypePHP mode: args are <html> [title] [WxH] [version] — there is no pipe
+  // name on the command line, and the pipe is generated after we spawn the
+  // backend below. Normalise to the shared layout [exe, html, pipe, title,
+  // WxH, version] by copying the html arg into the flag's slot; the pipe slot
+  // (argv[2]) is never read in typephp mode (pipe_name is forced empty), so
+  // the stale value there is harmless. NOTE: do NOT shift the array left —
+  // that would also consume the optional-arg slots and make `title` read the
+  // size string.
+  if (argc >= 2 && std::strcmp(argv[1], "--typephp") == 0) {
+    g_typephp = true;
+    if (argc >= 3)
+      argv[1] = argv[2];
+  }
   if (argc == 4 && strcmp(argv[1], "--embed-icon") == 0)
     return embed_icon(argv[2], argv[3]);
   if (argc >= 3 && strcmp(argv[1], "--run") == 0)
@@ -7715,12 +7778,13 @@ static int run(int argc, char **argv) {
   if (argc < 3) {
     std::fprintf(stderr,
                  "usage: %s <html-file-or-url> <pipe-name> [title] [WxH] "
-                 "[version]\n       %s --embed-icon <exe> <png>\n",
-                 argv[0], argv[0]);
+                 "[version]\n       %s --typephp <html> [title] [WxH] [version]\n"
+                 "       %s --embed-icon <exe> <png>\n",
+                 argv[0], argv[0], argv[0]);
     return 1;
   }
   g_target = argv[1];
-  std::string pipe_name = argv[2];
+  std::string pipe_name = g_typephp ? std::string() : argv[2];
   std::string title = argc > 3 ? argv[3] : "tinyjs";
   std::string size_s = argc > 4 ? argv[4] : "960x640";
   if (argc > 5)
@@ -7760,6 +7824,16 @@ static int run(int argc, char **argv) {
           "tinyjs: the app code is likely fine; run from an interactive "
           "desktop session.\n");
       return 3;
+    }
+  }
+
+  // TypePHP: spawn the PHP backend (aot-compiler binary) and let it create the
+  // named pipe server under the name we hand it; then connect as a client.
+  if (g_typephp) {
+    pipe_name = spawn_typephp_backend();
+    if (pipe_name.empty()) {
+      std::fprintf(stderr, "launcher: failed to spawn TypePHP backend\n");
+      return 1;
     }
   }
 

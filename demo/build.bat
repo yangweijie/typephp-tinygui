@@ -1,7 +1,9 @@
 @echo off
 rem ===========================================================================
-rem Demo build hook -- referenced by tinyjs.json as "typephp".build, so
-rem `tinyjs build --typephp` and `tinyjs publish --typephp` run it.
+rem Demo deploy helper -- OPTIONAL. The fused CLI (gui/bin/tgui) does NOT invoke
+rem this; it assembles dist/ directly from build/ (see tools/build-launcher.sh
+rem and tools/build-all.bat). Run this manually only if you want a per-app copy
+rem of the compiled backend under demo\backend\.
 rem
 rem It does NOT compile: the PHP backend is compiled once by tools\build-all.bat
 rem and then deployed per-app. Compiling here would mean one tpc invocation per

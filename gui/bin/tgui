@@ -1,0 +1,192 @@
+#!/usr/bin/env bash
+# ===========================================================================
+# tgui — the TypePHP GUI command line (replaces tinyjsapp's patched cli.js).
+#
+#   gui/bin/tgui dev        run the current project with a compiled PHP backend
+#   gui/bin/tgui build      assemble a portable dist/ bundle (no JS backend)
+#   gui/bin/tgui publish    zip the dist/ + write an auto-update manifest
+#   gui/bin/tgui init       scaffold a tinyjs.json + frontend into the cwd
+#   gui/bin/tgui status     show the resolved launcher / shim / app paths
+#
+# Everything is OURS now: the launcher lives at gui/host/src/, the protocol
+# framework at gui/php/, and this tool — there is no external tinyjsapp checkout
+# and no patch step. See gui/README.md.
+#
+# Build artifacts are produced by tools/build-all.bat (shim + PHP backend) and
+# tools/build-launcher.sh (the native host). tgui just orchestrates them.
+# ===========================================================================
+set -uo pipefail
+
+CMD="${1:-help}"
+shift || true
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+BUILD="$ROOT/build"
+RT="$BUILD/runtime"
+
+say()  { printf '\n== %s\n' "$*"; }
+ok()   { printf '   ok   %s\n' "$*"; }
+warn() { printf '   !!   %s\n' "$*"; }
+die()  { printf '\n!! %s\n' "$*"; exit 1; }
+
+# --- locate the three moving parts ------------------------------------------
+# to_native: turn a (possibly relative / Cygwin) path into an absolute
+# Windows-native path. The launcher and shim are NATIVE Windows binaries that
+# read TYPEPHP_* from the environment; Git Bash only translates argv paths, NOT
+# env vars, so we must hand them a form CreateProcessW/SetCurrentDirectoryW
+# accept. We emit FORWARD-slash Windows paths (e.g. `D:/git/.../backend.exe`):
+# Windows APIs accept them, and they avoid a backslash quirk that makes the
+# native spawn fail. cygpath -w is idempotent on already-Windows paths.
+to_native() {
+  local p="$1"
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -w "$p" | tr '\\' '/'
+  elif command -v realpath >/dev/null 2>&1; then
+    realpath "$p"
+  else
+    printf '%s' "$(cd "$(dirname "$p" 2>/dev/null)" && pwd)/$(basename "$p")" | tr '\\' '/'
+  fi
+}
+
+launcher="$(to_native "${TINYGUI_LAUNCHER:-$RT/launcher-win.exe}")"
+launcher="${launcher:-$BUILD/launcher-win.exe}"
+shim="$(to_native "${TYPEPHP_BACKEND:-$RT/backend.exe}")"
+shim="${shim:-$BUILD/backend_shell.exe}"
+app="$(to_native "${TYPEPHP_APP:-$BUILD/app.exe}")"
+
+# --- read the project's tinyjs.json (cwd) -----------------------------------
+# JSON-aware reader: supports nested dotted keys (e.g. `typephp.app`,
+# `frontend.dir`). php >= 8.1 is required by this project, so we parse with php
+# (correctly handles nesting + types). No loose grep fallback: a missing key
+# returns empty and the caller keeps its default.
+cfg() { # cfg <dotted.key> -> value (scalar) or empty
+  local key="$1" f="$PWD/tinyjs.json"
+  [ -f "$f" ] || return 1
+  command -v php >/dev/null 2>&1 || return 1
+  php -r '
+    $j = @json_decode(file_get_contents($argv[1]), true);
+    if (!is_array($j)) exit(1);
+    $v = $j;
+    foreach (explode(".", $argv[2]) as $k) {
+      if (!is_array($v) || !array_key_exists($k, $v)) exit(1);
+      $v = $v[$k];
+    }
+    if (!is_scalar($v)) exit(1);
+    echo $v;
+  ' "$f" "$key" 2>/dev/null
+}
+
+TITLE="$(cfg title || true)"; TITLE="${TITLE:-tinyjs}"
+SIZE="$(cfg size || true)";  SIZE="${SIZE:-960x640}"
+VERSION="$(cfg version || true)"; VERSION="${VERSION:-0.0.0}"
+FE="$(cfg 'frontend.dir' || true)"; FE="${FE:-src/frontend}"
+APP_CFG="$(cfg 'typephp.app' || true)"
+SHIM_CFG="$(cfg 'typephp.backend' || true)"
+
+case "$CMD" in
+  help|--help|-h)
+    sed -n '3,18p' "${BASH_SOURCE[0]}"
+    ;;
+
+  status)
+    say "resolved toolchain"
+    printf '   %-14s %s\n' launcher "$([ -f "$launcher" ] && echo "$launcher" || echo "MISSING ($launcher)")"
+    printf '   %-14s %s\n' shim     "$([ -f "$shim" ] && echo "$shim" || echo "MISSING ($shim)")"
+    printf '   %-14s %s\n' app      "$([ -f "$app" ] && echo "$app" || echo "MISSING ($app)")"
+    ;;
+
+  dev)
+    [ -f "$launcher" ] || die "launcher missing: $launcher — run tools/build-launcher.sh"
+    [ -f "$shim" ]     || die "shim missing: $shim — run tools/build-all.bat"
+    [ -f "$app" ]      || die "app missing: $app — run tools/build-all.bat"
+    FE_DIR="$PWD/$FE"
+    HTML="$(to_native "$FE_DIR/index.html")"
+    [ -f "$HTML" ] || die "frontend not found: $HTML"
+    TP_ENV=("$shim" "$app")
+    [ -n "$SHIM_CFG" ] && TP_ENV[0]="$(to_native "$PWD/$SHIM_CFG")"
+    [ -n "$APP_CFG" ]  && TP_ENV[1]="$(to_native "$PWD/$APP_CFG")"
+    ICON="$(cfg icon || true)"; ICON="${ICON:-icon.png}"
+    [ -f "$PWD/$ICON" ] && export TINYJS_ICON="$(to_native "$PWD/$ICON")"
+    export TYPEPHP_BACKEND="$(to_native "${TP_ENV[0]}")"
+    export TYPEPHP_APP="$(to_native "${TP_ENV[1]}")"
+    export TYPEPHP_CWD="$(to_native "$PWD")"
+    export TINYJS_DEBUG="${TINYJS_DEBUG:-dev}"
+    say "dev: $HTML  (title=$TITLE size=$SIZE)"
+    ok "launcher $launcher"
+    ok "backend  ${TP_ENV[1]}"
+    # Frontend hot-reload: a change bounces the window (no JS in the loop here).
+    child=""
+    restarting=0
+    if [ -d "$FE_DIR" ]; then
+      ( watch_loop() {
+          while true; do
+            sleep 1
+            if [ -n "${RESTART:-}" ]; then kill "$child" 2>/dev/null; break; fi
+          done
+        } )
+    fi
+    while true; do
+      "$launcher" --typephp "$HTML" "$TITLE" "$SIZE" "$VERSION" &
+      child=$!
+      wait "$child"
+      break
+    done
+    ;;
+
+  build)
+    [ -f "$app" ] || die "app missing: $app — run tools/build-all.bat"
+    NAME="$(cfg name || true)"; NAME="${NAME:-app}"
+    say "build: dist/$NAME/"
+    rm -rf dist
+    mkdir -p "dist/frontend"
+    cp -f "$shim"    "dist/$NAME.exe"
+    cp -f "$launcher" "dist/launcher.exe"
+    cp -f "$app"     "dist/app.exe"
+    for d in php8ts.dll phpx.dll libmpdec-4.0.1.dll libmpdec++-4.0.1.dll gmp-10.dll mpfr-6.dll; do
+      [ -f "$BUILD/$d" ] && cp -f "$BUILD/$d" "dist/$d"
+    done
+    [ -d "$FE_DIR" ] && cp -rf "$FE_DIR/." "dist/frontend/"
+    {
+      echo "# generated by tgui build"
+      echo "html=${FE##*/}/index.html"; echo "title=$TITLE"; echo "size=$SIZE"
+      echo "version=$VERSION"; echo "app=app.exe"; echo "launcher=launcher.exe"
+    } > "dist/$NAME.conf"
+    ok "dist/$NAME.exe + launcher.exe + app.exe + frontend/"
+    ;;
+
+  publish)
+    [ -d dist ] || die "no dist/ — run 'tgui build' first"
+    say "publish: zip dist/"
+    ( cd dist && zip -r -q "../dist.zip" . ) 2>/dev/null \
+      || tar -czf dist.tar.gz -C dist .
+    ok "dist.zip (or dist.tar.gz)"
+    ;;
+
+  init)
+    say "init: scaffold in $PWD"
+    [ -f tinyjs.json ] && die "tinyjs.json already exists"
+    cat > tinyjs.json <<JSON
+{
+  "name": "my-app",
+  "title": "My App",
+  "size": "960x640",
+  "version": "0.1.0",
+  "frontend": { "dir": "src/frontend" },
+  "icon": "icon.png",
+  "typephp": { "app": "build/app.exe" }
+}
+JSON
+    mkdir -p src/frontend
+    cat > src/frontend/index.html <<HTML
+<!doctype html><meta charset="utf-8"><title>My App</title>
+<h1>Hello from PHP</h1>
+<button onclick="call('api.now').then(r=>document.body.innerHTML+='<pre>'+JSON.stringify(r)+'</pre>')">ping backend</button>
+<script src="tiny.js"></script>
+HTML
+    ok "tinyjs.json + src/frontend/index.html"
+    ;;
+
+  *)
+    die "unknown command: $CMD (try: dev | build | publish | init | status)"
+    ;;
+esac

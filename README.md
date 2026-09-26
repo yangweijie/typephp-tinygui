@@ -16,7 +16,7 @@ case 'api.fib':
 | 验证项 | 结果 |
 |---|---|
 | POSIX 套件（host probe + tier1/2 + 启动模式 + stderr 隔离） | **50 PASS / 0 FAIL** |
-| Windows 开发方向（`tinyjs dev --typephp`） | 窗口正常，**13 CALL / 13 RET**，`WINDOW-E2E OK ping=pong in 441ms` |
+| Windows 开发方向（`tgui dev`） | 窗口正常，**13 CALL / 13 RET**，`WINDOW-E2E OK ping=pong in 441ms` |
 | Windows 打包方向（双击 `dist\<App>.exe`） | 窗口正常，**13 CALL / 13 RET**，`WINDOW-E2E OK ping=pong in 438ms` |
 | 打包产物校验 | **0 failure / 0 warning** |
 
@@ -54,7 +54,8 @@ tinyjsapp 的结构是：**C++ launcher 宿主 WebView2，后端在另一侧应�
               dev 方向                          packaged 方向
         ┌───────────────────┐            ┌───────────────────┐
         │ launcher-win.exe  │            │ <App>.exe (= shim)│  ← 双击这个
-        │  (打了补丁)        │            │  自己是端点服务端   │
+        │  (含 --typephp，已  │            │  自己是端点服务端   │
+        │   并入自有源码)      │            │                    │
         └─────────┬─────────┘            └─────────┬─────────┘
                   │ 拉起并交出端点                  │ 拉起 STOCK launcher
         ┌─────────▼─────────┐                      │ <html> <endpoint> ...
@@ -75,31 +76,37 @@ tinyjsapp 的结构是：**C++ launcher 宿主 WebView2，后端在另一侧应�
 
 ```
 typephp-gui/
-├── src/backend.php           PHP 后端。**唯一**后端源文件（见下文"为什么只有一个文件"）
+├── gui/                     ★ 融合后的 GUI 模块（原 tinyjsapp 已并入本仓库，
+│                          不再是外部依赖，也不再打补丁）。详见 gui/README.md
+│   ├── LICENSE.NOTICE        MIT 归属声明（tinyjsapp + 本项目）
+│   ├── host/                 原生 GUI 宿主（vendor + 自有）
+│   │   ├── src/launcher-win.cc    WebView2 宿主，--typephp 已并入源码
+│   │   ├── src/launcher-{linux,macos}.cc   原生宿主（pristine vendor）
+│   │   ├── include/               webview.h / WebView2.h / miniaudio.h
+│   │   └── script/gen-client.sh   把 runtime/tiny.js 嵌进 tiny_client.h
+│   ├── runtime/tiny.js         window.tiny 客户端 shim（vendor）
+│   ├── php/src/Tiny/Gui/        ★ PHP 原生协议框架（融合的核心创新）
+│   │   ├── Protocol / Dispatcher / Backend / State / Gui（facade）
+│   │   └── Handlers/              Core / Win / Menu / Store / DemoApi
+│   └── bin/tgui                 dev/build/publish/init/status CLI
+│                             （替代上游 cli.js，不再需要 checkout）
+├── src/backend.php           PHP 后端入口（薄封装，加载 gui/php 框架）
 ├── bin/run-backend.php       用系统 PHP 直接跑同一份逻辑（不编译也能调试）
-├── shim/backend_shell.cpp    C++ shim。Windows + POSIX 同一份源码
-├── patches/                  上游补丁 + 它们要打的那个原始基线
-│   ├── base/cli.js.orig            tinyjsapp v0.42.0 原始 cli.js
-│   ├── base/launcher-win.cc.orig   tinyjsapp v0.42.0 原始 launcher-win.cc
-│   ├── cli-typephp.patch           给 CLI 加 --typephp
-│   └── launcher-win-typephp.patch  让 launcher 变成入口
+├── shim/backend_shell.cpp    C++ 代理。Windows + POSIX 同一份源码
 ├── tools/
-│   ├── bootstrap-tinyjsapp.sh 把 checkout 在 pristine / patched 之间切换
 │   ├── build-all.bat          Windows：编 shim + PHP 后端 → build/
-│   ├── build-launcher.sh      编 launcher（离树，不碰 checkout）→ build/runtime/
+│   ├── build-launcher.sh      编 launcher（从 gui/host/src 编）→ build/runtime/
 │   ├── verify-bundle.py       发布前校验 dist/ 产物
 │   └── e2e/                   截图 / 点窗口 / 关窗口的小工具（ctypes，无依赖）
-├── demo/                     一个完整的 tinyjsapp 项目，用 PHP 后端
-│   ├── tinyjs.json               "typephp" 块告诉 CLI 怎么构建
-│   ├── build.bat                 构建钩子：把 build/ 的产物部署进 demo/backend/
-│   └── src/frontend/index.html   页面，用 tiny.* 调后端
+├── demo/                     一个完整示例（PHP 后端 + tiny.js 前端）
 ├── test/posix/               POSIX 验证套件（可独立拷出去用）
-├── docs/                     调研、落地报告、补丁说明
-│   └── planning/             开发计划 + 踩坑记录（task_plan / findings / progress）
+├── docs/                     调研、落地报告、融合设计
+│   ├── GUI_FUSION_DESIGN.md   迁移范围/目标/模块划分/集成/兼容/开发者友好设计
+│   └── planning/             开发计划 + 踩坑记录
 ├── experiments/              历史探针（保留但不参与构建）
 ├── evidence/                 验证证据：e2e 截图/日志 + 套件日志
 ├── build/                    所有生成物，git 忽略
-└── composer.json             包元数据 + 快捷脚本（也是套件找仓库根的标记）
+└── composer.json             包元数据 + 快捷脚本
 ```
 
 `build/` 里有什么：
@@ -109,11 +116,10 @@ build/
 ├── backend_shell.exe   shim
 ├── app.exe             PHP 后端（tpc 编出来）
 ├── *.dll               app.exe 依赖的 6 个 PHP 运行时 DLL（约 15.5MB）
-├── launcher-win.exe    打了补丁的 launcher（dev 用）
+├── launcher-win.exe    原生宿主（从 gui/host/src 编，已含 --typephp）
 ├── runtime/            launcher + backend.exe + app.exe 三件套，可直接跑
-├── gen/                由 base + 补丁派生出的 launcher-win.cc、tiny_client.h
-├── winrt-shim/ include/ 下载的构建依赖，跨次缓存
-└── checkout-residue/  restore 时从 checkout 里搬出来的东西（不删）
+├── gen/                staging 出的 launcher-win.cc、tiny_client.h
+└── winrt-shim/ include/ 下载的构建依赖，跨次缓存
 ```
 
 `build/` 下**唯独不包含**那份 PHP 运行时 DLL 的第二份副本——`demo/backend/` 里那份是从 `build/` 拷的，不是从 tpc 发行包再拷一次。
@@ -127,7 +133,7 @@ build/
 | 后端编译 | aot-compiler 发行包（`tpc.exe`，本项目用 v0.9.3）+ MSVC（vcvars64） |
 | shim 编译 | MinGW-w64 g++（`g++ -std=c++17`） |
 | launcher 编译 | 同上 + 联网（下 WinRT 头文件和 `WebView2.h`，之后走缓存） |
-| 运行 | tinyjsapp checkout（v0.42.0）+ WebView2 Runtime |
+| 运行 | Windows + WebView2 Runtime（Linux/macOS 走各自 WebKit） |
 | 系统 PHP 调试（可选） | **PHP ≥ 8.1**（`array_is_list` 等） |
 | POSIX 套件 | Linux / macOS / Cygwin + gcc/g++ + python3 |
 
@@ -135,7 +141,9 @@ build/
 
 ```bash
 TPC_HOME=D:\git\php\tpc_v0.9.3_windows_x64   # tpc 发行包
-TINYJSAPP=D:\git\web\tinyjsapp-0.42.0        # tinyjsapp checkout
+TINYGUI_LAUNCHER=$PWD/build/runtime/launcher-win.exe   # 可选，覆盖 launcher 路径
+TYPEPHP_BACKEND=$PWD/build/backend_shell.exe           # 可选，覆盖 shim 路径
+TYPEPHP_APP=$PWD/build/app.exe                        # 可选，覆盖 PHP 后端
 VCVARS="D:\...\VC\Auxiliary\Build\vcvars64.bat"
 ```
 
@@ -143,78 +151,59 @@ VCVARS="D:\...\VC\Auxiliary\Build\vcvars64.bat"
 
 ## 快速开始
 
-### 0. 准备 tinyjsapp checkout
+### 0. 准备构建工具链
+
+需要：aot-compiler 发行包（`tpc.exe`，本项目用 v0.9.3）、MSVC（`vcvars64`）、MinGW-w64 `g++`、联网（首次下 WinRT 头与 `WebView2.h`，之后走缓存）。**不再需要任何外部 tinyjsapp checkout，也不需要打补丁**——GUI 宿主已经是本仓库的 `gui/host/src/launcher-win.cc`（含 `--typephp`）。
+
+### 1. 构建
 
 ```bash
-git clone https://github.com/tarwin/tinyjsapp -b v0.42.0 D:/git/web/tinyjsapp-0.42.0
-```
-
-`bin/tjs.exe`（CLI 的运行器）由上游 `setup.ps1` 下载。
-
-### 1. 给 checkout 打补丁
-
-```bash
-bash tools/bootstrap-tinyjsapp.sh status     # 先看看它现在是什么状态
-bash tools/bootstrap-tinyjsapp.sh patch      # pristine + 我们的补丁
-```
-
-只有 **`cli.js` 必须就地打补丁**：`TOOL_DIR` 是从它自身位置推出来的（`new URL('.', import.meta.url)`），所以 CLI 只能在 checkout 里跑，也就在只能在 checkout 里改。
-
-**`native/launcher-win.cc` 保持原始**——`tools/build-launcher.sh` 会自己从 `patches/base/` + 补丁派生一份来编译，不需要动 checkout。想恢复原样：
-
-```bash
-bash tools/bootstrap-tinyjsapp.sh restore    # 两个文件都还原，并把我们的产物搬出 checkout
-```
-
-### 2. 构建
-
-```bash
-# Windows：shim + PHP 后端 → build/
-tools\build-all.bat
-
-# launcher（离树编译）→ build/runtime/
+# 原生宿主（launcher-win.exe + runtime 三件套）→ build/
 bash tools/build-launcher.sh
 
-# 想让 checkout 里也装好三件套、`tinyjs dev --typephp` 免环境变量就能跑：
-bash tools/build-launcher.sh --install
+# Windows：shim + PHP 后端 → build/
+tools\build-all.bat
 ```
 
-### 3. 开发运行
+`tools/build-launcher.sh` 每次都会从 `gui/runtime/tiny.js` 重新生成 `gui/host/src/tiny_client.h`，所以改了 `tiny.js` 只需重跑它。
+
+### 2. 开发运行
 
 ```bash
 cd demo
-D:/git/web/tinyjsapp-0.42.0/bin/tjs.exe run D:/git/web/tinyjsapp-0.42.0/cli.js dev --typephp
+bash ../gui/bin/tgui dev
 ```
 
-不想往 checkout 里装东西的话，用 `TINYJS_LAUNCHER` 指到我们自己的产物：
-
-```bash
-TINYJS_LAUNCHER="$PWD/../build/runtime/launcher-win.exe" \
-  D:/git/web/tinyjsapp-0.42.0/bin/tjs.exe run D:/git/web/tinyjsapp-0.42.0/cli.js dev --typephp
-```
-
-改 `src/backend.php` 会让后端重启（窗口闪一下）；改 `demo/src/frontend/` 只是页面重载。
+`tgui dev` 会解析 `demo/tinyjs.json`、设置后端环境变量（`TYPEPHP_BACKEND` / `TYPEPHP_APP` / `TYPEPHP_CWD` / `TINYJS_ICON`），然后拉起 `launcher --typephp <html> <title> <size> <ver>`。改后端文件（`src/backend.php` 或任意框架文件）会让后端重启（窗口闪一下）；改 `demo/src/frontend/` 只是页面重载。
 
 调试输出**写 STDERR**：shim 给 stderr 单独一条管道，只抄进自己的日志，永远不混进帧流。看日志：
 
 ```bash
-TYPEPHP_SHELL_LOG=D:/tmp/shim.log ... dev --typephp
+TYPEPHP_SHELL_LOG=D:/tmp/shim.log bash ../gui/bin/tgui dev
 tail -f D:/tmp/shim.log
 ```
 
 > 往 **STDOUT** 上写任何非帧内容都会变成协议垃圾——STDOUT 就是帧通道。
 
-### 4. 打包发布
+### 3. 打包发布
 
 ```bash
 cd demo
-.../cli.js build   --typephp      # → demo/dist/
-.../cli.js publish --typephp      # → 再压成 zip
+bash ../gui/bin/tgui build      # → demo/dist/
+bash ../gui/bin/tgui publish    # → 再压成 dist.zip（带回退 tar.gz）
 python ../tools/verify-bundle.py dist \
        --launcher ../build/runtime/launcher-win.exe
 ```
 
-产物：`<App>.exe`（= shim，双击入口，已置 GUI 子系统并嵌图标）、`launcher.exe`、`app.exe`、6 个 DLL、`frontend/`、`<App>.conf`。
+产物：`dist/<App>.exe`（= shim，双击入口，已置 GUI 子系统并嵌图标）、`launcher.exe`、`app.exe`、6 个 DLL、`frontend/`、`dist/<App>.conf`。
+
+### 4. 新建一个项目
+
+```bash
+mkdir my-app && cd my-app
+bash ../gui/bin/tgui init       # → tinyjs.json + src/frontend/index.html
+# 然后按上面的「构建」「开发运行」两步跑
+```
 
 ---
 
@@ -274,39 +263,51 @@ stderr  → 只进 shim 日志（`[shell] backend stderr: …`），永不转发
 
 ### 加一个后端方法 ← 最常见
 
-一处改完：`src/backend.php` 的 `dispatch()` 里加个 `case`。
+实现一个 handler，或调用 `$d->on(...)`。**不需要改动任何中心函数**：
 
 ```php
-case 'api.greet':                      // method 名随便起，页面按同名字符串调
-    $who = (string)($params['name'] ?? 'world');
-    return ["hello, {$who}", []];      // [结果, 要额外发的帧数组]
+use Tiny\Gui\{Gui, State, Dispatcher, Response, Request};
+
+require __DIR__ . '/../gui/php/src/Tiny/Gui/bootstrap.php';
+
+$s = new State();
+$d = Gui::defaultDispatcher($s);          // 内置 Core/Win/Menu/Store/DemoApi
+$d->on('demo.greet', function (Request $req): Response {
+    $who = (string)($req->params['name'] ?? 'world');
+    return Response::ok("hello, {$who}");   // 结果会被 Protocol::jenc 进 RET
+});
+Gui::serveWith($d, $s);
 ```
 
-页面侧可直接调，**不需要动任何别的东西**：
+想一次认领多个方法，实现 `Tiny\Gui\HandlerInterface`（`methods()` 返回方法名数组，`handle()` 返回 `Response`，返回 `null` 则放行给下一个 handler）。
+
+页面侧直接调，**不需要动任何别的东西**：
 
 ```js
-const r = await tiny.api.call('api.greet', { name: '老杨' });   // 注意是 tiny.api.call
-// 或者用底层绑定（tiny.js 内部就是这么包的）：
-await window.__invoke(JSON.stringify({ method: 'api.greet', params: { name: '老杨' } }));
+const r = await tiny.api.call('demo.greet', { name: '老杨' });   // 注意是 tiny.api.call
+// 或者用底层绑定（tiny.js 内部就这么包）：
+await window.__invoke(JSON.stringify({ method: 'demo.greet', params: { name: '老杨' } }));
 ```
 
-`dispatch()` 返回 `[result, frames]`：
-- `result` 会被 `jenc()` 成 JSON 放进 `RET`；
-- `frames` 是在 `RET` **之前**发出去的裸帧（`TITLE`/`SIZE`/`EVAL`/`QUIT` 等）；
-- 抛异常 → `status=1`，异常消息进 `result`。
-
-想推事件给页面（不是应答），用 `emitEvent()`——它会生成一条 `EVAL` 帧：
+要推事件给页面（不是应答），在 handler 里往 `Response` 的 `frames` 里塞一条 `EVAL`：
 
 ```php
-$frames[] = emitEvent('progress', ['pct' => 42]);   // 页面 tiny.api.on('progress', fn)
+use Tiny\Gui\{Protocol, Response, Request};
+
+$d->on('demo.progress', function (Request $req): Response {
+    // 页面 tiny.api.on('progress', fn) 会收到这条 EVAL
+    return Response::ok(true, [Protocol::event('progress', ['pct' => 42])]);
+});
 ```
+
+`Response::ok($result, $frames)` 中 `$result` 进 `RET`；`$frames` 是在 `RET` **之前**发出的裸帧（`TITLE`/`SIZE`/`EVAL`/`QUIT` 等）；抛异常 → `status=1`，异常消息进 `result`。
 
 ### 加一种帧类型
 
 先问一句：**stock launcher 认不认这个帧？**
 
-- **认**（`TITLE`/`SIZE`/`EVAL`/`EVAL@`/`QUIT`/`DLG`/`MENU*`）→ 只改 `src/backend.php`，往 `$frames[]` 里塞即可。**打包方向完全不受影响。**
-- **不认** → 要同时改 `launcher-win.cc`，也就是往 `patches/launcher-win-typephp.patch` 里加 hunk（或新开一个 patch 文件）。代价：打包产物里的 `launcher.exe` 就不再是原版了。功能仍然正常——补丁保留了 stock 参数契约——但 `verify-bundle.py` 的"与构建源逐字节一致"只是相对我们自己而言。
+- **认**（`TITLE`/`SIZE`/`EVAL`/`EVAL@`/`QUIT`/`DLG`/`MENU*`）→ 在 handler 里往 `Response` 的 `frames[]` 塞对应裸帧即可。**打包方向完全不受影响。**
+- **不认** → 要改 `gui/host/src/launcher-win.cc`（已是我们自有源码，直接改、不再有补丁文件），并在 `gui/php/src/Tiny/Gui/Protocol.php` 里补对应的编解码。代价：打包产物里的 `launcher.exe` 就不再是原版了。功能仍然正常——`--typephp` 模式保留了 stock 参数契约——但 `verify-bundle.py` 的"与构建源逐字节一致"只是相对我们自己而言。
 
 所以：**能用现有帧就别加新帧。**
 
@@ -321,7 +322,7 @@ $frames[] = emitEvent('progress', ['pct' => 42]);   // 页面 tiny.api.on('progr
 
 ### 给后端加状态 / 文件访问
 
-`src/backend.php` 里的 `store.*` 用的是进程内数组（演示用途）。要持久化就自己接 SQLite / 文件——**注意**真 nano 模式下 `getenv` / `gethostname` 都不可用（`backend.php` 里只有 `sysinfo` 用到它们，已经标注），别用。
+框架的 `StoreHandler`（`store.get` / `store.set` / `store.all`）用的是进程内数组（演示用途）。要持久化就自己接 SQLite / 文件——**注意**真 nano 模式下 `getenv` / `gethostname` 都不可用（`backend.php` 里只有 `sysinfo` 用到它们，已经标注），别用。
 
 ### 支持一个新平台（Linux / macOS）
 
@@ -340,13 +341,13 @@ $frames[] = emitEvent('progress', ['pct' => 42]);   // 页面 tiny.api.on('progr
 - **POSIX 可见性宏必须在所有 `#include` 之前。** `-std=c++17` 会定义 `__STRICT_ANSI__`，libc 就把 `readlink`/`kill`/`setenv` 藏起来。glibc 上 g++ 会替 C++ 注入 `_GNU_SOURCE`（所以 Linux "碰巧能编"），Cygwin/newlib 不会。
 - **Cygwin 的 CPython `AF_UNIX` 和原生 `AF_UNIX` 不是一回事。** 实测矩阵：C 服务端 + Cygwin-Python 客户端 → 客户端 `connect()` **成功**但服务端 `accept()` 报 `ECONNABORTED(113)`；反过来 Python 服务端 + C 客户端 → Python `accept()` "成功"但读到不相关的垃圾，C 客户端拿到 `ECONNREFUSED`。C↔C 和 Python↔Python 都正常。**所以跨运行时语言测 unix socket 会得到假结果。**
 
-另外 `launcher-linux.cc` / `launcher-macos.cc` 目前**没有打过补丁**，`cli.js` 的 `dev --typephp` 也明确在非 Windows 上拒绝启动。所以 Linux 上目前能做的是：跑 shim（POSIX 分支已经 50/50 通过）+ 用真 nano 量体积，而不是跑完整 GUI。
+另外 `launcher-linux.cc` / `launcher-macos.cc` 目前是 pristine vendor，`--typephp` 仅在 `launcher-win.cc` 实现，所以非 Windows 上暂时跑不了完整 GUI（只能跑 shim 的 POSIX 分支 + 用真 nano 量体积）。
 
-### 为什么后端只有一个文件
+### 后端为什么还是"一个文件"编译出来
 
-`src/backend.php` 是**单文件、过程式**的，这不是偷懒：`tpc` 编译的是**单个入口文件**，`main()` 由编译器自动调用（所以系统 PHP 下要 `bin/run-backend.php` 手动调一次）。拆成 `Protocol.php` + `Backend.php` 那种"像样"的类结构，需要先验证 tpc 会不会跟着 `require` 递归编译——**没有验证过，所以没拆**。
+`tpc` 编译的是**单个入口文件**：`main()` 由编译器自动调用（所以系统 PHP 下要 `bin/run-backend.php` 手动调一次）。早期 `src/backend.php` 是过程式单文件；融合后它变成薄入口，逻辑拆进了 `gui/php/src/Tiny/Gui/*` 一整套类。这些类通过 `bootstrap.php` 的 `require` 被拉进同一个编译单元——**已验证 tpc 会跟着 `require` 递归编译**，所以现在既是清晰的多文件框架，又仍能编成单个 `app.exe`。
 
-`composer.json` 因此**故意没有 `autoload`**——这里没有类，加了是假的。
+`composer.json` 因此**故意没有 `autoload`**——框架靠 `bootstrap.php` 顺序 `require` 装载，不走 Composer 自动加载。
 
 ---
 
@@ -380,7 +381,7 @@ ALL TIERS OK
 
 ```bash
 # 开发方向
-cd demo && TYPEPHP_SHELL_LOG=../evidence/e2e/dev.log .../cli.js dev --typephp
+cd demo && TYPEPHP_SHELL_LOG=../evidence/e2e/dev.log bash ../gui/bin/tgui dev
 # 打包方向
 cd demo/dist && TYPEPHP_SHELL_LOG=.../packaged.log "./TypePHP Demo.exe"
 ```
@@ -404,41 +405,40 @@ python tools/verify-bundle.py demo/dist --launcher build/runtime/launcher-win.ex
 
 ## 维护与升级上游
 
-两个文件是上游的，我们改了它们——但**都不是手改的**，各自有一份原始基线：
+宿主（`gui/host/src/launcher-win.cc` 等）和客户端（`gui/runtime/tiny.js`）现在都是**本仓库自有副本**，受 MIT 约束（归属见 `gui/LICENSE.NOTICE`）。不再是外部 checkout + 树外补丁：
 
-| 文件 | 基线 | 补丁 | 规模 |
-|---|---|---|---|
-| `cli.js` | `patches/base/cli.js.orig`（75,888 B，sha256 `07c78612…`） | `cli-typephp.patch` | 8 hunk，+324 / 改 3 行 |
-| `native/launcher-win.cc` | `patches/base/launcher-win.cc.orig`（306,252 B，sha256 `d2fb5fed…`） | `launcher-win-typephp.patch` | 4 hunk |
-
-两者都验证过：**基线 + 补丁 = 当前在用文件的 sha256**。launcher 的派生结果 `b940d4b1…` 与跑过全套验证的那份逐字节相同。
-
-`cli.js` 那 3 行改写是**真的修 bug**，不是噪音：上游打包用 `tar -a -cf x.zip`，但 Windows 上的 `tar.exe` 可能是 GNU tar，而 **GNU tar 写不了 zip**——`-a` 配 `.zip` 名字会静默产出一个未压缩的 POSIX tar，直到用户打不开才发现。补丁加了 `zipTar()`（找 `%SystemRoot%\System32\tar.exe`，即 bsdtar 3.7.7）和 `assertRealZip()`（不是 zip 就报错）。
+- `--typephp` 的 4 个 hunk 已**直接并入** `launcher-win.cc` 源码，由 git 跟踪，不再有 `patches/*.patch` 文件。
+- `cli.js`（JS CLI）已被 `gui/bin/tgui`（bash）彻底取代，已从仓库移除。
+- `bridge.js`（JS 后端桥）已被 `gui/php/src/Tiny/Gui/*` 取代。
 
 **升级到新版本上游：**
 
 ```bash
 TAG=v0.43.0
-curl -fsSL "https://xget.xi-xu.me/gh/tarwin/tinyjsapp/raw/$TAG/cli.js" \
-  -o patches/base/cli.js.orig
+# 重新 vendor 宿主源码（覆盖自有副本；--typephp 改动作为普通提交 rebase 进来）
 curl -fsSL "https://xget.xi-xu.me/gh/tarwin/tinyjsapp/raw/$TAG/native/launcher-win.cc" \
-  -o patches/base/launcher-win.cc.orig
-bash tools/bootstrap-tinyjsapp.sh patch     # 直接试打；有 reject 再修
+  -o gui/host/src/launcher-win.cc
+curl -fsSL "https://xget.xi-xu.me/gh/tarwin/tinyjsapp/raw/$TAG/runtime/tiny.js" \
+  -o gui/runtime/tiny.js
+bash tools/build-launcher.sh        # 重新生成 tiny_client.h 并编译
+php gui/php/test/smoke.php           # 验证线格式仍与宿主对齐
 ```
 
-hunk 少且集中在几处，一般能 rebase。`xget.xi-xu.me` 是 GitHub 加速，国内直连 `raw.githubusercontent.com` 不可靠。
+`xget.xi-xu.me` 是 GitHub 加速，国内直连 `raw.githubusercontent.com` 不可靠。
 
-**两个必须知道的联动**（都踩过）：
+**把 `--typephp` 改动并入新版宿主时**，用 `git` 的 3-way merge 对齐那 4 个 hunk（集中在 spawn 后端与参数解析处），一般能直接合。验证：
 
-1. `cli.js` 的 `ensureLauncherFresh()`：当 `native/launcher-win.cc` 看起来比 `native/launcher-win.exe` 新时，`tinyjs dev` 会在启动前重跑 `setup.ps1`。**我们还原原始 `.cc` 正好会触发它**——而 MinGW 上这个重建**必然失败**（上游的 `setup.ps1` 指望 Windows SDK 的 WinRT 头，我们的 overlay 是故意放在 `build/winrt-shim` 的）。所以 `bootstrap patch` 会把我们编好的 launcher 装过去并把 mtime 顶到 `.cc` 之后。
+```bash
+bash tools/build-launcher.sh && php gui/php/test/smoke.php
+```
 
-2. 打了补丁的 CLI **硬编码**了 `TOOL_DIR + 'native/backend.exe'`，`dev` 和 `build` 都要用（**shim 兼作打包入口**，会改名成 `<App>.exe` 发出去）。所以 shim 也必须装在 checkout 里——128KB，而且那本来就是上游布局期望它待的地方。
+注意：早期 `--typephp` 模式依赖上游 `cli.js` 的 `ensureLauncherFresh()` 在启动时重跑 `setup.ps1`（Windows SDK 的 WinRT 头）。融合后宿主由 `tools/build-launcher.sh` 编译、`build/winrt-shim` 提供 overlay，与上游 `setup.ps1` 无关，不再有这条联动。
 
 ---
 
 ## 已知限制
 
-- **`--typephp` 目前只有 Windows。** 只有 `launcher-win.cc` 打了补丁，`cli.js` 在非 Windows 上会明确拒绝。见"支持一个新平台"。
+- **`--typephp` 目前只有 Windows。** 只有 `launcher-win.cc` 含 `--typephp`（已并入自有源码），`tgui dev` 在非 Windows 上因找不到 `launcher-win.exe` 而无法启动完整 GUI。见"支持一个新平台"。
 - **Windows 上 `--nano` 是死路。** 它不是真 nano，而是 `bin` 策略包装：`NanoBuildBackend::forHost('Windows')` 硬编码返回 `WINDOWS_DLL`，所以链接的不是 freestanding php-nano，而是完整 PHP/PHPX DLL。实测产物依赖与 bin 版**完全相同**（15.5MB），体积只小 1.5%，而且 teardown **必定 SIGSEGV(139)**。小巧路线只在非 Windows 存在，且要先去 `getenv`/`gethostname`。
 - **分发体积** ≈ `shim(128KB) + app.exe(≈180KB) + 6 个 PHP DLL(≈15.5MB)` ≈ **18.6MB**，不是 tinyjsapp 那种 ~6MB 单文件。换来的是单进程自包含、目标机不需要装 PHP。
 - **`app.exe` 不自身包含运行时**，DLL 必须和它同目录（Windows 先在自己的 exe 目录找非 KnownDLL，所以同目录能钉住版本、也不依赖 PATH）。
@@ -451,7 +451,8 @@ hunk 少且集中在几处，一般能 rebase。`xget.xi-xu.me` 是 GitHub 加�
 
 | 文档 | 内容 |
 |---|---|
-| `patches/README.md` | 两个补丁各改了什么、为什么这么存、怎么给新版上游重建基线 |
+| `docs/GUI_FUSION_DESIGN.md` | 融合设计：迁移范围/目标、模块划分、集成方式、兼容策略、开发者友好设计 |
+| `gui/README.md` | `gui/` 模块说明：布局、与上游的差异、构建、扩展、兼容 |
 | `test/posix/README.md` | 套件每一档在测什么、两条路径规则、怎么拿出去独立用 |
 | `docs/feasibility-aot-compiler-backend.md` | 最初的可行性调研 |
 | `docs/nano-mode-ipc-addendum.md` | nano 模式与 IPC 的补充结论 |

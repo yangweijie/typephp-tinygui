@@ -1,10 +1,9 @@
 {
   "name": "TypePHP Demo",
+  "title": "TypePHP Demo",
   "size": "1100x760",
   "version": "0.1.0",
-  "typephp": {
-    "build": "build.bat",
-    "app": "backend/app.exe",
-    "dlls": "backend"
-  }
+  "frontend": { "dir": "src/frontend" },
+  "icon": "icon.png",
+  "typephp": { "app": "backend/app.exe" }
 }
