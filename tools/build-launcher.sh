@@ -43,7 +43,7 @@ cd "$ROOT" || die "cannot cd $ROOT"
 fetch_url() { # fetch_url <relative-path> <out-file>
   local rel="$1" out="$2" u
   for u in \
-    "https://xget.xi-xu.me/gh/mingw-w64/mingw-w64/raw/master/mingw-w64-headers/include/$rel" \
+    "https://xget.fnthink.top/gh/mingw-w64/mingw-w64/raw/master/mingw-w64-headers/include/$rel" \
     "https://raw.githubusercontent.com/mingw-w64/mingw-w64/master/mingw-w64-headers/include/$rel" \
     "https://cdn.jsdelivr.net/gh/mingw-w64/mingw-w64@master/mingw-w64-headers/include/$rel" ; do
     if curl -fsSL --max-time 45 "$u" -o "$out" 2>/dev/null && [ -s "$out" ]; then

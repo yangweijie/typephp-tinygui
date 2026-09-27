@@ -1,0 +1,3 @@
+
+== publish: tar.gz dist/ (no zip on this machine)
+   ok   dist.tar.gz  (400430 bytes) — keep the extension: it names the format

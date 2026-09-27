@@ -10,8 +10,9 @@
 > 不要原样写出来。**阶段编号沿用历史标识（`16a`/`16b-1`/`16b-2`），不要为了整齐重新编号**
 > —— `progress.md`、`findings.md`、技能文档全都按这套编号交叉引用。
 >
-> 自检：改完本文件后跑一次 `scripts/check-complete.sh`，它应报 **21 个阶段、20 完成、
-> 1 个 pending**。数字不对就说明有人在正文里原样写出了字面量（包括这条说明自己 ——
+> 自检：改完本文件后跑一次 `scripts/check-complete.sh`，它应报 **24 个阶段、23 完成、
+> 1 个 in_progress（只剩 Phase 21 的 21e：验收驱动 `test/win/dev-bounce.sh` 已就位，阻塞在
+> Windows 真机通道；Phase 22 本轮已整体闭环）**。数字不对就说明有人在正文里原样写出了字面量（包括这条说明自己 ——
 > 本文件整理时连踩两次：第一次是"格式说明"段，第二次是"自检"段）。
 > 想手工核数就用 `grep -c '#' task_plan.md`-类思路数阶段标题，别把字面量抄进来。
 
@@ -23,7 +24,12 @@
 
 ## Current Phase
 
-**Phase 16b-2** —— 唯一 `pending` 的阶段（其余 20 个全部 `complete`）。它只包含**必须在 Linux 上跑**的两项：`--nano` freestanding 体积测量（tier 3）与真 `launcher-linux` 窗口端到端（tier 4）。**它不阻塞任何其他工作**，本地可验证的部分已于 Phase 16b-1 全部闭环。
+**Phase 16b-2 已于 2026-09-27 闭环（Apple Container Linux 容器实测）**：tier 4 真 `launcher-linux` 窗口端到端 **PASS**（14 CALL/14 RET、`WINDOW-E2E OK ping=pong in 128ms`、截图+拆除零残留），tier 3 真 `--nano` freestanding 产物 **1,160,624 B（strip 后 987,208 B）、`ldd` 无 libphp、直跑输出 marker**。两个 Key Question 均已回答（见下）。
+
+**Phase 22（2026-09-27，用户选定的下一轮方向）：Linux 打包/dev 方向落地** —— 把 tier-4 那次"手工编排"的证据固化成产品链：`tools/build-linux.sh` + `tgui status/dev/build/publish` 的 Linux 分支 + 容器内端到端验收。**22a/22b/22c/22d 全部完成（Phase 22 闭环）**：构建脚本、dev + 真窗验收、打包布局 + 结构校验 + #25 的 shim 修复、以及打包方向在 Xvfb 下的真出窗直跑（清掉穿线 env、进程 cwd 设为 `/`、仓库 `dist/` 已删的副本仍 14/14 + 109ms marker + 拆除零残留）。全计划剩余开口只剩 **21e**（Windows watcher 真机验收，阻塞在 Windows 通道）。
+下一步动作是**唯一且明确的**：在 Windows 机的 Git Bash 里 `bash test/win/dev-bounce.sh`（驱动已于
+2026-09-27 就位并离线演练过），把结尾 PASS/FAIL 与 `$WORK`（默认 `/tmp/tpgui-21e`）内容取回，
+PASS 后在同一轮删掉 README 的"win 侧单发启动"注记并把 Phase 21 的 Status 行改为 `complete`。
 
 ## 关键约束（已探明）
 
@@ -139,12 +145,14 @@ headless 下 launcher spawn→命名管道→shim→PHP→`CALL/RET` 往返 PASS
 - **教训（与 session 11 的"测试自己的 oracle"同源）**：孤儿进程断言的初版是**空洞的** —— 它"通过"只是因为当时根本没有进程在跑。现在加了**正向对照**（先用一个存活的同名进程证明匹配器看得见它，再证明归零）。另外 Cygwin 的 `ps -ef` 打印**解析后的绝对路径**且忽略 `argv[0]`（`exec -a` 骗不过它）。
 
 ### Phase 16b-2: Linux 独有的剩余部分（Cygwin 替代不了的那两块）
-- **Status:** pending
+- **Status:** complete（2026-09-27，容器 `tgl`：Debian 12.15 / aarch64 / 内核 6.18.35 / g++ 12.2.0）
 
-- **tier 3 —— `--nano` freestanding 体积测量**：这是"小巧路线"唯一的真实答案，必须在 **Linux** 上跑 `tpc --nano`（Windows 的 `--nano` 只是策略包装：导入逐字相同、只小 1.5%、teardown 必 SIGSEGV；Cygwin 也无法承载 Linux ELF，更不能当发行物）。命令见 `planb/posix-test/README.md` 的 tier 3 段，配好后一条命令可得 `ls -l` + `ldd`。
-- **tier 4 —— 真 `launcher-linux` 窗口端到端**：需 `libgtk-3-dev` + `libwebkit2gtk-4.1-dev` + `xvfb-run`。
-- 两项都**不再阻塞**别的进度：云端别名（`radeon-cloud`）缺失只影响这两项，tiers 1/2 + launch 模式 + stderr 探针本地已闭环。
-- **阻塞点（需用户决策）**：拿到 Linux 用户态的三条路 —— ① 用户已有的 `radeon-cloud` 远端（`rc` 别名缺失时需先配）；② 任意 ssh 可达的 Linux 机器；③ 本地 WSL 导入发行版，但 **C: 仅剩 2.8G（97% 已用）**，属破坏性操作，**未经同意不做**。
+- **路线决策（用户）**：放弃云端 `radeon-cloud`/WSL，本机用 **Apple Container**（brew 公式 `container` 1.4.1）；**OrbStack 被用户明确否决**，相关后台任务与机器已拆除。
+- **环境事实（已实测，细节见 findings）**：① ghcr 直连 ~8KB/s → bottle 走 TUNA 镜像装成；② 启动卷满致 brew 写失败 → 获批清 4 个 updater 缓存（~1.7G）；③ `paths.appRoot` 必须留在启动卷，软链到 `/Volumes/data` 会让 apiserver XPC 挂死；④ recommended 内核包 `kata-static-3.32.0-arm64.tar.zst`（696,573,576B）GitHub 直连被掐、xget 镜像掐长连断点续传（且两条 curl 并发写同一文件互相打坏）→ **用户指令：停 curl，改用 unfetch MCP 下载**。unfetch 实测：**32 线程分片会写坏文件**（xget 掐流后分片重发重叠，`done_bytes` 超总量、`zstd -t` 报 corruption）；**threads=1 顺序下载 5m20s 一次成功、校验通过** —— 对该镜像源必须单线程。
+- **tier 4 实测 = PASS（2026-09-27）**：`test/posix/tier4-linux-window.sh`（修了两处：ROOT 层级 `../../`；pkg-config 双名探测 `libayatana-appindicator3.0`/`ayatana-appindicator3-0.1`）在容器内一条命令跑完：shim 编译 ✓ → **真 `launcher-linux`（GTK 3.24.38 + webkit2gtk-4.1@2.50.6）编译 ✓** → Xvfb → shim(AF_UNIX 服务端) + launcher(客户端) → **14 CALL / 14 RET、`WINDOW-E2E OK ping=pong in 128ms`**、shot.png（imagemagick 截图 98,337B）、拆除后 shim 随 launcher 退出、socket 清零。Key Question ②就此回答：**同一份 POSIX 分支在真 glibc/Linux 上与 Cygwin/macOS 行为一致**（且 launcher-linux 是 pristine vendor、未打任何补丁）。
+- **tier 3 实测（2026-09-27，环境路线修正）**：`php:8.4-cli-bookworm` 镜像 881MB 拉不下（启动卷剩 ~700Mi，ENOSPC）→ 改走 **sury apt 源**（`packages.sury.org/php` bookworm arm64，容器内 https 直接可达）装 PHP 8.4.25；tpc 源码树实为 **v0.9.3**（此前记 0.8.0 有误），其 vendor 里 phpx 是 2.7.0 **无 nano 元数据** → 用 xget+unfetch（threads=1）拉 **phpx v2.9.2**（`extra.typephp-native.abi=80600`）与 **php-nano v1.0.1**（abi 同为 80600，206 个 C 源），替换/放入 `vendor/swoole/` 后经 base64 管道进容器。编译 5 行 `nano_min.php`（与 Windows session 8 同款输入）：`php8.4 tpc.php nano_min.php --nano -o app-nano` → 122 文件全源码编译、`Successfully compiled` + `Auditing Nano runtime dependencies` + `Build successful`。产物 **1,160,624 B（ELF aarch64 PIE，g++ 12.2，-O0）/ strip 后 987,208 B**；**`ldd` 只有 libstdc++/libm/libgcc_s/libc —— 无 libphp、无 php.ini、无扩展 DLL**；直跑输出 `nano-policy-build-ok`、退出码 0。Key Question ①就此回答（数字与边界见下）。
+- **tier 3 撞出的真 nano 能力边界（如实登记，见 Errors #22）**：真 nano **拒绝 `require`/`include`**（`NanoSyntaxValidationVisitor` 对 Include_ 一律 fatalError）→ 本仓库 demo 后端 `src/backend.php:29`（require gui 框架）**在 Linux 真 nano 下编不过**；Windows 的 nano-policy 包装编得过恰是"Windows 通过 ≠ 真 nano 通过"（Phase 17 结论）的又一实证。若日后要走 nano 发行，demo 入口需改成单文件聚合或 native project.xml 多源输入。
+- **Linux bin 模式无对照数**：Debian/sury 不提供 embed SAPI 开发库，容器里编不出 bin 产物 → "相比 bin 省多少"只能定性：bin 模式需随包分发 libphp8.4.so + php.ini + 扩展闭包（Windows 侧实测 DLL 闭包 15.5MB），nano 模式这些**全部为零**，代价是上面那条语法/函数面限制。
 
 ### Phase 17: `backend.php` 去 `getenv`/`gethostname`（nano 编译合规）
 - **Status:** complete
@@ -168,10 +176,72 @@ headless 下 launcher spawn→命名管道→shim→PHP→`CALL/RET` 往返 PASS
 - 实测：zip 解压到干净目录 → `verify-bundle.py` 全绿 → **解压出来的应用直接跑通 13 CALL/13 RET**、0 错误、关窗零残留。截图 `planb/e2e-shipped.png`。
 - 新增工具 `planb/verify-bundle.py`：客观校验入口子系统/图标资源/launcher 是否原版/DLL 完整性/conf+frontend（用 `ExtractIconExW` 数图标，而不是猜资源目录）。
 
+### Phase 20: macOS 实机编译运行（2026-09-26 起）
+- **Status:** complete
+
+目标：在 Apple Silicon Mac（macOS 26.6.2 / arm64 / Apple clang 21 / PHP 8.5.7）上验证跨平台边界。范围按 README「支持一个新平台」一节的既有结论收窄：**不碰 tpc/MSVC（Windows 专属）**，后端用系统 PHP（shebang 脚本，POSIX 下 shim `execv` 允许）；走**打包方向**（shim 当入口，launcher 用 pristine `launcher-macos.cc` 的 stock `<html> <socket> [title] [WxH]` 契约），dev 方向的 `--typephp` 在 mac 上仍不存在（不静默：这是既有已知限制，非本轮砍掉）。
+
+- **20a** shim POSIX 分支在 macOS 编译（`clang++ -std=c++17`，含 `-Wall -Wextra`）→ `build/`
+- **20b** `test/posix/all.sh` 全套在 macOS 实跑（probe/tier1/tier2/launch/stderr），目标 50 PASS / 0 FAIL，证据落 `evidence/kit/`
+- **20c** `gen-client.sh` 生成 `tiny_client.h` 后编译 `launcher-macos.cc`（WebKit/Cocoa framework）
+- **20d** 端到端：`build/backend_shell`（launch 模式）拉 `launcher-macos` + 真 PHP 后端，WKWebView 窗口出现、CALL/RET 配对、`WINDOW-E2E OK`
+- **20e** 结论回写本文件 + `findings.md`/`progress.md`；若 launcher-macos 需要 .app bundle 或 TCC 权限弹窗，如实记录为限制
+
+Phase 20 收尾时明确未做的事项，已升格为 **Phase 21**（见下），不在本轮范围内静默吞掉。
+
+### Phase 21: macOS 收尾四项（自 Phase 20「未做」清单移入）
+- **Status:** in_progress（21a/21b/21c/21d 已完成；21e：代码侧 + 验收驱动 `test/win/dev-bounce.sh` 就位并离线演练过，只剩 Windows 真机跑一次）
+
+- **21a `tgui` 接 macOS** ✅（2026-09-26 完成）：`gui/bin/tgui` 目前只有 Windows 路径，mac 上靠 `tools/build-macos.sh` 直接编排。最小验收：`tgui status` / `tgui dev` 在 Darwin 上给出**明确指引**（指向 `build-macos.sh --run`）而不是"找不到 launcher-win.exe"式的裸失败；顺手把 `sysinfo` 的 `backend` 字段改成按真实运行时上报（现在系统 PHP 下仍硬编码 "aot-compiler (tpc) AOT native"，findings 已标注为文案性缺陷）。
+  - 结果：`tgui status` 在 Darwin 增列 macOS 三件套实际路径 + 指向 `tools/build-macos.sh --run`；`tgui dev` 直接给出同一段指引再 die（不再裸报 launcher-win.exe missing）。`sysinfo.backend` 改为真实上报：shim 在拉后端前读 `app` 文件首 2 字节判型（`#!`→`stock`，`MZ`→`aot`，其余/读不到→`unknown`），经 env `TYPEPHP_APP_KIND` 注入（Windows `SetEnvironmentVariableW` / POSIX `setenv`，子进程继承；与 TINYJS_ICON 同一惯用法），PHP 侧按 Phase 17 规则走 `$_SERVER`→`$_ENV` 链读取。
+  - 实测（macOS 实机）：直调后端 `TYPEPHP_APP_KIND=stock` → `"backend":"stock PHP CLI (no AOT)"`；未设 → `"unknown (TYPEPHP_APP_KIND not set)"`；打包 E2E shim 日志 `app_kind=stock`、13 CALL/13 RET、`WINDOW-E2E OK ping=pong in 54ms`，活动帧流里 sysinfo RET 含 `stock PHP CLI (no AOT)`、api.version RET 含 `stock`。回归：smoke 24/24、`test/posix/all.sh` ALL TIERS OK（probe+11/11/14/15，0 FAIL）。
+  - 顺带（同类硬编码撒谎，一并改）：`DemoApiHandler.php` 的 `api.version.backend` 从 `'tpc-AOT'` 改为透传 `TYPEPHP_APP_KIND`。
+  - 未验证项（如实登记）：Windows 分支的 `_wfopen`/`SetEnvironmentVariableW` 新增段本机无 mingw，只做代码审查（与既有 TINYJS_ICON/_wfopen 用法逐字同构），待下次 Windows 实机构建覆盖；`tgui build` 在 Darwin 的行为**不在 21a 验收内**，未改（仍是裸 die），随 21b/21c 处理。
+- **21b `--typephp` 移植进 `launcher-macos.cc`** ✅（2026-09-26 完成）：把 win 侧那 4 个 hunk（集中在 spawn 后端与参数解析）3-way 合过来，mac 上才有**真 dev 方向**（launcher 拉 shim、改后端热重启）。代价与 win 侧同构：`launcher-macos` 不再是 pristine vendor，"与上游逐字节一致"仅相对本仓库。验收 = mac 上 `tgui dev` 出窗 + 后端文件改动触发窗口闪一下 + 13 CALL/13 RET。
+  - 结果：`launcher-macos.cc` 按 Hunk A–E 同构移植（AF_UNIX `/tmp/tinyjs-typephp-<pid>.sock`、`posix_spawn`、connect 重试 50×100ms **仅 typephp 模式**、`terminate` 挂 `_exit(0)` 前——win 的 `std::atexit` 在 `_exit` 路径不生效，照抄会失效；主回收仍是 shim 的端点 EOF 链）。`tgui dev` Darwin 化：三件套默认指向 mac 产物、`typephp.{backend,app}` 仅在文件存在时生效、mtime watcher kill+respawn；**Windows 分支逐字保留原行为**（见下：那本来就是单发启动）。
+  - 实测（Apple Silicon 实机）：`tgui dev` 出窗 13 CALL/13 RET、`WINDOW-E2E OK ping=pong in 56ms`、`app_kind=stock cwd=<demo>`、`backend":"stock PHP CLI (no AOT)"` 出现在帧流；`touch src/backend.php` → bounce → 新 shim 实例再 13/13；杀 launcher → tgui 退出 `NO_PROCS`、socket 清零；打包方向复验 13/13 + 49ms；`test/posix/all.sh` ALL TIERS OK。证据 `evidence/mac/dev-21b.log`；移植细节记入 `docs/launcher-patch-notes.md`。
+  - **本轮撞出的既有缺陷 #19**：现 `tgui dev` 的 Windows 热重启是 fusion 遗留死代码（`watch_loop` 定义在无人调用的 subshell 里 + 主循环无条件 `break`），Phase 7 "touch 触发重启"真机证据属旧 cli.js。README 已改为如实描述（mac 有 bounce、win 单发），win watcher 恢复登记为新未做项（见 21e）。
+- **21e（执行中，2026-09-27）Windows watcher 恢复**：把 Darwin 的 mtime-watch + kill/respawn 验到 Windows 上（`stat -c %Y` 或 PowerShell `Get-Item` 取 mtime，Git Bash 无 `stat -f`），并同步删掉 README"融合后单发启动"注记。验收 = win 上 `tgui dev` + touch 后端文件 → 窗口闪一下 + 13/13 复用。
+  - **代码侧已完成**：`gui/bin/tgui` 监视循环去掉 `[ "$OS" = Darwin ]` 门控（win/mac 的 `--typephp` dev 方向共用同一生命周期链：kill launcher → shim EOF 回收 PHP 子进程 → respawn）；`hot_snap` 的 stat 方言改为**现场探测**（BSD `-f '%m %N'` / GNU `-c '%Y %n'`，Git Bash 带 GNU coreutils）。本地验证：`bash -n` 过；假 stat 证明 GNU 探测路径选中且 digest 语义与 BSD 一致；**无头冒烟**（fake launcher）跑通 touch→bounce→respawn→清理零残留。README 的 win 单发注记**保留**，等真机验收再删（未跑通不冒充）。
+  - **待做（用户决定：本轮停在代码侧，2026-09-27）**：真机 `tgui dev` + touch → 窗口闪一下 + 13/13。Windows 通道确定后再排；在此之前 README 的 win 单发注记**不删**。
+  - **验收驱动已就位（2026-09-27，`test/win/dev-bounce.sh`）**：在 Windows 机的 Git Bash 里 `bash test/win/dev-bounce.sh` 一条命令跑完 7 步，证据落到 `$WORK`（默认 `/tmp/tpgui-21e`），把 PASS/FAIL 与 `$WORK` 内容贴回来即可闭环。它按 tgui 的**同一套**路径解析（env > `build/runtime/{launcher-win,backend}.exe` + `build/app.exe`，再被 `demo/tinyjs.json` 的 `typephp.app` 覆盖）预检并自动从 `build/` 补装缺失产物；断言集是：cycle 计数按 `[shell] transport=` 头分周期、每周期 ≥13/13 + marker、**每次 bounce 后管道名必须换**（`\\.\pipe\tinyjs-typephp-<pid>` 随 launcher pid 变）、**`launcher/backend/app` 三个进程数在两次 bounce 后仍是 1/1/1**（这条是 21e 的关键：Windows 侧没有 `dev_reap_shim` 兜底，kill 掉 launcher 又不跑 atexit，shim 自杀只能靠管道 EOF，泄漏会逐次累积）、关窗后零残留。附带 `stat -f`/`-c` 方言断言（Git Bash 必须拒绝 BSD 形式，否则 digest 恒等于"watcher 死了"）与 `g++ -Wall -Wextra` 重编 shim 的 `_WIN32` 分支（顺手还掉 22c 那笔"Windows 没重编"的账；无 g++ 时打印 skip 并在末尾复述该缺口）。脚本本身在 mac 上用假 `uname`/`tasklist`/`taskkill`/`stat`/`launcher-win.exe` 做过全流程演练：泄漏场景（伪造 launcher 不响应管道 EOF）判 **FAIL / RC=1**，模拟 EOF 拆除场景判 **PASS / RC=0**（输出 `3 cycles`、`zero residue (launcher=0 shim=0 app=0)`）—— 即断言集**有判别力**，但这**不等于** Windows 通过。演练细节与可复用方法见 findings"21e"节。
+- **21c `.app` bundle 封装与分发链** ✅（2026-09-26 完成）：双击体验——Info.plist（含 TCC usage description，源码里 ScreenCaptureKit/getUserMedia 那套权限文案需要它命名）、图标（对应 win 侧 PE stamping 的 macho 等价物）、入口指向 shim+launcher+后端三件套的 bundle 布局；并给 mac 版产物做一个 `verify-bundle.py` 的对应校验（架构/依赖/资源齐全，替代 PE 子系统/DLL 那四项）。
+  - 结果：`tgui build` Darwin 分支产出 `dist/<App>.app`——`Contents/MacOS/<App>`（shim 改名**不带点**：`stem_of()` 在第一个 `.` 截断，带点会让 conf 路径错配）、`<App>.conf`（launch 模式，html/app 用 `../Resources/…` 相对路径）、`launcher-macos`、`Resources/app/`（后端 PHP **逐字节镜像**，`__DIR__` require 链原样生效，运行依赖系统 php on PATH）、`Resources/frontend/`、`AppIcon.icns`（`sips`→iconset 10 张定名→`iconutil`；无 icon.png 时 CFBundleIconFile 整键缺席而非悬空引用）、`Info.plist`（plist heredoc，TCC 相机/麦克风/语音三用途串 + LSMinimumSystemVersion 12.0）。构建末尾自动调 `tools/verify-bundle-macos.py`（新）：layout/plistlib/Mach-O 头解析（fat+thin，主机架构硬检）/conf 按 shim 语义复析/exec 位/镜像齐全/icns/sun_path 长度；codesign 仅 `-dvv` **信息报签**不做 `--verify`（见 #20）。
+  - 实测（Apple Silicon 实机）：干净重建 **verify PASS / 0 warning**；直跑 bundle 入口（清掉全部 `TYPEPHP_*` env，纯 conf 驱动）窗口正常、**13 CALL / 13 RET**、`WINDOW-E2E OK ping=pong in 51ms`、`app_kind=stock`、进程树 App→(php, launcher-macos) 全走 bundle 内相对路径；杀 launcher（= 关窗）→ shim `launcher closed`/`done`、socket unlink、`NO_PROCS`。`open` 双击等价：/tmp 副本全链路 13/13（79ms）；**本仓库卷 `demo/dist` 上 LaunchServices 实例在 `__bind` 永久挂起**（直跑同二进制正常 → 环境性限制非代码缺陷，见 #21）。
+  - 边界（如实登记）：① mac 打包不做 DLL 式自包含，目标机需 php on PATH（verify 明示 warn 级事实 + README 已写）；② 不做 Developer ID/公证，链接器 ad-hoc 签名本机可跑、下载分发会被 Gatekeeper 拦（#20 记录了为什么打包级 ad-hoc 签名反而不可行）；③ 外部卷 LaunchServices `bind()` 挂起未修（发布场景在默认卷，验收已用 /tmp 副本覆盖双击路径）。
+- **21d（complete，2026-09-27）Linux 侧剩余**：GTK tier 4 窗口端到端与 tier 3 `--nano` 体积测量**已在 Phase 16b-2 闭环**（tier4 PASS：14/14 帧 + 128ms marker + 截图零残留；tier3：1,160,624B / strip 987,208B、ldd 无 libphp、直跑通过），本条指针作废勿再追踪。
+
+### Phase 22: Linux 打包/dev 方向落地（把 tier-4 的手工证据固化成产品链）
+- **Status:** complete
+
+- **动机**：Phase 16b-2/21d 只在容器里用 `test/posix/tier4-linux-window.sh` 手工编排跑通了真窗口（shim 服务端 + 原版 `launcher-linux` 客户端），但 `tgui` 在 Linux 上仍然是"走 Windows 路径然后裸 die"，也没有 `tools/build-linux.sh`。Linux 用户拿不到"一条命令构建 + 一条命令跑 + 一条命令打包"的体验。
+- **设计约束（先定，别在实现时改主意）**：① **不给 `launcher-linux.cc` 打 `--typephp` 补丁** —— win 侧 dev 是 launcher 拉 shim，mac 侧 21b 移植了 `--typephp`；Linux 保持 pristine（那是 tier-4 证据成立的前提，也是"分发的 launcher 与上游逐字节一致"这条决策的延伸），dev 方向反过来由 **shim 做 AF_UNIX 服务端 + 原版 launcher 做客户端**，与打包方向同一条生命周期链；② 打包布局沿 win 的目录式（不是 mac 的 .app），entry = shim 改名**且名字不带点**（`stem_of()` 在第一个 `.` 截断），conf 驱动、全部相对路径；③ 验收环境就是现成容器 `tgl`（Debian 12 / aarch64，g++、PHP 8.4.25、GTK3+webkit2gtk-4.1、Xvfb 已就位），不再新增安装项——启动卷只剩 ~500Mi，装东西会重踩 #24。
+
+- **22a `tools/build-linux.sh`** ✅（2026-09-27 完成）：把 tier4 脚本里已验证的两条编译行提炼成正式构建脚本——`build/backend_shell`（POSIX 分支）+ `build/launcher-linux`（GTK3 + webkit2gtk-4.1，appindicator pkg-config 双名探测 + 存在即 `-DTINYJS_APPINDICATOR`），缺依赖时给**点名缺哪个包**的失败信息而非编译器噪声。验收 = 容器内一条命令产出两个可执行 + `file`/`ldd` 摘要。
+  - 结果：容器 `tgl` 内一条命令产出 `build/backend_shell`(78,352B) + `build/launcher-linux`(545,496B)，且与 tier-4 当时 `/tmp/tpgui-tier4/` 的两个产物**逐字节相同**（同工具链同 flag 的可复现证据）。`file` 显示 ELF 64-bit LSB pie / ARM aarch64；launcher 链接 171 个共享库（GTK/WebKit/libsoup/appindicator/miniaudio 单头）。appindicator 按 #23 定为**硬依赖**，用假 `pkg-config`（只对 `*appindicator*` 返回 1）验了错误路径：脚本点名 `ayatana-appindicator3-0.1` / `libayatana-appindicator3.0` 两个 pkg-config 名 + Debian 包名并 die，RC=1。
+  - 附带修正：`gen-client.sh` 依赖 python3，脚本给了 **php 等价回退**（生成同一 `tiny_client.h`，含同样的 `)TINYJS` 分隔符冲突断言）；WebKit 支持 4.1→4.0 回退（Debian 11/Ubuntu 22.04）；`-lX11 -lXtst` 所需库做存在性检查。Fedora/Arch 包名**未经本机核实**，脚本里明示这点，只有 Debian/Ubuntu 名是实测过的。
+- **22b `tgui status` / `tgui dev` 的 Linux 分支** ✅（2026-09-27 完成）：status 报 Linux 三件套实际路径；dev = 起 shim（`TYPEPHP_SHELL_LOG/TYPEPHP_APP/TYPEPHP_CWD` + 显式端点名）→ 拉 `launcher-linux <html> <sock> title WxH ver` → 复用 21e 已 OS 无关化的 mtime watcher（kill launcher → shim 端点 EOF 回收 PHP 子进程 → 两端一起 respawn）。验收 = 容器内 Xvfb 下出窗 + 13/13 + touch 后端 → 重启一轮。
+  - 结果：`tgui dev` 在 Linux 走"shim 当端点服务端 + 原版 launcher 当客户端"，`launcher-linux` 一个字节未改（pristine 保住了）；`typephp.{backend,app}` 配置项在 mac/Linux 上统一改成"文件不存在就用平台默认"（原来的 `&& { ... }` 链式判断换成 `cfg_override`，避免空值把 `TP_ENV` 打空）；watcher 直接复用 21e 的 OS 无关循环，Linux 侧只加 `dev_spawn`/`dev_reap_shim` 两个函数。`tgui status` 在 Darwin 段之后加 Linux 段（三件套路径 + "需要 X display"提示）。`tgui build` 在 Linux 明确 die 并指向 22c，不再伪装成 Windows 路径失败。
+  - 实测（容器 `tgl`，`test/posix/linux-tgui-window.sh` **PASS**）：cycle 1 `CALL=14 RET=14` + `WINDOW-E2E` marker + `shot.png` 108,958B；`touch demo/src/backend.php` → CLI 记 `sources changed — bouncing` → cycle 2 又 `14/14` + marker（帧日志按 `[shell] transport=` 头分周期）；杀 launcher（= 关窗）→ shim 自行 EOF 退出、`tgui dev` 退出、dev socket 清零。证据 `evidence/linux/22b-{shim.log,tgui.out,shot.png}`。
+  - **撞出的既有缺陷（记 #25，修在 22c）**：shim 的 `io_accept` 没有超时——launcher 若在连上之前就死掉（无 X display 时 GTK 立刻退出，正是本轮第一次失败的场景），shim 会永远等在 accept，PHP 后端也白活着。dev 侧已被 `tgui` 的 5s 有界回收兜住（那次 warning 就是这么触发的），但**打包方向里 launcher 由 shim 自己 spawn，没人兜底**，必须让 shim 在 launch 模式下边等 accept 边查 launcher 存活。
+- **22c `tgui build` / `publish` 的 Linux 分支** ✅（2026-09-27 完成）：`dist/<name>/` = `<name>`(shim) + `<name>.conf` + `launcher-linux` + `frontend/` + `app/{bin,src,gui/php/src}` 后端镜像（照 mac 的"逐字节镜像仓库相对路径"手法，`require ../gui/php/…` 原样生效）；构建末尾跑结构校验（ELF 头/架构、exec 位、conf 按 shim 语义复析、镜像齐全、`sun_path` 长度）；publish 出 `dist.tar.gz`（容器无 `zip` 时不冒充 zip，见 #11 教训）。**含 #25 的 shim 修法**：launch 模式下等 accept 的同时轮询 launcher 存活，launcher 先死就杀掉 PHP 并退出。
+  - **打包布局**：`dist/TypePHP-Demo/` = `TypePHP-Demo`(entry，78,352B) + `TypePHP-Demo.conf` + `launcher-linux`(545,496B) + `frontend/index.html` + `icon.png` + `app/{bin/run-backend.php, src/backend.php, gui/php/src/Tiny/…}`；整目录 872KB，`publish` 出 `dist.tar.gz` 392KB。`name` 里的空格与非 `[A-Za-z0-9._-]` 字符被 `tr` 洗掉，并在**第一个点**处截断（与 shim 的 `stem_of()` 同规则），否则 `<name>.conf` 根本对不上。conf 多写一行 `icon=`：shim 在 launch 模式下把它 `setenv(TINYJS_ICON)` 后再 spawn launcher，而 `launcher-linux` 确实按这个环境变量取窗口图标（源码 1705/5821/6313 行），所以 Linux 侧图标走 conf，不需要 win 的 PE 刻录或 mac 的 icns。
+  - **结构校验 `tools/verify-bundle-linux.sh`**（`tgui build` 末尾自动跑，也可单独调）：7 组检查全 PASS —— ELF 魔数 + `e_machine` 与 `uname -m` 比对（entry/launcher 各自 ELF64 aarch64）、三个 exec 位（`app/bin/run-backend.php` 的 exec 位 + `#!` 是**载荷性**的：shim 无 argv `execv` 它，且靠前 2 字节判型为 `stock`）、conf 按 shim 语义复析（stem 规则 + 逐 key 解析 + 相对路径必须落在包内）、后端镜像逐文件 `cmp`（`gui/php/src` 15 个文件一个不缺）、`app.sock` 长度 42/108、`ldd` 依赖全部可解 + 打印目标机要提供的 .so 清单（libgtk-3/libwebkit2gtk-4.1/libayatana-appindicator3…）。
+  - **#25 已修**（`shim/backend_shell.cpp`）：launch 模式的 accept 换成 `io_accept_watching()` —— `poll(2)` 监听 fd（100ms 一格）与 `waitpid(launcher, WNOHANG)` 同循环，谁先到谁赢；launcher 先死 → 就地收尸（`launcher_died` 标记，避免调用方对已回收 pid 再 `kill`）、`kill_proc(php)`、`io_close(srv)` + `io_cleanup_endpoint(name)`（失败路径不再留孤儿 socket 文件）后退出。POSIX 专属：Windows 分支原样走阻塞 `ConnectNamedPipe`。顺带给 `io_accept` 补了 `EINTR` 重试（自己的子进程就会送 SIGCHLD，一次信号不该读成"launcher 永远不来了"）。
+  - **实测（容器 `tgl`）**：① `tools/build-linux.sh` 重建零 warning，`launcher-linux` 与修 shim **之前逐字节相同**（pristine 前提没破）；② `tgui build` → 校验 PASS、`tgui publish` → `dist.tar.gz`；③ **#25 回归**：`env -u DISPLAY ./TypePHP-Demo` → **0 秒返回 RC=1**，shim 日志 `[shell] launcher exited (status 768) before connecting` + `launcher never connected, aborting`，`app.sock` 不存在、无残留子进程（修法前这个场景是永久挂起，只能靠 `timeout` 拔）；同一份日志顺带证明 conf 解析正确（`html/title=TypePHP Demo/size=1100x760`、`app_kind=stock`、`cwd=<exe_dir>`）。④ **dev 方向回归**：改过 shim 后 `test/posix/linux-tgui-window.sh` 重跑 **PASS**（cycle1 14/14 + marker + shot.png → touch bounce → cycle2 14/14 + marker → 杀窗全链自解）。证据 `evidence/linux/22c-{build.log,publish.log,nodisplay.log,nodisplay.out,dev-shim.log,dev-tgui.out,dev-shot.png}`。
+  - 修 shim 过程中被编译器抓到的两件事：先 duplicated 了一份 accept 逻辑 → `-Wunused-function` 提醒该复用 `io_accept` 而不是平行实现；驱动脚本里把注释插在 `A=1 B=2 \` 续行与命令之间 → 赋值变成悬空命令、环境变量静默丢失（一次"看起来是产品坏了"的假失败，实际是 harness 的 shell 语义）。
+  - **仍未证明的**：打包方向在**有 X display** 时真出窗（那是 22d 的 ① 项）；Windows/macOS 侧没重编（改动全在 `#ifndef _WIN32` 分支 + POSIX 专属调用点，mac 只做 `clang++ -fsyntax-only`，Windows 未编译验证）。
+- **22d 端到端验收 + 回写** ✅（2026-09-27 完成）：容器内 ① 打包直跑（清掉全部 `TYPEPHP_*` env，纯 conf 驱动）≥13/13 + `WINDOW-E2E` marker + 拆除零残留；② `tgui dev` + touch → bounce 复验；③ README 验证表 + 已知限制、findings/progress 回写。**如实登记做不到的部分**：容器里是 Xvfb 无头显示，不是真桌面。
+  - **验收驱动脚本 `test/posix/linux-bundle-window.sh`（新增，6 步）实测 PASS（RC=0）**：① 容器工具链在场；② `tgui build` → 结构校验 PASS → **把 `dist/` 打成 tar 解到仓库外**（`/tmp/tpgui-22d/dist/TypePHP-Demo`）后**删掉仓库内 `dist/`**，在 relocation 后的副本上重跑校验 **18 项全 PASS**；③ X 就绪用真 X client（`import -window root`）探测，不是看 socket 文件在不在；④ 直跑入口：`env -u TYPEPHP_APP -u TYPEPHP_CWD -u TYPEPHP_BACKEND -u TYPEPHP_APP_KIND -u TYPEPHP_PIPE_NAME`（只剩日志变量）+ `sh -c 'cd / && exec "$1"'` 把**进程 cwd 设成根目录**，之后断言 `env` 里没有任何 `TYPEPHP_*`/`TINYGUI_*`；⑤ 帧与接线：`CALL=14 RET=14`、`WINDOW-E2E OK ping=pong in 109ms`，日志逐条对上 `launch mode conf=<bundle>/TypePHP-Demo.conf`、`app=<bundle>/app/bin/run-backend.php`、`app_kind=stock`、`transport=unix-socket pipe=<bundle>/app.sock`、`cwd=<bundle>`、`launcher connected`，launcher pid 活着，`shot.png` 112,327B 里是真实渲染出来的 demo 窗口（截图上 `cwd` 显示 `/tmp/tpgui-22d/dist/TypePHP-Demo`，即全部路径都从 conf 与 `<exe_dir>` 推出来，没有一条靠残留 env）；⑥ 拆除：杀 launcher → 入口进程**自行退出**、`app.sock` 被 unlink、`ps` 过滤 zombie 后无残留进程。
+  - **这是"自包含"目前能给出的最强证明**：仓库 `dist/` 已删、进程 cwd 是 `/`、穿线 env 全清空，产物仍跑通 —— 与 21c 的 mac 验收同一口径。
+  - ② dev + touch bounce 复验在 22c 末已经重跑过（改过 shim 之后的 `linux-tgui-window.sh` PASS），22d 不重复跑，只把结论并到 README 验证表。
+  - **回写**：README 打包发布段 + 验证表（Linux 打包 22c/22d 两行）+ 已知限制新增一条"Linux 打包的验收边界与前置条件"（Xvfb 无头 ≠ 真桌面：无合成器/WM/托盘；目标机需 `php` ≥8.1 在 PATH；需验证器打印的那套 GTK3/webkit2gtk-4.1/ayatana/X11+Xtst `.so`；图标走 conf→`TINYJS_ICON`；demo 页里"调用链"文案写死的是 Windows 措辞，属外观遗留非缺陷）。
+  - **仍未证明的**：真桌面会话（容器只有 Xvfb）；Windows 侧没重编 shim（改动全在 `#ifndef _WIN32` 分支，Windows 打包方向由 21e/真机测试覆盖）。
+
 ## Key Questions
 
-1. **Linux 上"小巧路线"到底多小？** `tpc --nano` 的 freestanding 产物是否真的不链 libphp（`ldd` 可证）、体积相比 bin 模式省多少？→ **未回答**，必须 Linux（Phase 16b-2 / tier 3）。这是整个方案里唯一还悬着的技术问题。
-2. **同一份 POSIX 分支在真 glibc/Linux 上行为一致吗？** Cygwin 只能证明**代码路径**，不能证明系统调用语义；`launcher-linux` 的 GTK/WebKit2GTK 窗口能不能跑通同一套帧？→ **未回答**（Phase 16b-2 / tier 4）。
+1. **Linux 上"小巧路线"到底多小？** → **已回答（tier 3，2026-09-27）**：`tpc --nano` 的 freestanding 产物**确实不链 libphp**（`ldd` 只有 libstdc++/libm/libgcc_s/libc），5 行程序 1.16MB（strip 后 0.94MB），php.ini/扩展 DLL 闭包全部为零。但真 nano **拒 require/匿名类/Generator/yield**，demo 那套 require 加载框架的后端入口**编不过**——"小巧"是有语法/函数面契约的小巧。详见 Phase 16b-2 结果段与 Errors #22。
+2. **同一份 POSIX 分支在真 glibc/Linux 上行为一致吗？** → **已回答（tier 4，2026-09-27）：一致**。真 glibc + AF_UNIX + GTK3/WebKit2GTK 下，pristine `launcher-linux` 与同一 shim/stock PHP 后端跑通同一套帧（14 CALL/14 RET、`WINDOW-E2E OK ping=pong in 128ms`），拆除零残留。Cygwin 证不了的系统调用语义，现在证完了。
 3. **shim 能不能省掉？** → **已回答：不能**。真 nano 在任何平台都没有 socket 能力（编译期 fatalError），bin 模式的 libphp 才能直接 `listen` 但那样就不小了。shim 是跨平台必需。
 4. **stderr 该走哪条通道？** → **已回答**：独立第三条管道只进 shim 日志（bug #14）。因为 PHP 的错误路由随版本变化，不能假设。
 
@@ -209,6 +279,15 @@ headless 下 launcher spawn→命名管道→shim→PHP→`CALL/RET` 往返 PASS
 | 14 | PHP 的诊断变成帧流里的畸形帧 | stderr 被并进 stdout（=帧通道）→ stderr 独立第三条管道，只进日志 |
 | 15 | 套件在技能目录里报 `socket never appeared`，in-tree 却全绿 | `$WORK/app.sock` 在技能目录下**恰好 108B** = `sun_path` 上限 → scratch 与 socket 改由 `typephp_default_work`/`typephp_socket_path` 决定位置 |
 | 16 | launch 档"端点已被 unlink"的断言在分发侧**恒真** | 断言写死了 `$WORK/app.sock`，而端点名由入口自取（超长回退 `/tmp`）→ 改为从 shim 日志读回 `pipe=` 再断言 |
+| 17 | macOS 上打包入口读成 `app.conf`、`execv failed` 且不给路径 | `exe_path()` 只有 `readlink("/proc/self/exe")`，**macOS 无 `/proc`** → 静默回退字面量 `"app"`（Cygwin/Linux 测不到）。修法：`__APPLE__` 分支用 `_NSGetExecutablePath`+`realpath`（语义同 Linux 的解析后物理路径）|
+| 18 | Apple Silicon 正向对照"cp 一份系统二进制再跑"被 SIGKILL(137) | AMFI 拒绝字节级拷贝的系统二进制（即使签名原样）→ 常驻假进程改为**现场编译**；且新 clang 隐式函数声明即 error，探针要带 `#include <unistd.h>`（本机 `/usr/bin/sleep` 也不存在，在 `/bin/sleep`）|
+| 19 | `tgui dev` 在 Windows 上 touch 后端文件不会重启（README/Phase 7 却说会） | fusion 时把 cli.js 的 watcher 搬成死代码：`watch_loop()` 定义在一次性 subshell 内（无调用者、`$child` 在别处），主循环 `wait` 后**无条件 break**；旧真机证据属被删的 cli.js → mac watcher 落地时如实改掉 README，Windows 恢复列入 21e |
+| 20 | macOS 26 上对 .app 做 ad-hoc `codesign` 全线失败（Phase 21c） | 实测三条路都堵：整包 `--force --sign -` 拒绝此布局（Contents/ 下**每个文件**都被封成子组件，连 mode 644 的 App.conf 也算，conf 挪到 Contents 级仍拒）；bundle 内逐二进制 `--force --sign -` 后主执行体带"bundle 式签名"，随后对原始路径 `--verify` 报 `code has no resources but signature indicates they must be present`；先签再拷回只救得了 launcher 救不了主执行体。且被重签过的二进制会**污染后续实验**（同一 dist 里 699424B 的 launcher 让新对照失真）。结论：tgui build **移除打包级签名步骤**，二进制保留链接器 ad-hoc 签名（Phase 20/21b/21c 全靠它跑通）；verify 脚本 codesign 改 `-dvv` 信息报签，不再 `--verify`。分发签名/公证另立工作项 |
+| 21 | LaunchServices（`open`）拉起的 bundle 在外部卷（`/Volumes/data`）上永久卡在 `__bind`，同二进制直跑正常 | `sample` 787/787 采样全在 `__bind`，socket 文件未创建、无子进程；拷到 /tmp 的同一 bundle `open` 后 13/13 全通 → 环境性安全层限制（GUI 上下文对非启动卷的 AF_UNIX bind），非代码缺陷。tgui 产物本身无改动；验收以"直跑（开发卷）+ open（默认卷 /tmp 副本）"双路径覆盖，README 已知限制写明发布/双击请在默认启动卷 |
+| 22 | tier 3 编译 demo 后端，`--nano` 第一行就 fatal：`` `require` is not supported in nano mode ``（`src/backend.php:29`） | 真 nano 的 `NanoSyntaxValidationVisitor` 对 include/require/匿名类/yield/eval 一律拒绝（Windows nano-policy 只是策略包装、从不报这些）→ 不是 bug 而是**能力边界**：nano 发行需单文件聚合入口或 project.xml 多源输入；本轮改用 5 行 `nano_min.php` 完成体积/ldd 实测 |
+| 23 | 容器内编译 pristine `launcher-linux.cc` 报 `g_indicator` 未声明 | vendor 源码自身缺陷：`can_live_hidden()`（约 6921 行）无条件引用只在 `#ifdef TINYJS_APPINDICATOR` 里声明的 `g_indicator`（1677-1679 行）→ **"可选依赖自动禁用"在上游根本不成立**，不定义宏编不过。修法（不改 vendor）：装 `libayatana-appindicator3-dev` 并恒定义该宏；注意 Debian .pc 名是 `ayatana-appindicator3-0.1`（非 Fedora 的 `libayatana-appindicator3.0`），tier4 脚本已做双名探测 |
+| 24 | tier 3 环境两次堵死：`php:8.4-cli-bookworm` 镜像 881MB 下载中 ENOSPC；tpc vendor 的 phpx 2.7.0 无 `extra.typephp-native` | 启动卷常年 ~700Mi → 弃大镜像，走 **sury apt**（`packages.sury.org/php` bookworm arm64）秒装 PHP 8.4.25；nano ABI 比对（php-nano vs phpx 均 80600）要求新版 phpx → xget+unfetch(threads=1) 拉 **phpx v2.9.2 / php-nano v1.0.1** 源码包放入 `vendor/swoole/`（不动 composer 元数据，`resolveLocalPackage` 直接命中）|
+| 25 | 没有 X display 时 `tgui dev` 打出 `shim still up 5s after the launcher exited — killing it`，打包方向同一场景会永久挂起 | **已修（22c，2026-09-27）**。根因：shim 的 `io_accept` 无超时也不看 launcher 死活 → launcher 在**连上之前**退出（GTK 打不开 display）时 shim 永远等在 accept，PHP 子进程白活；dev 侧只是被 `tgui` 的 5s 有界回收兜住，打包模式下 launcher 由 shim 自己 spawn、无人兜底。修法：launch 模式改走 `io_accept_watching()`（`poll` 监听 fd 与 `waitpid(launcher,WNOHANG)` 同循环，launcher 先死就收尸 + 杀 PHP + 清 socket 文件后退出），POSIX 专属，Windows 分支不变。实测 `env -u DISPLAY ./TypePHP-Demo` → **0s / RC=1**、日志 `launcher exited (status 768) before connecting`、`app.sock` 与子进程零残留（见 `evidence/linux/22c-nodisplay.*`） |
 
 详细根因、复现与修法见 `progress.md` 对应 session 条目与 `findings.md`。
 

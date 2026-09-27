@@ -3,8 +3,11 @@
 # tgui — the TypePHP GUI command line (replaces tinyjsapp's patched cli.js).
 #
 #   gui/bin/tgui dev        run the current project with a compiled PHP backend
-#   gui/bin/tgui build      assemble a portable dist/ bundle (no JS backend)
-#   gui/bin/tgui publish    zip the dist/ + write an auto-update manifest
+#   gui/bin/tgui build      assemble a portable dist/ bundle (no JS backend) —
+#                           Windows: <name>.exe layout; macOS (Phase 21c): .app;
+#                           Linux (Phase 22c): <name>/ dir layout
+#   gui/bin/tgui publish    archive dist/ as dist.zip (or, when zip is absent,
+#                           dist.tar.gz) — the name always states the format
 #   gui/bin/tgui init       scaffold a tinyjs.json + frontend into the cwd
 #   gui/bin/tgui status     show the resolved launcher / shim / app paths
 #
@@ -12,8 +15,9 @@
 # framework at gui/php/, and this tool — there is no external tinyjsapp checkout
 # and no patch step. See gui/README.md.
 #
-# Build artifacts are produced by tools/build-all.bat (shim + PHP backend) and
-# tools/build-launcher.sh (the native host). tgui just orchestrates them.
+# Build artifacts come from tools/build-all.bat + tools/build-launcher.sh
+# (Windows), tools/build-macos.sh (macOS), tools/build-linux.sh (Linux); tgui
+# just orchestrates them. dev needs an X display on Linux (real desktop or Xvfb).
 # ===========================================================================
 set -uo pipefail
 
@@ -23,6 +27,16 @@ shift || true
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BUILD="$ROOT/build"
 RT="$BUILD/runtime"
+OS="$(uname -s)"
+
+# The macOS pieces (Phase 20/21b): dev works via launcher-macos --typephp; the
+# packaged direction is one command; only `build` (PE stamping) stays
+# Windows-only for now.
+mac_guide() {
+  printf '   !!   macOS: tgui %s is Windows-toolchain only for now.\n' "$CMD"
+  printf '         Use the packaged direction instead:  bash tools/build-macos.sh --run\n'
+  printf '         (macOS dev mode = Phase 21b; see docs/planning/task_plan.md)\n'
+}
 
 say()  { printf '\n== %s\n' "$*"; }
 ok()   { printf '   ok   %s\n' "$*"; }
@@ -42,7 +56,7 @@ to_native() {
   if command -v cygpath >/dev/null 2>&1; then
     cygpath -w "$p" | tr '\\' '/'
   elif command -v realpath >/dev/null 2>&1; then
-    realpath "$p"
+    realpath "$p" 2>/dev/null   # macOS default win-paths don't exist: stay quiet
   else
     printf '%s' "$(cd "$(dirname "$p" 2>/dev/null)" && pwd)/$(basename "$p")" | tr '\\' '/'
   fi
@@ -85,7 +99,7 @@ SHIM_CFG="$(cfg 'typephp.backend' || true)"
 
 case "$CMD" in
   help|--help|-h)
-    sed -n '3,18p' "${BASH_SOURCE[0]}"
+    sed -n '3,20p' "${BASH_SOURCE[0]}"
     ;;
 
   status)
@@ -93,18 +107,68 @@ case "$CMD" in
     printf '   %-14s %s\n' launcher "$([ -f "$launcher" ] && echo "$launcher" || echo "MISSING ($launcher)")"
     printf '   %-14s %s\n' shim     "$([ -f "$shim" ] && echo "$shim" || echo "MISSING ($shim)")"
     printf '   %-14s %s\n' app      "$([ -f "$app" ] && echo "$app" || echo "MISSING ($app)")"
+    if [ "$OS" = Darwin ]; then
+      say "macOS toolchain (packaged direction)"
+      printf '   %-14s %s\n' shim     "$([ -x "$BUILD/backend_shell" ] && echo "$BUILD/backend_shell" || echo "MISSING — bash tools/build-macos.sh")"
+      printf '   %-14s %s\n' launcher "$([ -x "$BUILD/launcher-macos" ] && echo "$BUILD/launcher-macos" || echo "MISSING — bash tools/build-macos.sh")"
+      printf '   %-14s %s\n' backend  "$([ -x "$ROOT/bin/run-backend.php" ] && echo "$ROOT/bin/run-backend.php" || echo "MISSING")"
+      echo
+      warn "on macOS: 'tgui dev' works (launcher-macos --typephp); 'tgui build'"
+      warn "  assembles a real .app (needs php on PATH); packaged run:"
+      warn "  bash tools/build-macos.sh --run (staged dir, no bundle)"
+    elif [ "$OS" = Linux ]; then
+      say "Linux toolchain (dev = shim serves the endpoint, pristine launcher connects)"
+      printf '   %-14s %s\n' shim     "$([ -x "$BUILD/backend_shell" ] && echo "$BUILD/backend_shell" || echo "MISSING — bash tools/build-linux.sh")"
+      printf '   %-14s %s\n' launcher "$([ -x "$BUILD/launcher-linux" ] && echo "$BUILD/launcher-linux" || echo "MISSING — bash tools/build-linux.sh")"
+      printf '   %-14s %s\n' backend  "$([ -x "$ROOT/bin/run-backend.php" ] && echo "$ROOT/bin/run-backend.php" || echo "MISSING")"
+      echo
+      warn "on Linux: 'tgui dev' needs an X display (a real desktop, or"
+      warn "  DISPLAY=:99 with Xvfb running). launcher-linux is kept PRISTINE —"
+      warn "  no --typephp patch — so dev spawns the shim as endpoint server."
+    fi
     ;;
 
   dev)
-    [ -f "$launcher" ] || die "launcher missing: $launcher — run tools/build-launcher.sh"
-    [ -f "$shim" ]     || die "shim missing: $shim — run tools/build-all.bat"
-    [ -f "$app" ]      || die "app missing: $app — run tools/build-all.bat"
+    if [ "$OS" = Darwin ]; then
+      # macOS dev (Phase 21b): launcher-macos understands --typephp. Defaults
+      # point at the mac artifacts built by tools/build-macos.sh.
+      launcher="${TINYGUI_LAUNCHER:-$BUILD/launcher-macos}"
+      shim="${TYPEPHP_BACKEND:-$BUILD/backend_shell}"
+      app="${TYPEPHP_APP:-$ROOT/bin/run-backend.php}"
+      [ -x "$app" ] || chmod +x "$app" 2>/dev/null || true  # shim execv's it
+    elif [ "$OS" = Linux ]; then
+      # Linux dev (Phase 22b): launcher-linux stays PRISTINE — it never learned
+      # `--typephp`, and patching it would throw away the one property that
+      # makes the tier-4 evidence meaningful (the shipped launcher is an
+      # upstream build). So the direction is inverted instead: the shim owns the
+      # AF_UNIX endpoint (dev-server position = endpoint name as argv[1]) and
+      # the stock launcher connects to it as a client. The lifecycle chain is
+      # identical — kill the launcher, the shim's endpoint-EOF teardown reaps
+      # the PHP child and exits — so the watcher below needs no Linux branch.
+      launcher="${TINYGUI_LAUNCHER:-$BUILD/launcher-linux}"
+      shim="${TYPEPHP_BACKEND:-$BUILD/backend_shell}"
+      app="${TYPEPHP_APP:-$ROOT/bin/run-backend.php}"
+      [ -x "$app" ] || chmod +x "$app" 2>/dev/null || true  # shim execv's it
+    fi
+    [ -f "$launcher" ] || die "launcher missing: $launcher — run tools/build-launcher.sh (Windows) / tools/build-macos.sh (macOS) / tools/build-linux.sh (Linux)"
+    [ -f "$shim" ]     || die "shim missing: $shim — run tools/build-all.bat (Windows) / tools/build-macos.sh (macOS) / tools/build-linux.sh (Linux)"
+    [ -f "$app" ]      || die "app missing: $app — run tools/build-all.bat (Windows); on macOS/Linux the default is bin/run-backend.php"
     FE_DIR="$PWD/$FE"
     HTML="$(to_native "$FE_DIR/index.html")"
     [ -f "$HTML" ] || die "frontend not found: $HTML"
     TP_ENV=("$shim" "$app")
-    [ -n "$SHIM_CFG" ] && TP_ENV[0]="$(to_native "$PWD/$SHIM_CFG")"
-    [ -n "$APP_CFG" ]  && TP_ENV[1]="$(to_native "$PWD/$APP_CFG")"
+    # tinyjs.json typephp.{backend,app} are project-relative and, in the
+    # templates, Windows .exe paths. On macOS/Linux a configured path that does
+    # not exist falls back to the platform defaults instead of failing at spawn.
+    cfg_override() { # cfg_override <slot-index> <project-relative path>
+      [ -n "$2" ] || return 0
+      if [ "$OS" = Darwin ] || [ "$OS" = Linux ]; then
+        [ -e "$PWD/$2" ] || return 0
+      fi
+      TP_ENV[$1]="$(to_native "$PWD/$2")"
+    }
+    cfg_override 0 "$SHIM_CFG"
+    cfg_override 1 "$APP_CFG"
     ICON="$(cfg icon || true)"; ICON="${ICON:-icon.png}"
     [ -f "$PWD/$ICON" ] && export TINYJS_ICON="$(to_native "$PWD/$ICON")"
     export TYPEPHP_BACKEND="$(to_native "${TP_ENV[0]}")"
@@ -114,26 +178,271 @@ case "$CMD" in
     say "dev: $HTML  (title=$TITLE size=$SIZE)"
     ok "launcher $launcher"
     ok "backend  ${TP_ENV[1]}"
-    # Frontend hot-reload: a change bounces the window (no JS in the loop here).
+    # Hot restart: there is no JS process in the loop, so the CLI's only lever
+    # on the launcher is its LIFECYCLE — a change kills the launcher, the
+    # shim's endpoint-EOF teardown reaps the PHP child, and the window
+    # respawns (a visible bounce). Watcher runs on BOTH dev directions
+    # (macOS Phase 21b; Windows restored in Phase 21e — Git Bash carries GNU
+    # coreutils stat, which is why hot_snap probes -c vs -f instead of
+    # hardcoding one dialect).
+    if stat -f '%m' / >/dev/null 2>&1; then STAT_MTIME=(-f '%m %N')   # BSD (macOS)
+    else STAT_MTIME=(-c '%Y %n'); fi                                  # GNU (Git Bash/Linux)
+    hot_snap() { # mtime+name digest of every watched source file
+      find "$@" -type f \( -name '*.php' -o -name '*.html' -o -name '*.js' \
+                        -o -name '*.css' -o -name '*.json' \) 2>/dev/null \
+        -exec stat "${STAT_MTIME[@]}" {} + | sort | cksum
+    }
     child=""
+    dev_shim=""
     restarting=0
-    if [ -d "$FE_DIR" ]; then
-      ( watch_loop() {
-          while true; do
-            sleep 1
-            if [ -n "${RESTART:-}" ]; then kill "$child" 2>/dev/null; break; fi
-          done
-        } )
+    if [ "$OS" = Linux ]; then
+      # The dev endpoint + log live under /tmp deliberately: the shim binds
+      # AF_UNIX, and sun_path caps at ~108 bytes (bug #15).
+      DEV_SOCK="${TINYGUI_DEV_SOCK:-/tmp/tinyjs-typephp-dev-$$.sock}"
+      DEV_LOG="${TINYGUI_DEV_LOG:-/tmp/tinyjs-typephp-dev-$$.log}"
     fi
+    dev_spawn() {
+      if [ "$OS" = Linux ]; then
+        # Left in append mode on purpose (the shim opens it with "a"): one log
+        # then holds every dev cycle, which is what makes a bounce provable.
+        rm -f "$DEV_SOCK"
+        TYPEPHP_SHELL_LOG="$DEV_LOG" TYPEPHP_APP="${TP_ENV[1]}" TYPEPHP_CWD="$PWD" \
+          "${TP_ENV[0]}" "$DEV_SOCK" &
+        dev_shim=$!
+        # The pristine launcher is a plain client with no connect-retry loop
+        # (that loop is part of the --typephp patch win/mac carry), so wait for
+        # the server socket to appear before spawning it.
+        local i=0
+        while [ ! -S "$DEV_SOCK" ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i+1)); done
+        [ -S "$DEV_SOCK" ] || { kill "$dev_shim" 2>/dev/null
+          die "shim never created $DEV_SOCK — see $DEV_LOG"; }
+        "$launcher" "$HTML" "$DEV_SOCK" "$TITLE" "$SIZE" "$VERSION" &
+        child=$!
+      else
+        "$launcher" --typephp "$HTML" "$TITLE" "$SIZE" "$VERSION" &
+        child=$!
+      fi
+    }
+    dev_reap_shim() { # bounded wait for the shim's EOF teardown, then escalate
+      [ "$OS" = Linux ] || return 0
+      local i=0
+      while kill -0 "$dev_shim" 2>/dev/null && [ "$i" -lt 50 ]; do
+        sleep 0.1; i=$((i+1))
+      done
+      if kill -0 "$dev_shim" 2>/dev/null; then
+        warn "shim still up 5s after the launcher exited — killing it (EOF teardown did not run)"
+        kill "$dev_shim" 2>/dev/null
+      fi
+      wait "$dev_shim" 2>/dev/null
+      rm -f "$DEV_SOCK"
+    }
     while true; do
-      "$launcher" --typephp "$HTML" "$TITLE" "$SIZE" "$VERSION" &
-      child=$!
-      wait "$child"
-      break
+      dev_spawn
+      WATCH=("$PWD/src")
+      [ "$PWD" != "$ROOT" ] && WATCH+=("$ROOT/src" "$ROOT/gui/php/src")
+      snap="$(hot_snap "${WATCH[@]}")"
+      while kill -0 "$child" 2>/dev/null; do
+        sleep 1
+        if [ "$(hot_snap "${WATCH[@]}")" != "$snap" ]; then
+          restarting=1
+          ok "sources changed — bouncing the window (launcher kill + respawn)"
+          kill "$child" 2>/dev/null
+          break
+        fi
+      done
+      wait "$child" 2>/dev/null
+      dev_reap_shim
+      [ "$restarting" = 1 ] || break
+      restarting=0
     done
+    [ "$OS" = Linux ] && ok "shim log: $DEV_LOG"
     ;;
 
   build)
+    if [ "$OS" = Linux ]; then
+      # Linux packaged direction (Phase 22c): a portable app DIRECTORY.
+      #   dist/<name>/<name>           the shim, the double-click/CLI entry
+      #                                (argc==1 -> launch mode -> reads <name>.conf).
+      #                                The stem must contain NO '.': the shim
+      #                                derives the conf name from the part BEFORE
+      #                                the first dot, so "TypePHP.Demo" would seek
+      #                                "TypePHP.conf". We sanitize that here.
+      #   dist/<name>/<name>.conf      html/app/launcher/icon, RELATIVE to that dir
+      #   dist/<name>/launcher-linux   pristine upstream build (no --typephp patch
+      #                                in the distribution — that flag is dev-only)
+      #   dist/<name>/frontend/        the page
+      #   dist/<name>/app/{bin,src,gui/php/src}  byte-identical MIRROR of the repo
+      #                                layout, so bin/run-backend.php's
+      #                                require __DIR__.'/../src/backend.php' keeps
+      #                                resolving without editing a single byte.
+      # There is no PE/icon stamping and no tpc/AOT backend here: the entry needs
+      # stock `php` on the TARGET's PATH, plus GTK3 + webkit2gtk at the same ABI
+      # the build machine had (the launcher is dynamically linked). Both are
+      # documented limitations, not silent ones.
+      for req in "$BUILD/launcher-linux" "$BUILD/backend_shell" \
+                 "$ROOT/bin/run-backend.php" "$ROOT/src/backend.php" \
+                 "$ROOT/gui/php/src/Tiny/Gui/bootstrap.php"; do
+        [ -f "$req" ] || die "missing $req — run: bash tools/build-linux.sh"
+      done
+      NAME="$(cfg name || true)"; NAME="${NAME:-app}"
+      NAME="$(printf '%s' "$NAME" | tr -c 'A-Za-z0-9._-' '-')"   # shell-safe charset
+      STEM="${NAME%%.*}"   # the shim's stem_of() = the part BEFORE the first '.',
+      [ "$STEM" = "$NAME" ] || warn "name contains '.' — entry shortened to '$STEM' so <name>.conf resolves"
+      NAME="$STEM"         # which is also the conf file it looks for
+      D="dist/$NAME"
+      say "build: $D"
+      rm -rf dist
+      mkdir -p "$D/frontend" "$D/app/bin" "$D/app/src" "$D/app/gui/php/src"
+      cp -f "$BUILD/backend_shell"  "$D/$NAME"
+      cp -f "$BUILD/launcher-linux" "$D/launcher-linux"
+      cp -f  "$ROOT/bin/run-backend.php" "$D/app/bin/"
+      cp -f  "$ROOT/src/backend.php"     "$D/app/src/"
+      cp -Rf "$ROOT/gui/php/src/Tiny"    "$D/app/gui/php/src/"
+      chmod +x "$D/$NAME" "$D/launcher-linux" "$D/app/bin/run-backend.php"
+      cp -rf "$PWD/$FE/." "$D/frontend/"
+      ICON="$(cfg icon || true)"; ICON="${ICON:-icon.png}"
+      ICON_LINE=""
+      if [ -f "$PWD/$ICON" ]; then
+        cp -f "$PWD/$ICON" "$D/$ICON"
+        ICON_LINE="icon=$ICON"   # the shim exports it as TINYJS_ICON, which launcher-linux reads
+      else
+        warn "no $ICON beside tinyjs.json — app ships without a window icon"
+      fi
+      {
+        echo "# generated by tgui build ($(date -u '+%Y-%m-%dT%H:%M:%SZ'))"
+        echo "html=frontend/index.html"
+        echo "title=$TITLE"
+        echo "size=$SIZE"
+        echo "version=$VERSION"
+        echo "app=app/bin/run-backend.php"
+        echo "launcher=launcher-linux"
+        [ -n "$ICON_LINE" ] && echo "$ICON_LINE"
+      } > "$D/$NAME.conf"
+      # Structural check, not a smoke test: this verifies the LAYOUT the shim
+      # will actually resolve (conf re-parsed with stem semantics, exec bits,
+      # ELF header/arch, mirror completeness, sun_path budget). The live
+      # end-to-end run is Phase 22d's job.
+      if [ -x "$ROOT/tools/verify-bundle-linux.sh" ] \
+         || [ -f "$ROOT/tools/verify-bundle-linux.sh" ]; then
+        bash "$ROOT/tools/verify-bundle-linux.sh" "$D" \
+          || die "bundle verification FAILED — see checks above"
+        ok "verify-bundle-linux.sh: all checks passed"
+      else
+        warn "tools/verify-bundle-linux.sh missing — bundle NOT verified"
+      fi
+      warn "target machine needs: stock php on PATH, GTK3 + webkit2gtk-4.1, and an X display"
+      ok "$D/  ($NAME + launcher-linux + frontend/ + app/ backend mirror)"
+      exit 0
+    fi
+    if [ "$OS" = Darwin ]; then
+      # macOS packaged direction (Phase 21c): a real .app bundle.
+      #   Contents/MacOS/App              the shim, CFBundleExecutable — the
+      #                                   double-click entry (argc==1 -> launch
+      #                                   mode -> reads App.conf). The binary
+      #                                   name has NO dot on purpose: the shim
+      #                                   derives the conf name from the exe
+      #                                   stem BEFORE the first '.', so
+      #                                   "TypePHP-Demo" would seek ".conf"
+      #                                   under way too short a stem… keep "App".
+      #   Contents/MacOS/App.conf         html/app/launcher paths, RELATIVE to
+      #                                   MacOS/ ("../Resources/…" is fine)
+      #   Contents/MacOS/launcher-macos   spawned by the shim (stock contract)
+      #   Contents/Resources/frontend/    the page
+      #   Contents/Resources/app/{bin,src,gui/php/src}  MIRROR of the repo
+      #                                   layout so backend.php's
+      #                                   require ../gui/php/… keeps working
+      #                                   byte-identical. Needs stock `php` on
+      #                                   PATH (tpc is Windows-only; documented).
+      #   Contents/Resources/AppIcon.icns icon equivalent of win PE stamping
+      for req in "$BUILD/launcher-macos" "$BUILD/backend_shell" \
+                 "$ROOT/bin/run-backend.php" "$ROOT/src/backend.php" \
+                 "$ROOT/gui/php/src/Tiny/Gui/bootstrap.php"; do
+        [ -f "$req" ] || die "missing $req — run tools/build-macos.sh"
+      done
+      NAME="$(cfg name || true)"; NAME="${NAME:-app}"
+      NAME="${NAME// /-}"
+      B="dist/$NAME.app"; C="$B/Contents"
+      say "build: $B"
+      rm -rf dist
+      mkdir -p "$C/MacOS" "$C/Resources/frontend" \
+               "$C/Resources/app/bin" "$C/Resources/app/src" "$C/Resources/app/gui/php/src"
+      cp -f "$BUILD/backend_shell"  "$C/MacOS/App"
+      cp -f "$BUILD/launcher-macos" "$C/MacOS/launcher-macos"
+      chmod +x "$C/MacOS/App" "$C/MacOS/launcher-macos"
+      # backend: byte-identical copies mirroring the repo's relative paths
+      cp -f  "$ROOT/bin/run-backend.php" "$C/Resources/app/bin/"
+      cp -f  "$ROOT/src/backend.php"     "$C/Resources/app/src/"
+      cp -Rf "$ROOT/gui/php/src/Tiny"    "$C/Resources/app/gui/php/src/"
+      chmod +x "$C/Resources/app/bin/run-backend.php"   # execv'd without argv
+      cp -rf "$PWD/$FE/." "$C/Resources/frontend/"
+      printf 'html=../Resources/frontend/index.html\ntitle=%s\nsize=%s\nversion=%s\napp=../Resources/app/bin/run-backend.php\nlauncher=launcher-macos\n' \
+        "$TITLE" "$SIZE" "$VERSION" > "$C/MacOS/App.conf"
+      ICON_PLIST=""
+      # icon: PNG -> iconset -> icns (the macho counterpart of PE stamping)
+      ICON="$(cfg icon || true)"; ICON="${ICON:-icon.png}"
+      if [ -f "$PWD/$ICON" ]; then
+        iset="$C/Resources/AppIcon.iconset"; mkdir -p "$iset"
+        # iconutil demands exactly these names; sips -z resizes (upscales too).
+        genicon() { sips -z "$1" "$1" "$PWD/$ICON" --out "$iset/$2" >/dev/null 2>&1; }
+        genicon 16   icon_16x16.png;       genicon 32   icon_16x16@2x.png
+        genicon 32   icon_32x32.png;       genicon 64   icon_32x32@2x.png
+        genicon 128  icon_128x128.png;     genicon 256  icon_128x128@2x.png
+        genicon 256  icon_256x256.png;     genicon 512  icon_256x256@2x.png
+        genicon 512  icon_512x512.png;     genicon 1024 icon_512x512@2x.png
+        if iconutil -c icns "$iset" -o "$C/Resources/AppIcon.icns" 2>/dev/null; then
+          rm -rf "$iset"
+          ICON_PLIST="  <key>CFBundleIconFile</key><string>AppIcon</string>"
+          ok "AppIcon.icns generated from $ICON"
+        else
+          rm -rf "$iset"
+          warn "iconutil failed — bundle ships without an icon (entry keeps the generic app icon)"
+        fi
+      else
+        warn "no $ICON beside tinyjs.json — bundle ships without an icon"
+      fi
+      # Info.plist: identity + the TCC usage strings the linked frameworks
+      # (WebKit getUserMedia, Speech) demand — a missing string is a hard crash
+      # at first use, not a polite denial.
+      BID="com.typephp.$(printf '%s' "$NAME" | tr -cd '[:alnum:]')"
+      cat > "$C/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>$NAME</string>
+  <key>CFBundleDisplayName</key><string>$TITLE</string>
+  <key>CFBundleExecutable</key><string>App</string>
+  <key>CFBundleIdentifier</key><string>$BID</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>$VERSION</string>
+  <key>CFBundleVersion</key><string>$VERSION</string>
+$ICON_PLIST
+  <key>LSMinimumSystemVersion</key><string>12.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSCameraUsageDescription</key><string>$TITLE uses the camera when a page requests it (tiny.getMedia).</string>
+  <key>NSMicrophoneUsageDescription</key><string>$TITLE uses the microphone when a page requests it (tiny.getMedia).</string>
+  <key>NSSpeechRecognitionUsageDescription</key><string>$TITLE supports speech recognition for pages that request it.</string>
+</dict>
+</plist>
+PLIST
+      # No codesign step HERE, deliberately (measured, macOS 26 codesign):
+      # whole-bundle ad-hoc signing refuses this layout — every file under
+      # Contents/ (incl. App.conf, mode 644) gets sealed as a subcomponent —
+      # and in-bundle per-binary signing leaves the principal exe with a
+      # bundle-style signature that then fails raw verification. The binaries
+      # keep their LINKER ad-hoc signatures, which is exactly what ran through
+      # Phase 20/21b. Developer ID + notarization is a separate, future
+      # distribution concern (docs/planning/task_plan.md).
+      if command -v python3 >/dev/null 2>&1 && [ -f "$ROOT/tools/verify-bundle-macos.py" ]; then
+        python3 "$ROOT/tools/verify-bundle-macos.py" "$B" \
+          || die "bundle verification FAILED — see checks above"
+        ok "verify-bundle-macos.py: all checks passed"
+      else
+        warn "python3 or tools/verify-bundle-macos.py missing — bundle NOT verified"
+      fi
+      ok "$B (App + launcher-macos + frontend/ + app/ backend + runtime via system php)"
+      exit 0
+    fi
     [ -f "$app" ]  || die "app missing: $app — run tools/build-all.bat"
     [ -f "$shim" ] || die "shim missing: $shim — run tools/build-all.bat"
     NAME="$(cfg name || true)"; NAME="${NAME:-app}"
@@ -197,10 +506,22 @@ case "$CMD" in
 
   publish)
     [ -d dist ] || die "no dist/ — run 'tgui build' first"
-    say "publish: zip dist/"
-    ( cd dist && zip -r -q "../dist.zip" . ) 2>/dev/null \
-      || tar -czf dist.tar.gz -C dist .
-    ok "dist.zip (or dist.tar.gz)"
+    # ONE artifact, named for the format it actually is (lesson #11: a tarball
+    # renamed .zip is a broken promise, not a smaller one). zip is what Windows
+    # users expect and what the auto-update flow unpacks; Linux containers often
+    # have no zip, so tar.gz is the honest fallback.
+    if command -v zip >/dev/null 2>&1; then
+      say "publish: zip dist/"
+      ( cd dist && zip -r -q "../dist.zip" . ) || die "zip failed"
+      OUT="$PWD/dist.zip"
+    elif [ "$OS" = Linux ]; then
+      say "publish: tar.gz dist/ (no zip on this machine)"
+      tar -czf dist.tar.gz -C dist . || die "tar failed"
+      OUT="$PWD/dist.tar.gz"
+    else
+      die "no zip available — install zip, or (on Linux) use tar.gz"
+    fi
+    ok "$(basename "$OUT")  ($(wc -c < "$OUT" | tr -d ' ') bytes) — keep the extension: it names the format"
     ;;
 
   init)

@@ -1,0 +1,5 @@
+[shell] launch mode conf=/work/repo/demo/dist/TypePHP-Demo/TypePHP-Demo.conf html=frontend/index.html title=TypePHP Demo size=1100x760
+[shell] transport=unix-socket pipe=/work/repo/demo/dist/TypePHP-Demo/app.sock app=/work/repo/demo/dist/TypePHP-Demo/app/bin/run-backend.php app_kind=stock cwd=/work/repo/demo/dist/TypePHP-Demo/
+[shell] spawned launcher /work/repo/demo/dist/TypePHP-Demo/launcher-linux
+[shell] launcher exited (status 768) before connecting
+[shell] launcher never connected, aborting

@@ -24,7 +24,13 @@ final class DemoApiHandler implements HandlerInterface
     public function handle(Request $req): ?Response
     {
         return match ($req->method) {
-            'api.version' => Response::ok(['php' => PHP_VERSION, 'backend' => 'tpc-AOT']),
+            // backend is the raw TYPEPHP_APP_KIND injected by the shim (aot|stock|
+            // unknown) — no hardcoded "tpc-AOT" lie under a stock PHP backend.
+            'api.version' => Response::ok([
+                'php' => PHP_VERSION,
+                'backend' => (string)($_SERVER['TYPEPHP_APP_KIND']
+                    ?? $_ENV['TYPEPHP_APP_KIND'] ?? 'unknown'),
+            ]),
             'api.sum'     => Response::ok(array_sum(array_map('intval', array_values($req->params)))),
             'api.sha256'  => Response::ok(hash('sha256', (string)($req->params['text'] ?? ''))),
             'api.fib'     => Response::ok($this->fib((int)($req->params['n'] ?? 30))),

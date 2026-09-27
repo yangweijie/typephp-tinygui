@@ -72,8 +72,25 @@ final class CoreHandler implements HandlerInterface
             'home'    => (string)($_SERVER['USERPROFILE'] ?? $_ENV['USERPROFILE']
                                   ?? $_SERVER['HOME'] ?? $_ENV['HOME'] ?? ''),
             'os'      => (string)PHP_OS_FAMILY,
-            'backend' => 'aot-compiler (tpc) AOT native',
+            'backend' => self::backend_kind(),
         ];
+    }
+
+    /**
+     * Truthful `backend` field: the shim classifies the app binary by its first
+     * 2 bytes and injects TYPEPHP_APP_KIND (aot|stock|unknown) before spawning
+     * us. getenv() is banned by the Phase 17 nano rule, so read $_SERVER then
+     * $_ENV (CLI variables_order puts env into $_SERVER).
+     */
+    private static function backend_kind(): string
+    {
+        $k = (string)($_SERVER['TYPEPHP_APP_KIND'] ?? $_ENV['TYPEPHP_APP_KIND'] ?? '');
+        return match ($k) {
+            'aot'     => 'aot-compiler (tpc) native',
+            'stock'   => 'stock PHP CLI (no AOT)',
+            'unknown' => 'unknown (shim could not classify the app binary)',
+            default   => 'unknown (TYPEPHP_APP_KIND not set)',
+        };
     }
 
     private function listDir(Request $req): Response

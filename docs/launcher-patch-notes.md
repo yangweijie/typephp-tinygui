@@ -303,3 +303,28 @@ if (argc >= 2 && std::strcmp(argv[1], "--typephp") == 0) {
   已固化进 `demo-app/build.bat` 步骤 [3/4]；闭包用 `objdump -p` 递归解析（`scripts/deps-dlls.py`）。
   已实测：剥离 PATH 里的 tpc 后 `tinyjs dev --typephp` 依旧全链路 PASS（截图 `e2e-dev-cli-cleanpath.png`）。
 - **demo 项目自包含**：`planb/demo-app/build.bat` 一条命令重建 shim + PHP exe + DLL + 校验 launcher。
+
+---
+
+## 更新（Phase 21b，2026-09-26）：`--typephp` 移植进 `launcher-macos.cc`
+
+- **同构移植 Hunk A–E**，mac 差异只在三点：
+  - 端点 = AF_UNIX，固定短名 `/tmp/tinyjs-typephp-<pid>.sock`（`sun_path` ~104B 上限；
+    陈旧 socket 由 shim 自己 bind 前 unlink，launcher 不管）。
+  - spawn = `posix_spawn(shim, [shim, sockname])`（win: `CreateProcessW` + `CREATE_NO_WINDOW`）；
+    shim 二进制 = env `TYPEPHP_BACKEND`，缺省 `<launcher_dir>/backend`。
+  - 清理 = 主路径仍是**端点 EOF**（launcher 死 → shim `launcher closed` → `kill_proc(php)`，
+    POSIX 套件 launch tier 已证）；`terminate_typephp_backend()`（SIGTERM + `waitpid(WNOHANG)`）
+    只是兜底，挂在 `_exit(0)` 前——win 侧的 `std::atexit` 在 mac 的 `_exit` 路径上不会跑，照抄会失效。
+- **argv 归一化沿用 win 教训**：只把 `argv[2]` 拷进 `argv[1]`，**不左移**；typephp 模式下 `sock_path`
+  强制空串，由 spawn 生成。连接重试 50×100ms **仅在 typephp 模式**启用（stock `<html> <socket>`
+  客户端契约保持单次 connect，行为不变）。
+- **tgui dev（Darwin）**：三件套默认指向 `build/launcher-macos` / `build/backend_shell` /
+  `bin/run-backend.php`；tinyjs.json 的 `typephp.{backend,app}` 在 mac 上仅当文件存在才生效
+  （模板里是 Windows `.exe` 路径）。热重启 watcher 只在 Darwin 启用（`find src/** +框架 php` 的
+  mtime 摘要变了就 kill launcher → 重拉，窗口 bounce）；**Windows 分支行为逐字未动**（单发启动），
+  待真机把 watcher 也验过再放开。
+- **实测（Apple Silicon）**：`tgui dev` 出窗 13 CALL/13 RET、`WINDOW-E2E OK ping=pong in 56ms`、
+  shim 日志 `app_kind=stock cwd=<demo>`；`touch src/backend.php` → bounce → 新 shim 再 13/13；
+  杀 launcher → tgui 干净退出、`NO_PROCS`、socket 文件清零；打包方向复验仍 13/13 + 49ms。
+  证据 `evidence/mac/dev-21b.log`。

@@ -15,6 +15,14 @@ require __DIR__ . '/../gui/php/src/Tiny/Gui/bootstrap.php';
 | POSIX 套件（host probe + tier1/2 + 启动模式 + stderr 隔离） | **50 PASS / 0 FAIL** |
 | Windows 开发方向（`tgui dev`） | 窗口正常，**13 CALL / 13 RET**，`WINDOW-E2E OK ping=pong in 406ms`（融合后真机复验） |
 | Windows 打包方向（双击 `dist\<App>.exe`） | 窗口正常，**13 CALL / 13 RET**，`WINDOW-E2E OK ping=pong in 430ms`（融合后真机复验，含 PE 补丁后的入口） |
+| macOS 打包方向（`tools/build-macos.sh --run`，WKWebView + 系统 PHP 后端） | 窗口正常，**13 CALL / 13 RET**，`WINDOW-E2E OK ping=pong in 48ms`；POSIX 套件 **ALL TIERS OK**（Apple Silicon 实机） |
+| macOS 开发方向（`tgui dev`，launcher-macos `--typephp`，Phase 21b） | 窗口正常，**13 CALL / 13 RET**，`WINDOW-E2E OK ping=pong in 56ms`；改后端文件 → 窗口闪一下重启（实测新 shim 实例再 13/13）；关窗/退出零残留（Apple Silicon 实机） |
+| macOS .app bundle（`tgui build` → `dist/<App>.app`，Phase 21c） | `verify-bundle-macos.py` **PASS / 0 warning**；直跑 bundle 入口（无 `TYPEPHP_*` 环境变量，conf 驱动）窗口正常、**13 CALL / 13 RET**、`WINDOW-E2E OK ping=pong in 51ms`、`app_kind=stock`；关 launcher 窗 → shim 干净退出、socket unlink、零残留；`open` 双击等价路径在默认启动卷上同样 13/13（外部卷有 LaunchServices `bind()` 挂起限制，见已知限制）（Apple Silicon 实机） |
+| Linux 开发方向（`tgui dev`：shim 当 AF_UNIX 服务端 + pristine `launcher-linux` 当客户端，Phase 22b） | 窗口正常，**14 CALL / 14 RET**，`WINDOW-E2E` marker + `shot.png`；`touch` 后端 → CLI 打 `sources changed — bouncing` → 第二轮再 14/14；杀 launcher → shim 自行 EOF 退出、CLI 退出、dev socket 清零（容器 `tgl` Debian 12 / aarch64 + Xvfb，`test/posix/linux-tgui-window.sh` **PASS**，证据 `evidence/linux/`） |
+| Linux 打包 bundle（`tgui build` → `dist/<App>/`，Phase 22c） | `tools/verify-bundle-linux.sh` **全 PASS**（ELF64/aarch64 与宿主一致、3 个 exec 位 + `#!`→`app_kind=stock`、conf 按 shim 语义复析、后端镜像 15 文件逐字节 `cmp`、`app.sock` 42/108B、`ldd` 无未解依赖）；872KB 目录 → `publish` 出 392KB `dist.tar.gz`。**无 X display 直跑入口**：0s 返回 RC=1、shim 日志 `launcher exited (status 768) before connecting`、socket 与子进程零残留（#25 修复的回归证据） |
+| Linux 打包 bundle 端到端（`test/posix/linux-bundle-window.sh`，Phase 22d） | **PASS / 18 项断言**：`tgui build` 产物**打包搬出仓库**（`/tmp/.../dist/TypePHP-Demo`）后，清掉全部 `TYPEPHP_*`/`TINYGUI_*` env、进程 cwd 设成 `/` 直跑 entry → 窗口正常、**14 CALL / 14 RET**、`WINDOW-E2E OK ping=pong in 109ms`、`shot.png` 里后端自报 `cwd=/tmp/tpgui-22d/dist/TypePHP-Demo`；关窗（杀 launcher）→ entry 自行退出、`app.sock` unlink、零残留。容器 Debian 12 / aarch64 + **Xvfb 无头**（≠ 真桌面，见已知限制） |
+| Linux 真窗口端到端（tier 4：pristine `launcher-linux`，GTK3 + webkit2gtk-4.1，Xvfb 下） | **PASS**：**14 CALL / 14 RET**，`WINDOW-E2E OK ping=pong in 128ms`，截图取证，关窗后 shim 随退出、socket 清零（Debian 12 / aarch64 真 glibc 容器实测，`test/posix/tier4-linux-window.sh`） |
+| Linux `tpc --nano` 体积实测（tier 3） | 5 行程序 freestanding 产物 **1,160,624 B（strip 后 987,208 B）**，`ldd` 仅 libstdc++/libm/libgcc_s/libc —— **无 libphp / 无 php.ini / 无扩展 DLL**，直跑输出 marker、退出码 0（tpc v0.9.3 + php-nano v1.0.1 + phpx v2.9.2，PHP 8.4.25，g++ 12.2） |
 | 打包产物校验 | **0 failure / 0 warning**（融合后复验，`php.exe` + 8 DLL 口径） |
 
 ---
@@ -80,7 +88,8 @@ typephp-gui/
 │   ├── LICENSE.NOTICE        MIT 归属声明（tinyjsapp + 本项目）
 │   ├── host/                 原生 GUI 宿主（vendor + 自有）
 │   │   ├── src/launcher-win.cc    WebView2 宿主，--typephp 已并入源码
-│   │   ├── src/launcher-{linux,macos}.cc   原生宿主（pristine vendor）
+│   │   ├── src/launcher-{linux,macos}.cc   原生宿主（linux 仍 pristine vendor；
+│   │   │       macos 已并入 --typephp 移植，见 launcher-patch-notes.md）
 │   │   ├── include/               webview.h / WebView2.h / miniaudio.h
 │   │   └── script/gen-client.sh   把 runtime/tiny.js 嵌进 tiny_client.h
 │   ├── runtime/tiny.js         window.tiny 客户端 shim（vendor）
@@ -95,7 +104,11 @@ typephp-gui/
 ├── tools/
 │   ├── build-all.bat          Windows：编 shim + PHP 后端 → build/
 │   ├── build-launcher.sh      编 launcher（从 gui/host/src 编）→ build/runtime/
-│   ├── verify-bundle.py       发布前校验 dist/ 产物
+│   ├── build-macos.sh         macOS：编 shim + launcher-macos（拉 webview 头），
+│   │                          --run 直接起打包方向 demo（系统 PHP 后端）
+│   ├── verify-bundle.py       发布前校验 Windows dist/ 产物
+│   ├── verify-bundle-macos.py 校验 macOS .app bundle（plist/Mach-O 架构/conf/资源；
+│   │                          `tgui build` 在 mac 上会自动调用它）
 │   └── e2e/                   截图 / 点窗口 / 关窗口的小工具（ctypes，无依赖）
 ├── demo/                     一个完整示例（PHP 后端 + tiny.js 前端）
 ├── test/posix/               POSIX 验证套件（可独立拷出去用）
@@ -175,7 +188,7 @@ cd demo
 bash ../gui/bin/tgui dev
 ```
 
-`tgui dev` 会解析 `demo/tinyjs.json`、设置后端环境变量（`TYPEPHP_BACKEND` / `TYPEPHP_APP` / `TYPEPHP_CWD` / `TINYJS_ICON`），然后拉起 `launcher --typephp <html> <title> <size> <ver>`。改后端文件（`src/backend.php` 或任意框架文件）会让后端重启（窗口闪一下）；改 `demo/src/frontend/` 只是页面重载。
+`tgui dev` 会解析 `demo/tinyjs.json`、设置后端环境变量（`TYPEPHP_BACKEND` / `TYPEPHP_APP` / `TYPEPHP_CWD` / `TINYJS_ICON`），然后拉起 `launcher --typephp <html> <title> <size> <ver>`。**macOS**（Phase 21b）：CLI 监视 `src/**` 与框架 PHP 源码，任何改动 kill 掉 launcher 再重拉——窗口闪一下即后端重启（含 frontend 文件，同样是整窗 bounce；shim 靠端点 EOF 自己回收 PHP，实测零残留）。**Windows**：融合后的 `tgui dev` 目前是单发启动（退出 = Ctrl-C 后重跑）；旧 cli.js 的后端热重启还没接回来。
 
 调试输出**写 STDERR**：shim 给 stderr 单独一条管道，只抄进自己的日志，永远不混进帧流。看日志：
 
@@ -196,7 +209,11 @@ python ../tools/verify-bundle.py dist \
        --launcher ../build/runtime/launcher-win.exe
 ```
 
-产物：`dist/<App>.exe`（= shim，双击入口；`tgui build` 会自动用 `launcher --embed-icon` 把图标刻进 PE 资源、并把 PE `Subsystem` console→GUI，双击不挂黑框——这两步是旧 cli.js 的出货级修法 #10，融合 CLI 已接回）、`launcher.exe`、`php.exe`（PHP 后端，与入口不同名）、8 个 DLL（6 个 PHP 运行时 + 2 个 MinGW 运行时）、`frontend/`、`dist/<App>.conf`。
+产物（Windows）：`dist/<App>.exe`（= shim，双击入口；`tgui build` 会自动用 `launcher --embed-icon` 把图标刻进 PE 资源、并把 PE `Subsystem` console→GUI，双击不挂黑框——这两步是旧 cli.js 的出货级修法 #10，融合 CLI 已接回）、`launcher.exe`、`php.exe`（PHP 后端，与入口不同名）、8 个 DLL（6 个 PHP 运行时 + 2 个 MinGW 运行时）、`frontend/`、`dist/<App>.conf`。
+
+**macOS（Phase 21c）**：同一条 `bash ../gui/bin/tgui build` 走 Darwin 分支，产出 `dist/<App>.app`——`Contents/MacOS/<App>`（= shim，改名不带点，因为 shim 的 `stem_of()` 在**第一个** `.` 处截断，带点会错配 conf）、`<App>.conf`、`launcher-macos`、`Resources/frontend/`、`Resources/app/`（后端 PHP 源码逐字节镜像，`__DIR__` require 链原样生效）、`Resources/AppIcon.icns`（`sips`+`iconutil`，对应 win 侧 PE 图标刻录）、`Info.plist`（含 TCC 相机/麦克风/语音用途声明）。构建末尾自动跑 `tools/verify-bundle-macos.py` 校验。注意：mac 打包走**系统 PHP**（shebang 脚本，目标机 PATH 需有 php），且实测 LaunchServices 拉起的应用在外部卷上 `bind()` AF_UNIX 会挂起——发布/双击请在默认启动卷上用（直跑 `Contents/MacOS/<App>` 不受限，已在开发卷实机验证）。
+
+**Linux（Phase 22a–22c）**：先 `bash tools/build-linux.sh`（产出 `build/backend_shell` + `build/launcher-linux`；缺 GTK3 / webkit2gtk-4.1 / ayatana-appindicator3 时**点名缺哪个包**，appindicator 是硬依赖，见 #23），再同一条 `bash ../gui/bin/tgui build` 走 Linux 分支，产出**目录式** bundle `dist/<App>/`：`<App>`（= shim，改名后的双击入口，同样在第一个 `.` 处截断）、`<App>.conf`（`html` / `app` / `launcher` / `icon` 全是相对该目录的路径）、`launcher-linux`（**pristine——分发里不含任何 `--typephp` 补丁**）、`frontend/`、`app/`（后端 PHP 源码逐字节镜像，`__DIR__` require 链原样生效）。构建末尾自动跑 `tools/verify-bundle-linux.sh`：ELF 头/架构、exec 位 + `#!`（shim 无 argv `execv` 它，这两项是载荷性的）、conf 按 shim 语义复析、镜像完整性逐文件 `cmp`、`app.sock` 是否超 `sun_path` 108B、`ldd` 未解依赖 + 目标机 `.so` 清单。目标机需要：PATH 里有 stock php、GTK3 + webkit2gtk-4.1、一个 X display（容器里是 Xvfb，无头 ≠ 真桌面）。`publish` 在没有 `zip` 的机器上出 `dist.tar.gz` 并**按真实格式命名**，不会伪装成 zip。dev 方向的 Linux 与 win/mac **方向相反**：shim 站 AF_UNIX 服务端、原版 `launcher-linux` 作客户端（`tgui dev` 内部编排，`launcher-linux.cc` 一个字节不改）。
 
 ### 4. 新建一个项目
 
@@ -348,7 +365,7 @@ $d->on('demo.progress', function (Request $req): Response {
 - **POSIX 可见性宏必须在所有 `#include` 之前。** `-std=c++17` 会定义 `__STRICT_ANSI__`，libc 就把 `readlink`/`kill`/`setenv` 藏起来。glibc 上 g++ 会替 C++ 注入 `_GNU_SOURCE`（所以 Linux "碰巧能编"），Cygwin/newlib 不会。
 - **Cygwin 的 CPython `AF_UNIX` 和原生 `AF_UNIX` 不是一回事。** 实测矩阵：C 服务端 + Cygwin-Python 客户端 → 客户端 `connect()` **成功**但服务端 `accept()` 报 `ECONNABORTED(113)`；反过来 Python 服务端 + C 客户端 → Python `accept()` "成功"但读到不相关的垃圾，C 客户端拿到 `ECONNREFUSED`。C↔C 和 Python↔Python 都正常。**所以跨运行时语言测 unix socket 会得到假结果。**
 
-另外 `launcher-linux.cc` / `launcher-macos.cc` 目前是 pristine vendor，`--typephp` 仅在 `launcher-win.cc` 实现，所以非 Windows 上暂时跑不了完整 GUI（只能跑 shim 的 POSIX 分支 + 用真 nano 量体积）。
+`--typephp` 现在 `launcher-win.cc` 与 `launcher-macos.cc` 都有（win 是融合时并入；mac 是 Phase 21b 按 `docs/launcher-patch-notes.md` 的 Hunk A–E 同构移植，从此 **macOS 不再是 pristine vendor**，"与上游逐字节一致"仅相对本仓库），所以 **dev 方向 Windows + macOS 都已真窗口跑通**；`launcher-linux.cc` 保持 pristine（**不**移植 `--typephp`），Linux 的 dev 方向因此**反过来**编排：`tgui dev` 让 shim 站 AF_UNIX 服务端、原版 `launcher-linux` 作客户端 —— 该方向已于 Phase 22b 在容器内 Xvfb 下真窗口跑通（14 CALL / 14 RET + `WINDOW-E2E` marker + touch→bounce 复验）。打包方向同样 macOS 已跑通：入口是 shim，拉 stock `<html> <socket>` 契约的 `launcher-macos`，后端用系统 PHP 的 shebang 脚本。一条命令：`bash tools/build-macos.sh --run`（实测 13 CALL / 13 RET、`WINDOW-E2E OK ping=pong in 48ms`；dev 方向见 `evidence/mac/dev-21b.log`）。Linux 打包方向：`bash tools/build-linux.sh` + `bash ../gui/bin/tgui build`（Phase 22c，产物布局与结构校验见上文「打包发布」）；其**真窗口端到端**在手工编排下已 PASS（tier 4：14/14 帧 + 128ms marker），用 `tgui build` 产出的 bundle 直跑也已于 **22d 在容器 Xvfb 下验收 PASS**（14/14 帧 + 109ms marker，搬出仓库 + 清空穿线 env 后仍通过，见验证表与已知限制）。
 
 ### 后端为什么还是"一个文件"编译出来
 
@@ -427,15 +444,15 @@ python tools/verify-bundle.py demo/dist --launcher build/runtime/launcher-win.ex
 ```bash
 TAG=v0.43.0
 # 重新 vendor 宿主源码（覆盖自有副本；--typephp 改动作为普通提交 rebase 进来）
-curl -fsSL "https://xget.xi-xu.me/gh/tarwin/tinyjsapp/raw/$TAG/native/launcher-win.cc" \
+curl -fsSL "https://xget.fnthink.top/gh/tarwin/tinyjsapp/raw/$TAG/native/launcher-win.cc" \
   -o gui/host/src/launcher-win.cc
-curl -fsSL "https://xget.xi-xu.me/gh/tarwin/tinyjsapp/raw/$TAG/runtime/tiny.js" \
+curl -fsSL "https://xget.fnthink.top/gh/tarwin/tinyjsapp/raw/$TAG/runtime/tiny.js" \
   -o gui/runtime/tiny.js
 bash tools/build-launcher.sh        # 重新生成 tiny_client.h 并编译
 php gui/php/test/smoke.php           # 验证线格式仍与宿主对齐
 ```
 
-`xget.xi-xu.me` 是 GitHub 加速，国内直连 `raw.githubusercontent.com` 不可靠。
+`xget.fnthink.top` 是 GitHub 加速，国内直连 `raw.githubusercontent.com` 不可靠。
 
 **把 `--typephp` 改动并入新版宿主时**，用 `git` 的 3-way merge 对齐那 4 个 hunk（集中在 spawn 后端与参数解析处），一般能直接合。验证：
 
@@ -449,8 +466,11 @@ bash tools/build-launcher.sh && php gui/php/test/smoke.php
 
 ## 已知限制
 
-- **`--typephp` 目前只有 Windows。** 只有 `launcher-win.cc` 含 `--typephp`（已并入自有源码），`tgui dev` 在非 Windows 上因找不到 `launcher-win.exe` 而无法启动完整 GUI。见"支持一个新平台"。
+- **`--typephp` 只存在于 Windows 与 macOS 的 launcher；Linux 用反向编排达到同一效果。** `launcher-win.cc` 与 `launcher-macos.cc` 都实现了 `--typephp`（mac 侧为移植，不再 pristine）；`launcher-linux.cc` 保持 pristine，所以 Linux 的 dev 方向由 **shim 当 AF_UNIX 服务端 + 原版 launcher 当客户端**（`tgui dev` 的 Linux 分支，Phase 22b）——热重启、关窗回收、socket 清零与 win/mac 同构，容器内真窗口实测 14/14 帧 + marker。打包方向的 **Linux 真窗口端到端也已于 tier 4 实测 PASS**（2026-09-27，GTK3/WebKit2GTK + 同一 shim + stock PHP，14/14 帧 + 128ms marker），不再是"只有 headless 证据"；`tgui build` 的 Linux 产物（`dist/<App>/` + `tools/verify-bundle-linux.sh` 结构校验，Phase 22c）已于 **22d 完成 bundle 直跑验收**：搬出仓库、清空 `TYPEPHP_*` env、进程 cwd 设为 `/` 仍 14/14 帧 + 109ms marker、关窗零残留。
+- **`tgui build` 现已覆盖 Windows（dist/ 目录 + PE 图标/子系统补丁）和 macOS（.app bundle + icns + plist + 自动校验，Phase 21c）。** mac 侧限制：① 后端是 shebang 脚本，目标机 PATH 必须有 php（不做 win 那种 DLL 自包含）；② 不做 codesign 打包签名——实测 macOS 26 上整包 ad-hoc 签名会拒绝这种布局（Contents/ 下每个文件都被封成子组件），二进制保留链接器 ad-hoc 签名本机可跑；下载分发需要 Developer ID + 公证，属后续工作；③ LaunchServices 拉起的应用在外部卷（如本仓库所在 `/Volumes/data`）上 `bind()` AF_UNIX 会永久挂起（直跑同一二进制正常）——发布与双击验收请在默认启动卷上做。
 - **Windows 上 `--nano` 是死路。** 它不是真 nano，而是 `bin` 策略包装：`NanoBuildBackend::forHost('Windows')` 硬编码返回 `WINDOWS_DLL`，所以链接的不是 freestanding php-nano，而是完整 PHP/PHPX DLL。实测产物依赖与 bin 版**完全相同**（15.5MB），体积只小 1.5%，而且 teardown **必定 SIGSEGV(139)**。小巧路线只在非 Windows 存在，且要先去 `getenv`/`gethostname`。
+- **Linux 打包（Phase 22c/22d）的验收边界与前置条件。** ① 全部 Linux 证据来自 **Apple Container 里的 Debian 12 / aarch64 + Xvfb**：Xvfb 没有合成器、没有窗口管理器、没有系统托盘，所以"菜单/托盘/全局快捷键/高 DPI"这类真实桌面行为**没有被证明过**，只证明了窗口、渲染、帧往返与生命周期。② 后端是 shebang 脚本，**目标机 PATH 必须有 stock php >= 8.1**（Linux 没有 tpc/AOT 自包含后端，见 tier 3 那条）；③ `launcher-linux` 是动态链接的，目标机必须提供 GTK3 + webkit2gtk-4.1（或 4.0）+ ayatana-appindicator3 + X11/Xtst 这一组 `.so`——`tools/verify-bundle-linux.sh` 会把这份清单直接打出来，不是"大概需要 GTK"；④ 图标走 conf `icon=` → `TINYJS_ICON`（launcher 读环境变量），没有 win 的 PE 刻录也没有 mac 的 icns；⑤ demo 页面里的链路标签是**写死的 Windows 措辞**（`WebView2`、`\\.\pipe\...`、`backend_shell.exe`），Linux 截图里那些字样属于文案而非运行时事实，属于待办的美化项而非缺陷。
+- **真 nano（Linux tier 3 实测，2026-09-27）比"函数清单"更严：语法面也砍。** `NanoSyntaxValidationVisitor` 直接拒绝 `require`/`include`、匿名类、`yield`/Fiber/Generator、反引号——所以本仓库 demo 这种"入口 `require` 框架"的后端在真 nano 下**编不过**（Windows 的 policy 包装从不报这些）。freestanding 本身是真的：5 行程序 1.16MB（strip 后 0.94MB），`ldd` 无任何 PHP 库，运行时不需要 php.ini/扩展闭包；Linux bin 模式则要背 libphp8.4.so + ini + 扩展全套。走 nano 发行的前提是把入口改成单文件聚合或 native project.xml 多源输入。另：pristine `launcher-linux.cc` 有个上游缺陷——不定义 `TINYJS_APPINDICATOR` 编不过（`can_live_hidden()` 引用了只在宏内声明的 `g_indicator`），构建时该宏实际是必选项。
 - **分发体积** ≈ `shim(128KB) + php.exe(≈180KB) + launcher(≈1.9MB) + 8 个 DLL(6 个 PHP ≈15.5MB + 2 个 MinGW ≈2.4MB)` ≈ **20.7MB（实测）**，不是 tinyjsapp 那种 ~6MB 单文件。换来的是单进程自包含、目标机不需要装 PHP。
 - **`php.exe` 不自身包含运行时**，DLL 必须和它同目录（Windows 先在自己的 exe 目录找非 KnownDLL，所以同目录能钉住版本、也不依赖 PATH）。MinGW 运行时（libgcc/libstdc++）是 launcher 与 shim 都依赖的，同样必须随包分发。
 - **后端单文件**（理由见上）；tpc 走 `bootstrap.php`。Composer 有 PSR-4 但不替代 require 链。

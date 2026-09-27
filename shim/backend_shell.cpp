@@ -89,6 +89,10 @@
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <sys/types.h>
+#if defined(__APPLE__)
+#include <mach-o/dyld.h> // _NSGetExecutablePath
+#include <limits.h>     // PATH_MAX (realpath)
+#endif
 #endif
 
 // ---------------------------------------------------------------------------
@@ -176,11 +180,21 @@ static path_t exe_path() {
   DWORD n = GetModuleFileNameW(nullptr, buf, 32768);
   return std::wstring(buf, (size_t)n);
 #else
+#if defined(__APPLE__)
+  // macOS has no /proc/self/exe — dyld is the portable answer there.
+  char buf[PATH_MAX];
+  uint32_t n = sizeof(buf);
+  if (_NSGetExecutablePath(buf, &n) != 0) return std::string("app");
+  char real[PATH_MAX];
+  if (realpath(buf, real)) return std::string(real); // drop symlinks
+  return std::string(buf);
+#else
   char buf[4096];
   ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
   if (n <= 0) return std::string("app");
   buf[n] = '\0';
   return std::string(buf, (size_t)n);
+#endif
 #endif
 }
 
@@ -347,7 +361,7 @@ static io_t io_open_endpoint(const std::string &name) {
 }
 
 // Block until the launcher connects. Returns the connected endpoint (== server
-// handle/fd on Windows; a new fd on POSIX), or IO_BAD.
+// handle on Windows; a new fd on POSIX), or IO_BAD.
 static io_t io_accept(io_t srv) {
 #ifdef _WIN32
   BOOL ok = ConnectNamedPipe(srv, nullptr);
@@ -358,14 +372,61 @@ static io_t io_accept(io_t srv) {
   }
   return srv;
 #else
-  int fd = accept(srv, nullptr, nullptr);
-  if (fd < 0) {
+  while (true) {
+    int fd = accept(srv, nullptr, nullptr);
+    if (fd >= 0) {
+      int fl = fcntl(fd, F_GETFD);
+      if (fl >= 0) fcntl(fd, F_SETFD, fl | FD_CLOEXEC);
+      return fd;
+    }
+    // A signal (SIGCHLD of our own children is the common one) must not read as
+    // "the launcher will never come".
+    if (errno == EINTR) continue;
     logf_("[shell] accept() failed: %s\n", strerror(errno));
     return IO_BAD;
   }
-  int fl = fcntl(fd, F_GETFD);
-  if (fl >= 0) fcntl(fd, F_SETFD, fl | FD_CLOEXEC);
-  return fd;
+#endif
+}
+
+// Launch-mode variant of io_accept: OURS is the parent, so the launcher we
+// spawned can die BEFORE it ever connects — no X display, a missing GTK/WebKit
+// lib, bad args. A bare accept() then blocks forever: the PHP child, the listen
+// socket and the socket FILE all linger with it (shipped-bug #25). So poll the
+// endpoint and watch the launcher in the same loop; whichever comes first wins.
+// `*launcher_died` distinguishes "gave up because it vanished" from "accept
+// broke". Windows keeps the blocking ConnectNamedPipe: this loop's waitpid
+// semantics do not port, and the Windows packaged direction is covered by
+// real-machine tests where this hang has not been seen.
+static io_t io_accept_watching(io_t srv, proc_t launcher, bool *launcher_died) {
+  *launcher_died = false;
+#ifdef _WIN32
+  (void)launcher;
+  return io_accept(srv);
+#else
+  while (true) {
+    struct pollfd pfd;
+    pfd.fd = srv;
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+    int r = poll(&pfd, 1, 100);
+    if (r > 0) return io_accept(srv); // POLLIN on a listener means a connect is up
+    if (r < 0 && errno != EINTR) {
+      logf_("[shell] poll(listen) failed: %s\n", strerror(errno));
+      return IO_BAD;
+    }
+    if (launcher == PROC_BAD) continue; // dev mode: nothing to watch
+    int st = 0;
+    pid_t w = waitpid(launcher, &st, WNOHANG);
+    if (w == launcher) { // reaped here — the caller must NOT kill it again
+      *launcher_died = true;
+      logf_("[shell] launcher exited (status %d) before connecting\n", st);
+      return IO_BAD;
+    }
+    if (w < 0 && errno != EINTR) {
+      *launcher_died = true; // ECHILD: it is already gone in every real case
+      return IO_BAD;
+    }
+  }
 #endif
 }
 
@@ -568,6 +629,25 @@ struct LaunchConf {
   std::string launcher; // optional: relative to the exe dir
 };
 
+// Classify the backend binary by its first 2 bytes so the PHP side can report
+// the TRUTH in sysinfo: "#!" = stock PHP CLI script (shebang), "MZ" = tpc AOT
+// native PE. Unreadable/other = "unknown".
+static std::string app_kind_of(const path_t &p) {
+#ifdef _WIN32
+  FILE *f = _wfopen(p.c_str(), L"rb");
+#else
+  FILE *f = fopen(p.c_str(), "rb");
+#endif
+  if (!f) return "unknown";
+  unsigned char b[2] = {0, 0};
+  size_t got = fread(b, 1, 2, f);
+  fclose(f);
+  if (got < 2) return "unknown";
+  if (b[0] == '#' && b[1] == '!') return "stock";
+  if (b[0] == 'M' && b[1] == 'Z') return "aot";
+  return "unknown";
+}
+
 static LaunchConf read_conf(const path_t &path) {
   LaunchConf c;
 #ifdef _WIN32
@@ -683,6 +763,16 @@ int main(int argc, char **argv) {
       app = base + lit("app.exe");
   }
 
+  // Tell the backend what KIND of runtime it is (see app_kind_of). The child
+  // inherits our environment (CreateProcessW passes nullptr; POSIX fork+execv
+  // likewise), so a parent-side set lands in $_SERVER['TYPEPHP_APP_KIND'].
+  std::string app_kind = app_kind_of(app);
+#ifdef _WIN32
+  SetEnvironmentVariableW(L"TYPEPHP_APP_KIND", widen_(app_kind).c_str());
+#else
+  setenv("TYPEPHP_APP_KIND", app_kind.c_str(), 1);
+#endif
+
   // Working directory for the PHP backend. The launcher deliberately chdirs to
   // the temp dir before spawning us (it must not pin the app folder — a cwd
   // handle there blocks the auto-updater's directory swap), and a PHP backend
@@ -692,13 +782,13 @@ int main(int argc, char **argv) {
   if (!env_path("TYPEPHP_CWD", wd) && launch_mode)
     wd = base; // packaged app: the app root is the exe's own folder
 
-  logf_("[shell] transport=%s pipe=%s app=%s cwd=%s\n",
+  logf_("[shell] transport=%s pipe=%s app=%s app_kind=%s cwd=%s\n",
 #ifdef _WIN32
         "named-pipe",
 #else
         "unix-socket",
 #endif
-        name.c_str(), narrow_(app).c_str(),
+        name.c_str(), narrow_(app).c_str(), app_kind.c_str(),
         wd.empty() ? "(inherit)" : narrow_(wd).c_str());
 
   // --- child stdio pipes ---
@@ -770,12 +860,18 @@ int main(int argc, char **argv) {
     logf_("[shell] spawned launcher %s\n", narrow_(lexe).c_str());
   }
 
-  // Wait for the launcher to connect.
-  io_t ep = io_accept(srv);
+  // Wait for the launcher to connect — and give up if the launcher we spawned
+  // died before it ever got that far (#25).
+  bool launcher_died = false;
+  io_t ep = io_accept_watching(srv, launcher, &launcher_died);
   if (ep == IO_BAD) {
-    logf_("[shell] connect failed, aborting\n");
+    logf_(launcher_died ? "[shell] launcher never connected, aborting\n"
+                        : "[shell] connect failed, aborting\n");
     kill_proc(php);
-    kill_proc(launcher);
+    // `launcher_died` means we already reaped it in the accept loop.
+    if (!launcher_died) kill_proc(launcher);
+    io_close(srv);
+    io_cleanup_endpoint(name);
     return 1;
   }
   logf_("[shell] launcher connected\n");

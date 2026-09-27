@@ -1,0 +1,6 @@
+
+== dev: /work/repo/demo/src/frontend/index.html  (title=TypePHP Demo size=1100x760)
+   ok   launcher /work/repo/build/launcher-linux
+   ok   backend  /work/repo/bin/run-backend.php
+   ok   sources changed — bouncing the window (launcher kill + respawn)
+   ok   shim log: /tmp/tpgui-linux-tgui/shim.log

@@ -1,0 +1,26 @@
+
+== build: dist/TypePHP-Demo
+   ok   TypePHP-Demo — ELF64 aarch64 (matches host)
+   ok   launcher-linux — ELF64 aarch64 (matches host)
+   ok   exec bit — TypePHP-Demo
+   ok   exec bit — launcher-linux
+   ok   exec bit — app/bin/run-backend.php
+   ok   backend starts with '#!' — the shim classifies it as a stock-PHP app (TYPEPHP_APP_KIND=stock)
+   ok   conf html=frontend/index.html resolves
+   ok   conf app=app/bin/run-backend.php resolves
+   ok   conf launcher=launcher-linux resolves
+   ok   conf icon=icon.png resolves (shim exports it as TINYJS_ICON)
+   ok   conf size=1100x760
+   ok   conf version=0.1.0
+   ok   identical: app/bin/run-backend.php
+   ok   identical: app/src/backend.php
+   ok   gui/php mirror complete: 15 files under app/gui/php/src
+   ok   endpoint fits sun_path (42/108): /work/repo/demo/dist/TypePHP-Demo/app.sock
+   ok   php on PATH here (8.4.25) — same requirement applies on the target
+   ·    target must provide (dynamic deps of launcher-linux): libX11-xcb.so.1 libX11.so.6 libayatana-appindicator3.so.1 libayatana-ido3-0.4.so.0 libayatana-indicator3.so.7 libdbusmenu-gtk3.so.4 libgtk-3.so.0 libjavascriptcoregtk-4.1.so.0 libwebkit2gtk-4.1.so.0 
+   ok   launcher-linux deps all resolve on this machine
+
+== bundle checks: PASS (/work/repo/demo/dist/TypePHP-Demo)
+   ok   verify-bundle-linux.sh: all checks passed
+   !!   target machine needs: stock php on PATH, GTK3 + webkit2gtk-4.1, and an X display
+   ok   dist/TypePHP-Demo/  (TypePHP-Demo + launcher-linux + frontend/ + app/ backend mirror)

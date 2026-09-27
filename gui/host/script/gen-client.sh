@@ -2,10 +2,10 @@
 # Embed gui/runtime/tiny.js into the launcher as gui/host/src/tiny_client.h
 # (generated; not committed). Run before compiling the launcher.
 # This is the OWNED copy — no external tinyjsapp checkout involved.
-cd "$(dirname "$0")/../.."   # -> repo root
+cd "$(dirname "$0")/../../.."   # -> repo root (script lives at gui/host/script/)
 python3 - <<'EOF'
 import os
-base = os.path.dirname(os.path.abspath(__file__))
+base = os.getcwd()   # we cd'd to the repo root; __file__ is undefined for a stdin script
 js_path = os.path.join(base, 'gui', 'runtime', 'tiny.js')
 out_path = os.path.join(base, 'gui', 'host', 'src', 'tiny_client.h')
 js = open(js_path, encoding='utf-8').read()

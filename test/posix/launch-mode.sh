@@ -57,6 +57,10 @@ echo "======================================================================"
 # ------------------------------------------------------------------ build ---
 echo "== [1/4] build both binaries =="
 mkdir -p "$WORK"
+# macOS: /tmp is a symlink to /private/tmp, and the entry resolves its own
+# exe path through realpath (same as Linux /proc/self/exe). Compare like for
+# like: pin WORK to its physical path before anything is staged under it.
+WORK="$(cd "$WORK" && pwd -P)"
 if g++ -std=c++17 -O2 -Wall -Wextra -o "$WORK/$APP_NAME" "$SRC" 2>"$WORK/build.log"; then
   ok "shim compiled clean (-Wall -Wextra)"
 else
@@ -188,9 +192,18 @@ fi
 #    a known-live process under a matching name, prove the matcher SEES it, then
 #    prove it disappears — only then trust the zero.
 count_staged() {
-  ps -ef 2>/dev/null | grep -E 'mock_launcher|posixshim' | grep -v grep | wc -l | tr -d ' '
+  # Match ONLY the exec'd path (first word of ps's COMMAND column), not the
+  # whole line: a wrapper shell whose -c string mentions posixshim/mock_launcher
+  # (e.g. an IDE task runner launching this kit) is not an orphan of this kit.
+  ps -ef 2>/dev/null | awk '$8 ~ /mock_launcher|posixshim/' | grep -v grep | wc -l | tr -d ' '
 }
-cp /usr/bin/sleep "$WORK/mock_launcher_probe" 2>/dev/null || \
+# Build the stand-in sleeper, don't copy a system binary: on Apple Silicon a
+# *copied* system binary (even byte-identical, signature included) is SIGKILLed
+# by AMFI at exec, so the positive control would die before `ps` ever saw it.
+# gcc is already a hard dep of this tier (mock_launcher above).
+( printf '#include <unistd.h>\nint main(void){for(;;)sleep(1);return 0;}\n' ) | \
+  "${CC:-gcc}" -x c -w -o "$WORK/mock_launcher_probe" - 2>/dev/null || \
+  cp /usr/bin/sleep "$WORK/mock_launcher_probe" 2>/dev/null || \
   cp "$(command -v sleep)" "$WORK/mock_launcher_probe"
 "$WORK/mock_launcher_probe" 20 >/dev/null 2>&1 &
 CTRL=$!
@@ -208,7 +221,7 @@ if [ "$leftover" -eq 0 ]; then
   ok "no orphaned launcher/entry processes"
 else
   bad "$leftover process(es) still running from this kit"
-  ps -ef 2>/dev/null | grep -E 'mock_launcher|posixshim' | grep -v grep | sed 's/^/       /'
+  ps -ef 2>/dev/null | awk '$8 ~ /mock_launcher|posixshim/' | grep -v grep | sed 's/^/       /'
 fi
 
 echo

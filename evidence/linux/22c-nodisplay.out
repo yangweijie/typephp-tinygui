@@ -1,0 +1,2 @@
+tinyjs: cannot create the webview window: no display (DISPLAY and WAYLAND_DISPLAY are both unset — headless environment?).
+tinyjs: the app code is likely fine; run inside a desktop session or a virtual display (e.g. xvfb-run).
