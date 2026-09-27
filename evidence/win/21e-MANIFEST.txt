@@ -1,0 +1,37 @@
+# Phase 21e — Windows real-desktop dev-bounce evidence (no Xvfb involved)
+# collected: 2026-09-27T05:01:00Z by test/win/collect-evidence.sh
+# source:    /tmp/tpgui-21e (Git Bash %LOCALAPPDATA%\Temp — transient, hence this copy)
+# host:      MINGW64_NT-10.0-26100 DESKTOP-KO73F8K 3.6.10-710e5275.x86_64 2026-07-28 09:32 UTC x86_64 Msys
+# repo rev:  fe36f70
+# driver:    bash test/win/dev-bounce.sh  ->  expected final line:
+#              == 21e windows dev driver: PASS
+
+== frame cycles found in 21e-shim.log (split on '[shell] transport=')
+   cycle 1: pipe=\\.\pipe\tinyjs-typephp-19188  CALL=13 RET=13 WINDOW-E2E-lines=2
+            (WINDOW-E2E counts 2 per cycle: the CALL frame + the backend stderr echo)
+   cycle 2: pipe=\\.\pipe\tinyjs-typephp-16508  CALL=13 RET=13 WINDOW-E2E-lines=2
+            (WINDOW-E2E counts 2 per cycle: the CALL frame + the backend stderr echo)
+   cycle 3: pipe=\\.\pipe\tinyjs-typephp-37156  CALL=13 RET=13 WINDOW-E2E-lines=2
+            (WINDOW-E2E counts 2 per cycle: the CALL frame + the backend stderr echo)
+
+
+== named pipes across cycles (each bounce must get a fresh one)
+   cycles=3 distinct-pipes=3  OK: every cycle re-handshook on its own pipe
+
+== process counts per tasklist dump (the 1/1/1 leak assertion)
+   tasklist.before.txt          launcher=0 shim=0 app=0
+   tasklist.after-cycle2.txt    launcher=0 shim=0 app=0
+   tasklist.teardown.txt        launcher=0 shim=0 app=0
+   (before = cycle 1 up; after-cycle2 = two bounces in; teardown = window closed, all three 0)
+
+== CLI-side bounce evidence (21e-tgui.out)
+   "sources changed" lines: 2
+
+== stored files (sha256, bytes)
+   3b3f1587aa5dd999ae71cc9d5e04bab58fb5b733f8907fc415c83c2c1472e8ad  21e-shim.log  18434B
+   76848b2ba186cf166cf568d99cc520421da46c8cb356ac729e8da367acee1a31  21e-tgui.out  377B
+   f3ba79fd21250a3e7ea319443b6b7151d8f202a32ac381c6f031d84fcaf5ee27  21e-tasklist.before.txt  55B
+   eeaf628d8afc97ea27e51379e0a8a7841ae446c0ed203d410079b32bb7905b59  21e-tasklist.after-cycle2.txt  55B
+   e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  21e-tasklist.teardown.txt  0B
+   9fa901ec3e32c5c73b6451fe6de33bb91348c146b139c6ea28ddb19574afce63  21e-shot.png  297879B
+   e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  21e-shim-build.log  0B

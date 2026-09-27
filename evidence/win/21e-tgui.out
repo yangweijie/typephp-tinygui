@@ -1,0 +1,6 @@
+
+== dev: D:/git/php/typephp-gui/demo/src/frontend/index.html  (title=TypePHP Demo size=1100x760)
+   ok   launcher D:/git/php/typephp-gui/build/runtime/launcher-win.exe
+   ok   backend  D:/git/php/typephp-gui/demo/backend/app.exe
+   ok   sources changed — bouncing the window (launcher kill + respawn)
+   ok   sources changed — bouncing the window (launcher kill + respawn)
