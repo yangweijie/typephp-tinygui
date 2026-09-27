@@ -659,3 +659,34 @@ session 14 立下的规矩——**一个 kit 资产只有在"它被分发到的�
   2. **`build-launcher.sh` 构建缺陷（干净状态不可复现）**：① `$HOST/runtime/tiny.js` 路径错（实为 `$ROOT/gui/runtime/tiny.js`）→ 改成正确路径；② 缺 webview 头文件的 staged 步骤 → 新增 `[2b/5]` 把 `gui/host/include/webview` 拷进 `build/include/webview`（此前 webview 头靠手工存在，融合后无人下载，f8202d0 后构建实际已断）。现在 Windows 从干净状态可完整复现。
 - **附带**：21e 驱动本身上一轮还修了一个 `stdbuf` 守护 bug（`stdbuf.exe` 在 PATH 但 `libstdbuf.dll` 缺失 → `stdbuf -oL bash …` 整条命令起不来）；改为**功能性**探测（`stdbuf -oL true`），不可用就退回无缓冲。已在真机确认 skip 路径生效。
 - **改动清单（待提交）**：`gui/host/src/launcher-win.cc`（`tinyjs_prepare_webview_udf` + 调用）、`gui/host/include/webview/`（ vendored 整库，含 `win32_edge.hh` UDF 读取补丁）、`tools/build-launcher.sh`（tiny.js 路径 + webview staged 步骤）、`test/win/dev-bounce.sh`（stdbuf 功能性探测）、`gui/bin/tgui`（21e 代码侧，前几轮已就位）、`README.md`（删单发注记、验证表 Windows 开发方向加 bounce）、`docs/planning/{task_plan,progress,findings}.md`。
+
+## Session 2026-09-27 (9) — 21e 真机闭环后的计划文件校正（本文件 24/24）
+
+- **状态核对**：21e 由 Windows 那台机器（MINGW64 + MSVC BuildTools + WebView2 Runtime）真机跑通并已提交
+  （`4e3f0b8` + `5702b14`），工作树干净。本轮只做**计划文件与真实状态对齐**，不新增功能改动。
+- **改了什么**：`task_plan.md` 的 Current Phase 段上一轮我写的"下一步动作唯一且明确：去 Windows 跑驱动、
+  PASS 后删 README 单发注记、把 Phase 21 改完成"三件事**都已发生**，原样留着会把下一次会话带偏 →
+  改写为"24 个阶段全部完成、0 个进行中"，并如实登记 Windows 真机撞出的 WebView2 共享 UDF 锁死修复与
+  `build-launcher.sh` 干净态不可复现的修复（tiny.js 路径 + webview 头 staged）。
+- **本轮新登记的开口（① 代价最低）**：**21e 的证据没进仓库**。本仓库约定是把验收现场收进
+  `evidence/<os>/`（21b 有 `evidence/mac/dev-21b.log`，22c/22d 有 `evidence/linux/*`），而 21e 的
+  `tgui.out` / `shim.log`(3 cycles) / `tasklist` 三段 / `shot.png` 现在只在 Windows 机器的
+  `/tmp/tpgui-21e`，不取回即丢。README 验证表里的 406ms、1/1/1、零残留目前**只有文字、没有落库证据**。
+- **已核实的（不是转述提交信息）**：`gui/host/src/launcher-win.cc` 里 `tinyjs_prepare_webview_udf` 2 处、
+  `gui/host/include/webview/detail/backends/win32_edge.hh` 里 `TINY_WEBVIEW_UDF` 3 处，改动确实在树里；
+  README 第 16 行的 Windows 开发方向验证表条目 + 191 行的 UDF 说明已替换掉"单发启动"旧措辞（全文再无
+  "单发"）。`check-complete.sh` 报 **ALL PHASES COMPLETE (24/24)**，手工三条计数 24 / 24 / 0 与头部自检一致。
+- **用户选定下一轮方向 = 补 21e 证据入库**，据此新增 `test/win/collect-evidence.sh`（Windows 那台机器上
+  一条命令把驱动现场从 `/tmp/tpgui-21e` 收进 `evidence/win/`）：先**完整性守卫**（`shim.log` / `tgui.out` /
+  三份 `tasklist.*.txt` 缺任何一份就 RC=2 拒绝入库，不归档半截证据），再拷成 `21e-` 前缀（丢弃会过期的
+  `cli.pid` 与生成的 `shot.ps1`），最后**自己推导**一份 `21e-MANIFEST.txt`：按 `[shell] transport=` 分周期
+  报每周期 pipe + CALL/RET + WINDOW-E2E 行数、跨周期管道去重数（复用即判 MISMATCH）、三份 tasklist 的
+  launcher/shim/app 计数、`sources changed` 次数、每个文件的 sha256 + 字节数，外加 host 串与运行时的
+  `git rev-parse --short HEAD`。`WORK=` / `OUT=` 都可覆盖。
+- **离线验证过判别力（全在临时目录，仓库 `evidence/win` 未被写过，`git status` 已核）**：三份管道互不相同
+  → `cycles=3 distinct-pipes=3 OK`；人为让 cycle3 复用 cycle1 的管道 → `distinct-pipes=2 MISMATCH`；
+  删掉 `tasklist.teardown.txt` → RC=2 且拒绝生成清单。`bash -n` 过。
+- **仍未完成**：真正的入库要在**跑过驱动的那台 Windows 机器**上执行本脚本（证据现在只存在于它的
+  `%LOCALAPPDATA%\Temp`；本机 `git reflog` 显示 21e 的提交是 `pull origin/main` 进来的，说明两机分开、
+  无法从这里取文件）。取回后再把 README 第 16 行与 session (8) 的"证据 `/tmp/tpgui-21e`"改成
+  `evidence/win/…` 落库路径。

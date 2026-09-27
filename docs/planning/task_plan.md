@@ -26,10 +26,28 @@
 
 **Phase 16b-2 已于 2026-09-27 闭环（Apple Container Linux 容器实测）**：tier 4 真 `launcher-linux` 窗口端到端 **PASS**（14 CALL/14 RET、`WINDOW-E2E OK ping=pong in 128ms`、截图+拆除零残留），tier 3 真 `--nano` freestanding 产物 **1,160,624 B（strip 后 987,208 B）、`ldd` 无 libphp、直跑输出 marker**。两个 Key Question 均已回答（见下）。
 
-**Phase 22（2026-09-27，用户选定的下一轮方向）：Linux 打包/dev 方向落地** —— 把 tier-4 那次"手工编排"的证据固化成产品链：`tools/build-linux.sh` + `tgui status/dev/build/publish` 的 Linux 分支 + 容器内端到端验收。**22a/22b/22c/22d 全部完成（Phase 22 闭环）**：构建脚本、dev + 真窗验收、打包布局 + 结构校验 + #25 的 shim 修复、以及打包方向在 Xvfb 下的真出窗直跑（清掉穿线 env、进程 cwd 设为 `/`、仓库 `dist/` 已删的副本仍 14/14 + 109ms marker + 拆除零残留）。全计划剩余开口只剩 **21e**（Windows watcher 真机验收，阻塞在 Windows 通道）。
-下一步动作是**唯一且明确的**：在 Windows 机的 Git Bash 里 `bash test/win/dev-bounce.sh`（驱动已于
-2026-09-27 就位并离线演练过），把结尾 PASS/FAIL 与 `$WORK`（默认 `/tmp/tpgui-21e`）内容取回，
-PASS 后在同一轮删掉 README 的"win 侧单发启动"注记并把 Phase 21 的 Status 行改为 `complete`。
+**Phase 22（2026-09-27，用户选定的下一轮方向）：Linux 打包/dev 方向落地** —— 把 tier-4 那次"手工编排"的证据固化成产品链：`tools/build-linux.sh` + `tgui status/dev/build/publish` 的 Linux 分支 + 容器内端到端验收。**22a/22b/22c/22d 全部完成（Phase 22 闭环）**：构建脚本、dev + 真窗验收、打包布局 + 结构校验 + #25 的 shim 修复、以及打包方向在 Xvfb 下的真出窗直跑（清掉穿线 env、进程 cwd 设为 `/`、仓库 `dist/` 已删的副本仍 14/14 + 109ms marker + 拆除零残留）。
+
+**21e 已于 2026-09-27 在 Windows 真桌面（无 Xvfb）闭环，本文件 24 个阶段全部完成、0 个进行中。**
+真机跑 `test/win/dev-bounce.sh` → 7/7 绿：cycle1 13/13 + marker、touch→bounce 换新 pipe 再 13/13、
+**两次 bounce 后 launcher/shim/app 仍 1/1/1 无泄漏**、关窗零残留（README 验证表 Windows 开发方向行，
+`WINDOW-E2E OK ping=pong in 406ms`）；顺带修掉只有真机能暴露的 **WebView2 共享 UDF 锁死**（每次 launch
+独立 `%TEMP%/tinyjs-typephp-<pid>-<rand>`）与 `build-launcher.sh` 的 tiny.js 路径 + webview 头 staged
+缺失（融合后 Windows 构建在干净状态实际已断，现可复现）。
+
+**下一轮没有"排好的下一步"了** —— 新开阶段需要用户选定方向。候选按代价从低到高：
+① **补 21e 证据入库**（本仓库约定 `evidence/<os>/`：22c/22d 有 `evidence/linux/*`、21b 有
+`evidence/mac/dev-21b.log`，**21e 的证据目前只在 Windows 那台机器的 `/tmp/tpgui-21e`**，不取回即丢）；
+  - 工具已就位（2026-09-27）：`test/win/collect-evidence.sh` —— 完整性守卫（缺 `shim.log`/`tgui.out`/
+    任一 `tasklist.*.txt` 就 RC=2 拒收半截证据）→ 拷成 `evidence/win/21e-*` → 自行推导
+    `21e-MANIFEST.txt`（分周期的 pipe/CALL/RET、跨周期管道去重、三份 tasklist 的 1/1/1 计数、
+    每文件 sha256+字节、host 串与运行时 commit）。判别力已在临时目录验过：管道复用能判 MISMATCH、
+    缺文件能拒收；仓库未被演练写入。**剩下的动作只能在跑过驱动的那台 Windows 机上执行**
+    （`bash test/win/collect-evidence.sh` → `git add evidence/win` → push，本机再 pull），
+    落库后把 README 第 16 行与 progress session (8) 的"证据 `/tmp/tpgui-21e`"改成 `evidence/win/…`。
+② Linux 真桌面会话验收（容器只有 Xvfb，证不了合成器/WM/托盘/HiDPI）；③ mac 分发签名（Developer ID +
+公证，见 Errors #20；外部卷 `bind()` 挂起见 #21）；④ `--nano` 单文件聚合入口（Errors #22 的能力边界）；
+⑤ demo 页"调用链"文案写死 Windows 措辞（外观遗留，非缺陷）。
 
 ## 关键约束（已探明）
 
