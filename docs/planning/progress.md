@@ -649,3 +649,13 @@ session 14 立下的规矩——**一个 kit 资产只有在"它被分发到的�
   ③ 没有 cleanup trap；④ `cycle_stat/pipe_of` 在 `set -u` 下可能返回空串参与算术。
 - **回写**：task_plan 21e 下新增"验收驱动已就位"子条目。README 的 win 单发注记**继续保留**，
   等真机 PASS 同一轮删。改动仍未提交。
+
+## Session 2026-09-27 (8) — 21e 真机闭环（Windows 真桌面，无 Xvfb）
+
+- **结论**：`test/win/dev-bounce.sh` **PASS（7/7 步绿）**。Phase 21 全部完成，README 单发注记已删，task_plan 21e Status→complete、自检计数 24/24/0。
+- **跑法**：本机即 Windows（MINGW64 + MSVC BuildTools + WebView2 Runtime）。`bash test/win/dev-bounce.sh` → cycle1 13/13 + WINDOW-E2E + 整 1 launcher + `shot.png` 渲染；bounce（touch `src/backend.php`）→ `sources changed — bouncing`、新 pipe（`\\.\pipe\tinyjs-typephp-<新pid>`）、cycle2 再 13/13 + marker；**两次 bounce 后 launcher/shim/app 仍 1/1/1 无泄漏**；cycle3 同；关窗零残留。证据 `/tmp/tpgui-21e`（tgui.out / shim.log 3 cycles / tasklist 三段 / shot.png）。
+- **撞出的两个真机才暴露的缺陷（已修）**：
+  1. **WebView2 重发失败（核心 blocker）**：被硬杀的旧 host 留下的 `msedgewebview2.exe` 锁住共享的 per-exe 用户数据目录（原 UDF = `PathCombine(APPDATA, <exe名>)`），下一发 `CreateCoreWebView2Controller` 一直 `ERROR_INVALID_STATE`、60 次重试（12s）全败 → `webview_create` 返回 null → `launcher: failed to create webview`。修复：每次 launch 用独立 `%TEMP%/tinyjs-typephp-<pid>-<rand>` UDF。`launcher-win.cc` 新增 `tinyjs_prepare_webview_udf()`（建目录 + 启动时 best-effort 清掉旧 `tinyjs-typephp-*` 目录 + 置 `TINY_WEBVIEW_UDF`）；`gui/host/include/webview/detail/backends/win32_edge.hh` 的 `embed()` 读取该变量（未设回退原行为）。与库既有的 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` 读取同构。
+  2. **`build-launcher.sh` 构建缺陷（干净状态不可复现）**：① `$HOST/runtime/tiny.js` 路径错（实为 `$ROOT/gui/runtime/tiny.js`）→ 改成正确路径；② 缺 webview 头文件的 staged 步骤 → 新增 `[2b/5]` 把 `gui/host/include/webview` 拷进 `build/include/webview`（此前 webview 头靠手工存在，融合后无人下载，f8202d0 后构建实际已断）。现在 Windows 从干净状态可完整复现。
+- **附带**：21e 驱动本身上一轮还修了一个 `stdbuf` 守护 bug（`stdbuf.exe` 在 PATH 但 `libstdbuf.dll` 缺失 → `stdbuf -oL bash …` 整条命令起不来）；改为**功能性**探测（`stdbuf -oL true`），不可用就退回无缓冲。已在真机确认 skip 路径生效。
+- **改动清单（待提交）**：`gui/host/src/launcher-win.cc`（`tinyjs_prepare_webview_udf` + 调用）、`gui/host/include/webview/`（ vendored 整库，含 `win32_edge.hh` UDF 读取补丁）、`tools/build-launcher.sh`（tiny.js 路径 + webview staged 步骤）、`test/win/dev-bounce.sh`（stdbuf 功能性探测）、`gui/bin/tgui`（21e 代码侧，前几轮已就位）、`README.md`（删单发注记、验证表 Windows 开发方向加 bounce）、`docs/planning/{task_plan,progress,findings}.md`。

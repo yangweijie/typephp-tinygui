@@ -196,7 +196,17 @@ note "[4/7] cycle 1: bash gui/bin/tgui dev"
 # launcher -> shim because CreateProcessW is called with a null env block.
 # stdbuf -oL only if present: bash's printf into a redirected file is
 # block-buffered, so without it the live greps on tgui.out lag until the CLI exits.
-LINEBUF=""; command -v stdbuf >/dev/null 2>&1 && LINEBUF="stdbuf -oL -eL"
+# Guard stdbuf FUNCTIONALLY, not just by presence: on some MinGW installs
+# `stdbuf.exe` is on PATH but its companion libstdbuf.dll is missing, so
+# `stdbuf -oL bash ...` fails to launch and the whole CLI command dies before
+# it starts (symptom: "the CLI exited early", CALL=0). A plain `command -v`
+# check hides that. `stdbuf -oL true` loads the preload DLL, so a non-zero
+# exit (or the libstdbuf.dll error) means "unusable" -> fall back to no buffering
+# (the shim frame log is native output, unaffected; tgui.out is only read at end).
+LINEBUF=""
+if command -v stdbuf >/dev/null 2>&1 && stdbuf -oL true >/dev/null 2>&1; then
+  LINEBUF="stdbuf -oL -eL"
+fi
 ( cd "$DEMO" && TYPEPHP_SHELL_LOG="$(to_win "$SHIM_LOG")" \
     $LINEBUF bash "$ROOT/gui/bin/tgui" dev > "$CLI_OUT" 2>&1 &
   printf '%s' "$!" > "$WORK/cli.pid" )

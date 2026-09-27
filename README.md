@@ -13,7 +13,7 @@ require __DIR__ . '/../gui/php/src/Tiny/Gui/bootstrap.php';
 | 验证项 | 结果 |
 |---|---|
 | POSIX 套件（host probe + tier1/2 + 启动模式 + stderr 隔离） | **50 PASS / 0 FAIL** |
-| Windows 开发方向（`tgui dev`） | 窗口正常，**13 CALL / 13 RET**，`WINDOW-E2E OK ping=pong in 406ms`（融合后真机复验） |
+| Windows 开发方向（`tgui dev`，Phase 21e 真机复验） | 窗口正常，**13 CALL / 13 RET**，`WINDOW-E2E OK ping=pong in 406ms`；`touch` 后端文件 → CLI 打 `sources changed — bouncing` → 新 pipe 重发、整窗 bounce（再 13/13）、launcher/shim/app 仍 1/1/1 无泄漏；关窗零残留（`test/win/dev-bounce.sh` **PASS**，真实桌面、无 Xvfb） |
 | Windows 打包方向（双击 `dist\<App>.exe`） | 窗口正常，**13 CALL / 13 RET**，`WINDOW-E2E OK ping=pong in 430ms`（融合后真机复验，含 PE 补丁后的入口） |
 | macOS 打包方向（`tools/build-macos.sh --run`，WKWebView + 系统 PHP 后端） | 窗口正常，**13 CALL / 13 RET**，`WINDOW-E2E OK ping=pong in 48ms`；POSIX 套件 **ALL TIERS OK**（Apple Silicon 实机） |
 | macOS 开发方向（`tgui dev`，launcher-macos `--typephp`，Phase 21b） | 窗口正常，**13 CALL / 13 RET**，`WINDOW-E2E OK ping=pong in 56ms`；改后端文件 → 窗口闪一下重启（实测新 shim 实例再 13/13）；关窗/退出零残留（Apple Silicon 实机） |
@@ -188,7 +188,7 @@ cd demo
 bash ../gui/bin/tgui dev
 ```
 
-`tgui dev` 会解析 `demo/tinyjs.json`、设置后端环境变量（`TYPEPHP_BACKEND` / `TYPEPHP_APP` / `TYPEPHP_CWD` / `TINYJS_ICON`），然后拉起 `launcher --typephp <html> <title> <size> <ver>`。**macOS**（Phase 21b）：CLI 监视 `src/**` 与框架 PHP 源码，任何改动 kill 掉 launcher 再重拉——窗口闪一下即后端重启（含 frontend 文件，同样是整窗 bounce；shim 靠端点 EOF 自己回收 PHP，实测零残留）。**Windows**：融合后的 `tgui dev` 目前是单发启动（退出 = Ctrl-C 后重跑）；旧 cli.js 的后端热重启还没接回来。
+`tgui dev` 会解析 `demo/tinyjs.json`、设置后端环境变量（`TYPEPHP_BACKEND` / `TYPEPHP_APP` / `TYPEPHP_CWD` / `TINYJS_ICON`），然后拉起 `launcher --typephp <html> <title> <size> <ver>`。**macOS（Phase 21b）/ Windows（Phase 21e）共用同一条生命周期链**：CLI 监视 `src/**` 与框架 PHP 源码，任何改动 kill 掉 launcher 再重拉——窗口闪一下即后端重启（含 frontend 文件，同样是整窗 bounce；shim 靠端点 EOF 自己回收 PHP，实测零残留）。Windows 侧为此还修了一个 WebView2 坑：每次 launch 用独立的 `%TEMP%/tinyjs-typephp-<pid>-<rand>` 用户数据目录（`TINY_WEBVIEW_UDF`，`gui/host/include/webview/.../win32_edge.hh` 读取），否则被硬杀的旧 host 留下的 `msedgewebview2.exe` 会锁住共享的 per-exe UDF，导致下一发 `CreateCoreWebView2Controller` 一直 `ERROR_INVALID_STATE`、最终 `webview_create` 返回 null。
 
 调试输出**写 STDERR**：shim 给 stderr 单独一条管道，只抄进自己的日志，永远不混进帧流。看日志：
 

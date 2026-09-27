@@ -35,7 +35,7 @@ die() { printf '\n!! %s\n' "$*" >&2; exit 1; }
 
 [ -f "$HOST/src/launcher-win.cc" ]            || die "missing $HOST/src/launcher-win.cc (vendored host)"
 [ -f "$HOST/include/webview.h" ]              || die "missing $HOST/include/webview.h"
-[ -f "$HOST/runtime/tiny.js" ]                || die "missing $HOST/runtime/tiny.js"
+[ -f "$ROOT/gui/runtime/tiny.js" ]             || die "missing $ROOT/gui/runtime/tiny.js"
 
 mkdir -p "$BUILD" "$GEN" "$SHIMHDR" "$INCHDR"
 cd "$ROOT" || die "cannot cd $ROOT"
@@ -91,8 +91,22 @@ else
   echo "   = WebView2.h present"
 fi
 
+echo "== [2b/5] vendored webview headers -> $INCHDR/webview"
+# The launcher pulls in the tinyjsapp-forked webview lib via the "webview.h"
+# forwarder (gui/host/include/webview.h -> webview/webview.h). It is vendored in
+# tree under gui/host/include/webview so the Windows build no longer depends on a
+# separately downloaded copy (the macOS flow fetches it from the tinyjsapp
+# archive). Stage it into the build include dir for a self-contained compile.
+if [ -d "$HOST/include/webview" ]; then
+  rm -rf "$INCHDR/webview"
+  cp -R "$HOST/include/webview" "$INCHDR/webview"
+  echo "   + $(find "$INCHDR/webview" -type f | wc -l | tr -d ' ') files"
+else
+  echo "   ! $HOST/include/webview missing — webview_create will fail to compile"
+fi
+
 echo "== [3/5] tiny_client.h -> $GEN/tiny_client.h  (from gui/runtime/tiny.js)"
-python - "$HOST/runtime/tiny.js" "$GEN/tiny_client.h" <<'PY'
+python - "$ROOT/gui/runtime/tiny.js" "$GEN/tiny_client.h" <<'PY'
 import sys
 js = open(sys.argv[1], encoding='utf-8').read()
 assert ')TINYJS' not in js, 'raw-string delimiter collision in tiny.js'

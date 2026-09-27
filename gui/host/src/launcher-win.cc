@@ -982,6 +982,54 @@ static std::wstring tinyjs_aumid() {
   return L"tinyjs." + widen(safe);
 }
 
+// Phase 21e (TypePHP fusion): give every launcher launch its own WebView2 User
+// Data Folder under %TEMP% so a hard-killed prior dev host — whose
+// msedgewebview2.exe still holds the shared per-exe UDF — cannot block the new
+// launch's CreateCoreWebView2Controller with ERROR_INVALID_STATE (which makes
+// webview_create return null and the host bail with "failed to create webview").
+// The in-tree webview lib (gui/host/include/webview/.../win32_edge.hh) honors
+// TINY_WEBVIEW_UDF; we set it here, best-effort sweep the stale dirs left by
+// previous launches, then the lib reads it on webview_create().
+static void tinyjs_prepare_webview_udf() {
+  wchar_t tmp[MAX_PATH];
+  if (!GetTempPathW(MAX_PATH, tmp))
+    return; // fall back to stock per-exe UDF behavior
+  wchar_t udf[MAX_PATH];
+  std::swprintf(udf, MAX_PATH, L"%stinyjs-typephp-%u-%08X", tmp,
+                GetCurrentProcessId(),
+                (unsigned)((GetTickCount() ^ (unsigned)rand()) & 0xFFFFFFFF));
+  CreateDirectoryW(udf, nullptr);
+  // Best-effort: remove sibling tinyjs-typephp-* dirs from earlier launches.
+  // Locked ones (still held by an orphaned browser process) are skipped.
+  wchar_t pat[MAX_PATH];
+  std::swprintf(pat, MAX_PATH, L"%stinyjs-typephp-*", tmp);
+  WIN32_FIND_DATAW fd;
+  HANDLE h = FindFirstFileW(pat, &fd);
+  if (h != INVALID_HANDLE_VALUE) {
+    do {
+      if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+        wchar_t full[MAX_PATH];
+        std::swprintf(full, MAX_PATH, L"%s%s", tmp, fd.cFileName);
+        if (wcsncmp(full, udf, wcslen(udf)) == 0)
+          continue; // never sweep the dir we just made
+        wchar_t dbl[MAX_PATH * 2];
+        std::swprintf(dbl, MAX_PATH * 2, L"%s\\*", full);
+        // double-null terminate for SHFileOperationW
+        size_t len = wcslen(dbl);
+        dbl[len + 1] = L'\0';
+        SHFILEOPSTRUCTW op{};
+        op.wFunc = FO_DELETE;
+        op.pFrom = dbl;
+        op.fFlags =
+            FOF_SILENT | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_FILESONLY;
+        SHFileOperationW(&op);
+      }
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+  }
+  SetEnvironmentVariableW(L"TINY_WEBVIEW_UDF", udf);
+}
+
 // Stamp a top-level window so taskbar pins relaunch the app exe (with its
 // name and icon) rather than trying to start a bare launcher.exe.
 static void apply_relaunch_props(HWND hwnd) {
@@ -7868,6 +7916,9 @@ static int run(int argc, char **argv) {
     n = GetEnvironmentVariableA("TINYJS_BROWSERACCEL", v, sizeof(v));
     g_browser_accel = n > 0 && v[0] == '1';
   }
+  // Phase 21e: give this launch a fresh, contention-free WebView2 User Data
+  // Folder so a prior hard-killed dev host cannot block webview_create().
+  tinyjs_prepare_webview_udf();
   g_w = webview_create(g_debug ? 1 : 0, nullptr);
   if (!g_w) {
     std::fprintf(stderr,

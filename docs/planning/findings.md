@@ -908,3 +908,31 @@ Windows 侧 `dev_reap_shim()` 是 Linux-only（`[ "$OS" = Linux ] || return 0`�
 链，而 `spawn_typephp_backend()` 没有 job object、`std::atexit` 在 `_exit` 路径不生效。因此
 21e 的核心不是"窗口闪一下"，而是**两次 bounce 后 launcher/backend/app 进程数仍是 1/1/1**，
 以及每次 bounce 的管道名必须换新。前者能漏，后者能证明没复用旧链。
+
+## 21e 真机闭环补记（2026-09-27，Windows 真桌面）
+
+**A. WebView2 的 per-exe 共享 UDF 是 hot-reload 的隐形雷。**
+tinyjsapp 派生的 webview 库在 `win32_edge.hh::embed()` 里把 UDF 算成
+`PathCombine(APPDATA, <exe名>)`——**同一 exe 的所有 launch 共用一个 UDF**。开发态 `tgui dev`
+用 `taskkill /F` 硬杀 launcher，被它拉起的 `msedgewebview2.exe` 不会随之退出，继续持有该 UDF
+锁；下一发 `CreateCoreWebView2Controller` 返回 `ERROR_INVALID_STATE`，库内 60×200ms 重试全部
+失败 → `webview_create` 返回 null → 报错 `failed to create webview`。`win32_edge.hh` 的
+`try_create_environment()` 注释本身就写明这个错误码来自"同一 UDF + 不同 EnvironmentOptions 的
+运行中实例"，说明作者知道这个坑却只做了重试没做规避。**彻底的规避是让每次 launch 用独立的
+UDF**（环境变量 `TINY_WEBVIEW_UDF`，由 launcher 在 `webview_create` 前注入 `%TEMP%/
+tinyjs-typephp-<pid>-<rand>`，库内读取、未设回退原行为）。这比"优雅退出 / kill 子进程"稳：
+不论旧浏览器进程是否残留，新 launch 都不与之争锁。
+
+**B. 融合搬家后，`build-launcher.sh` 的 webview 头文件供给是断的。**
+`launcher-win.cc` 通过 `webview.h` 前向声明 → `#include "webview/webview.h"`，但 Windows 构建脚本
+只下载 `WebView2.h` + winrt-shim **头**，从不拉 webview 库本身（那是 mac 脚本从 tinyjsapp
+archive 拉的）。所以 Windows 干净构建实际依赖"手工放过的 webview 头"，f8202d0 融合后这条链路
+已不可复现——本次真机闭环顺手把它补成 vendored（入库 `gui/host/include/webview/`）+ `[2b/5]`
+staged 步骤。同理脚本里 `$HOST/runtime/tiny.js` 路径错（应为 `$ROOT/gui/runtime/tiny.js`），
+也是搬家中漏改的。教训：**"前几轮能编过"不等于"从干净状态能编过"**，真机/干净复现是检验
+构建脚本的底线。
+
+**C. `stdbuf` 不能只看 `command -v`。**
+MinGW 上 `stdbuf.exe` 可能在 PATH 而它的 `libstdbuf.dll` 不在，于是 `stdbuf -oL bash …` 整条
+命令起不来（报 `failed to find 'libstdbuf.dll'`），外层表现为"CLI 提前退出、CALL=0"。守护要
+**功能性探测**（`stdbuf -oL true` 返回非 0 即视为不可用），不是存在性探测。
