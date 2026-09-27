@@ -1,0 +1,9 @@
+session: WM=Openbox compositor=0x200004 bus=unix:path=/tmp/dbus-KMpPiEus10,guid=c33800ac2b9469b5c67ac3686ab8d332 screen=1440x900x24
+A1 managed: parent=0x400262 root=0x50d |_NET_FRAME_EXTENTS(CARDINAL) = 1, 1, 20, 5 | title=TypePHP Desktop | relY=20
+A4 frames: CALL=56 RET=56 WINDOW-E2E OK ping=pong in 140ms
+A3 WM events: minimized=6 maximized=6 width-after-maximize=1440px
+A2 compositor: owner=0x200004 baseline=none window=0x60000f picom_alive=yes ext=1
+A5 hidpi: logical=640x400 physical=1280x856 (GDK_SCALE=2)
+B tray/hotkey: TRAY=1 TRAYCLICK=1 HOTKEY=1
+C1 gap: HOTKEY -> ignore in Protocol::decode (tray/trayclick OK)
+X teardown: survivors=none product-sockets=none

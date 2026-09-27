@@ -19,8 +19,12 @@ final class AppRoot
 
     public static function fromEnv(): self
     {
-        $raw = getenv('TYPEPHP_APP_ROOT');
-        if (!is_string($raw) || $raw === '') {
+        // getenv() is in tpc's NANO_UNSUPPORTED_FUNCTIONS, so a nano-built backend
+        // cannot call it at all. Read the env the same way CoreHandler::backend_kind()
+        // does: $_SERVER first (CLI variables_order puts the environment there),
+        // $_ENV as the fallback.
+        $raw = (string)($_SERVER['TYPEPHP_APP_ROOT'] ?? $_ENV['TYPEPHP_APP_ROOT'] ?? '');
+        if ($raw === '') {
             $cwd = getcwd();
             $raw = is_string($cwd) && $cwd !== '' ? $cwd : '.';
         }

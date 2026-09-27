@@ -1,0 +1,17 @@
+Initialized platform/backend: Linux + GCC (g++)
+prepare: src/backend.php
+Fatal error: `require` is not supported in nano mode in /work/repo/src/backend.php:29
+#0 /work/tpc/src/Diagnostics/CompilerDiagnosticTrait.php(22): TypePhp\Diagnostics\CliDiagnosticReporter->fatal('...')
+#1 /work/tpc/src/Diagnostics/CompilerDiagnosticTrait.php(27): TypePhp\CompilerBase->error('...')
+#2 /work/tpc/src/Preprocessor.php(474): TypePhp\CompilerBase->fatalError(Object(PhpParser\Node\Expr\Include_), '...')
+#3 /work/tpc/src/Transform/NanoSyntaxValidationVisitor.php(51): TypePhp\Preprocessor->{closure:TypePhp\Preprocessor::prepareFile():474}(Object(PhpParser\Node\Expr\Include_), '...')
+#4 /work/tpc/vendor/nikic/php-parser/lib/PhpParser/NodeTraverser.php(114): TypePhp\Transform\NanoSyntaxValidationVisitor->enterNode(Object(PhpParser\Node\Expr\Include_))
+#5 /work/tpc/vendor/nikic/php-parser/lib/PhpParser/NodeTraverser.php(227): PhpParser\NodeTraverser->traverseNode(Object(PhpParser\Node\Stmt\Expression))
+#6 /work/tpc/vendor/nikic/php-parser/lib/PhpParser/NodeTraverser.php(76): PhpParser\NodeTraverser->traverseArray(Array)
+#7 /work/tpc/src/Preprocessor.php(491): PhpParser\NodeTraverser->traverse(Array)
+#8 /work/tpc/src/Build/SourcePipelineTrait.php(837): TypePhp\Preprocessor->prepareFile('...')
+#9 /work/tpc/src/Build/SourcePipelineTrait.php(567): TypePhp\Translator->preprocessProjectFiles(Array, '...')
+#10 /work/tpc/src/Build/ProjectBuildRunner.php(41): TypePhp\Translator->prepare('...')
+#11 /work/tpc/src/Build/ProjectBuildRunner.php(23): TypePhp\Build\ProjectBuildRunner->generateProjectSources(Array)
+#12 /work/tpc/src/compiler.php(79): TypePhp\Build\ProjectBuildRunner->run(Array)
+#13 /work/tpc/bin/tpc.php(8): runCompiler(5, Array, Object(TypePhp\Build\CompilerRuntime))

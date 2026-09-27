@@ -976,3 +976,345 @@ REGEN 会盖当前时间戳与当前 rev，所以它跑完 diff 必然非空 —
 变量，放在命令后面就成了位置参数，脚本里读到的一直是默认值。这条命令从写下到本轮才被真正执行一次，
 结果是 RC=2 且什么都没做（`WORK` 默认 `/tmp/tpgui-21e` 在本机不存在，被完整性守卫挡下）。也就是说
 "第三方可以这样复核"这句话本身从未被复核过。正确形式是 env 前缀：`CHECK=1 OUT="$PWD/evidence/win" bash …`。
+
+## 页面"调用链"文案：能从已上报的事实派生，就别从 UA 猜；端点名字三条来源各不相同（2026-09-27，demo 页）
+
+`demo/src/frontend/index.html` 的标题区、①–⑤ 链路 chip、页脚、成功横幅、"关于"对话框全部硬编码 Windows
+措辞。修它时踩到的不是排版问题，而是**"这句话凭什么为真"**：
+
+**1. 三种端点名字来自三个不同的地方，抄哪一种都会漏。**
+
+| 方向 | 谁决定端点名 | 实际值 |
+|---|---|---|
+| Windows dev / 打包 | launcher / shim 的 launch-mode 分支 | `\\.\pipe\tinyjs-typephp-<pid>` |
+| mac dev | `launcher-macos` 自己 | `/tmp/tinyjs-typephp-<launcher pid>.sock`（现场日志 38870 是 launcher 的 pid，CLI 是 38833） |
+| Linux dev | `gui/bin/tgui` 用 `DEV_SOCK=/tmp/tinyjs-typephp-dev-$$.sock` 传进去 | 注释写明是为 `sun_path` 108B 上限（bug #15） |
+| POSIX 打包 | `backend_shell.cpp` 的 launch-mode 分支 | `<exe 目录>/app.sock`，**只有超长才**退 `/tmp/tinyjs-typephp-<pid>.sock` |
+
+⇒ 结论：POSIX 的 chip 只能写成"`/tmp/…-<pid>.sock`（打包：`<exe 目录>/app.sock`）"，任何单一写法都会在另一个方向上说错。
+
+**2. 文案要挂在"已经有证伪机制保护"的字段上。** `sysinfo` 回的 `os` 是 `PHP_OS_FAMILY`，`backend` 来自 shim
+按 app 二进制前两字节分类后注入的 `TYPEPHP_APP_KIND`（`aot|stock|unknown`，见 `CoreHandler::backend_kind`）——
+两者都被既有测试链路覆盖。UA 嗅探相反：三种 WebView 的 UA 都是 WebKit 形状，猜错不会有任何东西报错。
+副作用是**默认声称 AOT 的文案当场被证伪**：mac dev 实测 `app_kind=stock`，⑤ 自动降为"PHP 后端（系统 php，
+未经 AOT）"。凡是页面上写"①②③…"这种看起来像装饰的文字，也应能指回一个运行时字段。
+
+**3. 没有屏幕录制权限时，前端改动照样能验，关键是给断言配负控。** 本机 `screencapture -x` 直接
+`could not create image from display`（无 Screen Recording 授权），`tools/e2e/*.py` 是 ctypes+user32 的
+Windows 工具 —— mac 侧拿不到像素。可行的替代是 `vm` + stub（`document`/`window.__invoke`/`tiny.*`）把**整段
+页面脚本**跑起来，对三套 fixture 检查落到 DOM 上的字符串。真正让它可信的是负控：**对 `git show HEAD:` 的旧
+页面跑同一套断言**，派生字段应全部 `(missing)` 且旧横幅暴露"WebView2 → 命名管道 → PHP AOT 后端"。旧版失败、
+新版通过，才说明断言有牙（与 21e 的假 Windows 工装同一原则：工装只证明判别力，不证明目标平台通过）。
+
+**4. 有一条字符串绝对不能顺手"本地化"**：`log` 里的 `WINDOW-E2E OK ping=pong in <ms>ms` 是 win/mac/linux
+三套驱动与 `evidence/*` 清单共同 grep 的目标，改格式 = 废掉既有证据链。已在代码里就地注释钉死。
+
+## mac 抓"某个窗口的像素"：授权是两条独立的线，窗口号比屏幕好使（2026-09-27）
+
+- **Screen Recording ≠ Accessibility**。授予屏幕录制后 `screencapture -x` 出图了，但
+  `osascript -e 'tell application "System Events" to … window 1 …'` 仍报 `-1719 不允许辅助访问`。
+  取窗口坐标/标题要走 CoreGraphics，不要走 AppleScript：
+  `CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID)`
+  里能同时拿到 `kCGWindowNumber`、owner、name、bounds（编译要
+  `-framework CoreGraphics -framework CoreFoundation`，只链 CoreGraphics 会缺 `_CFArrayGetCount`）。
+- **按窗口号抓，遮挡无关**：`screencapture -x -o -l<windowNumber> out.png` 直接得到该窗口的合成分支，
+  被 IDE 全屏盖住也能拿到干净图（本轮 demo 窗口在屏幕区域里存在但看不见，仍是这么抓到的）。
+  输出尺寸 = 窗口尺寸（含标题栏），不是屏幕尺寸。
+- **裁剪用 PIL 不用 `sips`**：`sips -c H W` 是**居中**裁剪，想取顶部/底部带子会裁到中间。
+  放大用 `Image.resize(..., LANCZOS)` 后再读图，字才看得清。
+- **窗口高度被屏幕钳死 ⇒ 折叠线以下的元素截图拿不到**。conf 里写 `1100x1600`，macOS 实际给 1050；
+  加宽到 1860 也不重排（页面高度不变）。合成滚轮事件（`CGEventCreateScrollWheelEvent` + `CGEventPost`）
+  返回 0 但页面不动 —— 输入注入归 Accessibility 管，被拒。⇒ 这类"页尾文案"要么靠 harness/代码走读，
+  要么在页面里给它一个不需要滚动就能出现的位置，别指望截图。
+
+## Phase 23 — "桌面行为"要断言的是**谁拥有那个 X selection**，不是"属性存不存在"（2026-09-27）
+
+- **`_NET_WM_CM_S0` 是 X selection，不是 root property。** `xprop -root _NET_WM_CM_S0` 在合成器
+  活得好好的时候也永远回 `not found.` —— 第一版驱动因此把 picom 判成"死了"。正确问法是
+  `XGetSelectionOwner(display, XInternAtom("_NET_WM_CM_S0"))`（ctypes 十几行，驱动里是 `cm_owner()`）。
+  顺带：`wmctrl -m` 在这个 openbox/picom 组合下也**不**打印 Compositor 行，别指望它。
+- **picom 9 的 xrender 后端在 Xvfb 上没有 vsync 方法**：`--vsync` ⇒
+  `No supported vsync method found for this backend` ⇒ `session_init FATAL … Failed to initialize the backend`，
+  进程直接退出。去掉 `--vsync` 即正常。
+- **GTK 会额外建一个同名的 InputOnly `WM_CLIENT_LEADER` 窗口**（10×10、未映射、`_NET_WM_NAME` 与主窗相同），
+  而 `xdotool search --name` **先返回它**。所有几何/WM 断言于是静默量在 leader 上 ⇒
+  取窗必须按 `xwininfo … | grep 'Map State: IsViewable'` 过滤（驱动里的 `find_window()`）。
+- **`xwininfo` 的两处格式陷阱**：`-root` 的**首行是空行**（按行号 1 匹配必失败）；普通 `-id` 输出里
+  **根本没有 Parent 行**，只有 `-tree` 才打印 `Parent window id:`。
+- **最硬的一条 reparent 证据不是 parent≠root，而是"客户区相对父窗 Y 偏移 == `_NET_FRAME_EXTENTS` 的 top"**：
+  属性谁都能设，几何对不上就是没被装饰。
+- **shim 只在自己走到 EOF 退出时 unlink AF_UNIX 端点**；`SIGTERM` 跳过 `io_cleanup_endpoint()`。
+  ⇒ 驱动必须**关 launcher 让 shim 自然退出**再断言 unlink（`close_shim()`），否则是把工装的杀法
+  算成产品泄漏。反向同理：`pgrep -af` 会把已杀待收尸的子进程显示成 `<defunct>`，断言零残留要过滤它，
+  并在关闭路径里 `wait` 收尸。
+- **ayatana-appindicator3 是 SNI-only**，bookworm 里没有任何打包的 SNI 宿主，XEmbed 系统托盘挂不上它
+  ⇒ 要验托盘只能自己写一个 `org.kde.StatusNotifierWatcher`（`test/posix/sni_host.py`），
+  并且**用它当判据**：`RegisterStatusNotifierItem` 被调用、属性读得回、`GetLayout` 展平出菜单项、
+  `Event(id,"clicked")` 之后管道里出现 `TRAY <id>`。
+- **链接了库 ≠ 走了那条代码路**：`tools/build-linux.sh` 链 `-lX11 -lXtst` 却没定义 `TINYJS_X11`，
+  而 `parse_combo`/`xtest_display`/`do_keystroke`/`x11_hotkey_register` 全在 `#ifdef TINYJS_X11` 里、
+  `#else` 是**返回成功的空实现** ⇒ 应用拿到"注册成功"但根窗口上没有任何 `XGrabKey`。
+  判别式验证：加宏前 B3 失败、加宏后 B3 通过。凡是"运行时行为取决于编译期宏"的，
+  断言必须打到**外部可观测效应**（这里是 XTest 注入按键后管道里多出的帧），不能停在 API 返回值。
+- **负控的基线要在正控之后取**：B4 先记 `HOTKEY=0`，再按 F12（+1），再按 F11 比较 ⇒ "负控失败 0→1"
+  其实是正控成功。同一轮还顺手加了第二个未注册组合（裸 F12）让负控不止覆盖一种误判。
+
+## Phase 24（候选⑤）— "编不过"是入口形状问题，"链不上"才是能力边界：nano 单文件聚合的完整结论（2026-09-27）
+
+**一句话**：把 demo 后端聚合成一个文件之后，真 nano 的**前端全过**（require 拒绝、stray-code 拒绝、入口发现
+都解决了），全量构建停在 **ld**，而且**卡点不在这个聚合器、也不在我们的 PHP**——这一点是被量出来的，
+不是被论证出来的。
+
+### 1. 一条"拒绝 require"背后其实叠着四条独立规则，逐条才能收敛
+
+`Errors #22` 只记了第一条。真去编译时才把剩下三条逼出来（每条的报错都不指向源码位置）：
+
+| 规则 | 报错长什么样 | 结论 |
+|---|---|---|
+| ① `require`/`include` 编译期拒绝 | `` `require` is not supported in nano mode `` | 聚合是**唯一**入口改法（不能靠 project.xml，因为 demo 的 require 是运行时相对路径） |
+| ② 产物名从源文件 basename 派生且必须是标识符 | `The target name 'backend.aggregated' must be a valid identifier` | 文件名里的点被当成命名空间分隔……只能改文件名（下划线） |
+| ③ 命名空间体内只允许声明 | `All execution code must be within a function, found stray code …:1197` | 聚合器必须把**入口尾段提进** `function main(): void`（step 3），交错时**拒绝**而不是猜 |
+| ④ 入口 = 全局 `function main`（`CompilerBase::ENTRY_FUNCTION`） | 编得过但 tpc 找不到入口 | 每个模块**各自包成** `namespace X { … }` 块；否则拼接后前一个 `namespace Tiny\Gui;` 会把全局入口吞进那个命名空间 |
+
+**可复用的判据**：编译器拒绝"语法形状"时，把它当成**目标文件的结构约束**去满足，比在被拒的构造上打转便宜得多。
+`--dry` 是这条路的正确探针——它只做 convert+arginfo，几秒出结果，把前端问题和链接问题**干净地切开**。
+
+### 2. 归因必须是测量：`[4c]` 用一个 15 行程序把"上游缺陷"从说法变成事实
+
+聚合体的失败签名是 `undefined reference to php::Args::get(unsigned long) const`，引用者是
+`cache/objects/nano/closure-f8759031b18c.o`（`php::makeScopedCallableImpl` 的闭包适配器）。
+"这是上游的事"这句话本身**不可证伪**，除非给出对照：
+
+- 一个用同样构造（方法里造闭包 → 交给 `usort`）的 15 行程序，`--nano` **链得上**（1 763 104 B）**且跑得动**；
+- 两次构建的 `nm` 扫描都是 **`define=0 / reference=1`**（整个对象集合里根本没有 `php::Args::get` 的定义）；
+- 两边的 Closure 目标文件**同名同哈希**（`sha256` 前缀 `55c5e4bad9996223`，逐字节相同）。
+
+⇒ 变量只剩一个：**组合出来的 runtime 留下哪些 section**（240 个对象 vs 138 个）。这比任何"我觉得是 php-nano 的锅"
+都硬。**配方**：`scan()` 遍历 `cache/objects` 用 `nm -C --defined-only/--undefined-only` 计数 + 比对 closure 对象的
+文件名与内容哈希；把签名匹配（而不是退出码）作为 GAP 的准入条件，其它失败一律 `bad`。
+
+### 3. 链接成功 ≠ 能运行：nano 还有第二个上游坑，会误导第一个坑的归因
+
+`[4c]` 第一次跑的时候报 `FAIL the minimal program does NOT link either`，而它的构建日志明明写着 `Build successful`。
+原因是断言把两件事用 `&&` 并成一件。分开以后真相是：**链上的二进制起不来**，`Unable to start PHP Nano extensions`、rc=1。
+顺着这条线量出第二个上游缺陷（#34）：
+
+- tpc 的 `NanoExtensionSelector` **按用到的内建函数挑 runtime 集合**：`strlen`/`strcmp`/`array_key_exists` 会把
+  `basic_functions_module` **整个丢掉**（`implode`/`ucfirst` 不丢）；
+- 但 `Translator::resolveExtensionDependencies()` 生成的模块入口**照旧**声明 `ZEND_MOD_REQUIRED("Core")`
+  （名字取自宿主反射：Zend 内建函数的 `getExtensionName()` 就是 `"Core"`。
+  本行早期版本写过"stock PHP 里 `basic_functions` 的模块名叫 Core"——**错的**，Phase 25 更正见文末：
+  `basic_functions_module` 的 `->name` 是 `standard`（`php-nano/ext/standard/basic_functions.c:347`），
+  叫 "Core" 的是 `zend_builtin_module`，属 Zend 不属 ext。）
+- php-nano 的 `dependency_state()`（`src/extension.cpp`）**只在传进来的集合里**找依赖 ⇒ `Invalid` ⇒
+  `php_nano_startup_extensions()` FAILURE。
+- 判别式复现（同一 build-dir 逐个换表达式，30s 一次）：`strlen`/`strcmp`/`array_key_exists` → 集合里没有
+  basic_functions、启动死；`implode`/`ucfirst`/`usort`/`<=>`/`json_encode` → 活得。
+  `json_encode` 特别有意思：集合里也没有 basic_functions，但它**能跑**，因为它的模块入口要求的是
+  `ZEND_MOD_REQUIRED("json")`，而 `json` 恰好在集合里。⇒ **决定生死的是"生成的依赖名"和"保留的集合"是否配对**，
+  不是"用了什么高级语法"。
+
+**为什么 demo "不受影响"——本段原推断已于 Phase 25 证伪**：原文写的是"聚合体的集合**保留** basic_functions
+（10 个模块），所以它的 `ZEND_MOD_REQUIRED("Core")` 可满足，驱动 [4c] 里显式 grep 断言了它"。
+错在两处：① `basic_functions_module` 的 `->name` 是 `standard`，保留它对 `"Core"` 毫无帮助；
+② 全树唯一叫 `"Core"` 的入口是 `Zend/zend_builtin_functions.c:52` 里 **`static`** 的 `zend_builtin_module`，
+由 `zend_startup_builtin_functions()`（`php-nano/src/core.cpp:272` 调）注册，**composer 数组结构上不可能持有它**。
+⇒ `"Core"` 对**每一个** nano 构建都不可满足，聚合体也一样。实测：本地补上 `Args` 符号、让聚合产物链接成
+6,933,344 B 的二进制之后，它仍然 `Unable to start PHP Nano extensions`、rc=1；只再加 tpc 那 4 行
+"nano 模式跳过 core" 才越过启动期。**"grep 到某个变量" 不等于 "该变量的名字能匹配上依赖串"**——
+把 C 变量名当扩展名读，是我这次推断出错的直接原因。
+**对照程序用 `<=>` 而不用 `strcmp` 的原因仍然成立**（少一个无谓的启动死），但它保护不了聚合体。
+
+**教训（本仓库第 N 次踩到同形）**：**一个断言只断一件事**。"链得上且跑得动"这种复合断言失败时，
+会把上游的第二个坑读成"这个容器里 php-nano 全坏了"，进而动摇**已经入库的 tier-3 结论**。
+复核做法：把 tier-3 用的**那个仓库自带 fixture**（`experiments/nano-stdio-test/nano_min.php`，
+三行 `function main(){ echo "nano-policy-build-ok\n"; }`）在本轮重编重跑 ——
+**1 160 600 B、直跑 `nano-policy-build-ok`、rc=0、`ldd` 只有 libstdc++/libm/libgcc_s/libc**。
+所以 21d 的结论没被推翻（顺带说明：**尺寸不逐字节稳定**，README 引的 1,160,624 B 是当时那次构建，
+同一程序本轮是 1,160,600 B ⇒ 引用尺寸必须带日期）。README **不**引用聚合体的字节数——
+聚合产物是 gitignore 的 `build/`，任何"聚合体 = N 字节"的断言都会随第一次编辑腐烂。
+
+### 4. 负向守卫必须被"真阳性"烫过一次才可信
+
+聚合器里"聚合后不允许残留 `__DIR__`/`__FILE__`"这条守卫原本**恒过**：它对没有 `<?php` 的模块体调
+`token_get_all()`，于是整段被读成 `T_INLINE_HTML`，一个 `T_STRING` 都看不见。补上合成前缀
+（`$synthetic = "<?php\n"`，偏移量回正 `-$base`）之后守卫才真的在检查东西——而且**立刻**发现了一个真残留。
+同源的第二个坑：`"{$x}"` 的 `{` 发的是 `T_CURLY_OPEN`/`T_DOLLAR_OPEN_CURLY_BRACES`，闭合的 `}` 却是普通字符，
+朴素深度计数会**变负**，于是把插值里的代码误判成"顶层可执行语句"（`CoreHandler.php` 差点被拒）。
+⇒ 驱动 [1] 现在既跑**活体负控**（真用 `__DIR__` 解析 require 的小程序，断言它被拒），也跑**结构不变量**
+（`^function main(): void$` 恰好一个、`^namespace {` 存在、`^namespace` 计数 = 模块数）。
+
+### 5. `tpc` 的入口脚本陷阱：静默"穿帮"比报错更贵
+
+`TPC=/work/tpc/cli.php` 时，`cli.php`（`require polyfills; include $argv[1]; main($argc,$argv);`）会把
+**我们的后端当 PHP 跑**：打出 `READY`、应答 stdin，最后死在 `undefined function main()`。
+这不是"编译失败"，是**测试对象跑错了轨道**——而且它长得像成功。修法除了把默认值改成 `bin/tpc.php`，
+更关键是给 [3] 加了"日志首行是 `READY` 就 FAIL"的守卫：**任何"看起来像编译结果"的输入先自证是编译**。
+
+### 6. 这轮真正的交付口径（写进 README 的说法）
+
+- **已闭合**：`require` 拒绝不再是 demo 上 nano 的阻碍；聚合入口是**可复现、可校验、行为等价**的
+  （16 模块、`--check` 双向、三条拒绝路径、stock PHP 下 11 个 RET 逐字节相同）。
+- **未闭合**：nano **产物依然不存在**。当时记为两个上游卡点（`php::Args::get` 无定义、runtime 集合与生成依赖不配对），
+  Phase 25 归因后是**三个**，且顺序固定：链接（`Args::get`）→ 启动（不可满足的 `"Core"`）→ 运行（nano 无 stdio 句柄）。
+  都不是我们能改的。所以"走 nano 发行"目前的准确描述是**"前端已就绪，三道上游墙未解，且第三道卡死本产品形态"**。
+- **入库**：`evidence/linux/24-*`（一次冷缓存驱动运行 + `24-closure-nm.txt` 的 nm 测量），
+  `bash test/posix/collect-tier6-evidence.sh` **逐条从入库文件重算**（`REGEN=1` 重写清单，
+  时间戳行以外必须完全一致 ⇒ 手改清单会被抓）。
+
+---
+
+## Phase 25（2026-09-27）— 上游 issue 素材：三个卡点各归其位，附带修正 Phase 24 一条推断
+
+目标只是把 #33/#34 整理成能直接提的东西。整理过程逼出三件新事实，都记在这里。
+
+### 1. `"Core"` 不是"集合挑错了"，是**结构上不可能满足**
+
+- 生成端：`Translator::resolveExtensionDependencies()` 用 `Reflection::getFunction(...)->getExtensionName()`
+  取扩展名，Zend 内建函数返回 `"Core"`；`appendExtensionDependency()`（`Translator.php:2088`）只过掉 TypePHP 自己的
+  扩展名，**原样**写进 `ZEND_MOD_REQUIRED(...)`（`Translator.php:1960`）。这条路 SAPI/bin 模式共用，那里 "Core" 确实是真模块。
+- 解析端：php-nano `find_available()`（`src/extension.cpp:29-35`）拿 `dependency->name` 与**传入数组里各项的 `->name`**
+  比 `strcmp`；`dependency_state()`（`:44-70`）对 `MODULE_DEP_REQUIRED` 找不到就 `Invalid`。
+- 关键点（这才是"能不能修"的分水岭）：唯一 `->name == "Core"` 的入口是
+  `Zend/zend_builtin_functions.c:52` 的 **`static zend_module_entry zend_builtin_module`**。
+  `static` ⇒ 别的编译单元拿不到它的地址 ⇒ **任何** `composer_extensions.cpp` 都不可能把它放进数组。
+  实测：Phase 24/25 产出的 14 份 composer 数组里 `zend_builtin_module` 出现 **0 次**。
+- 判别仍然成立的部分：`json_encode` 丢 basic_functions 却能跑（它要 `"json"`，而 `json` 在集合里）——
+  决定生死的是"生成的依赖名 ↔ 组合数组里的 `->name`"是否配对，`"Core"` 是其中**永远配不上**的那个名字。
+
+### 2. 第三个卡点：nano 二进制**没有 stdio 句柄**，这一条直接界定产品形态
+
+| 探针 | 结果 |
+|---|---|
+| `fwrite(STDOUT, …)` | `Undefined constant "STDOUT"`，`Aborted`，rc=134 |
+| `fopen("php://stdout","w")` | `Unable to find the wrapper "php" …`，返回 false |
+| `fopen("/dev/stdin"/"/dev/stdout")` | `Failed to open stream: No such file or directory`（容器里符号链接确实在） |
+| `fopen("probe.txt")` / `fopen("/dev/null")` | **同一个二进制里都正常** ⇒ 环境没坏，是 nano 缺能力 |
+
+`echo`/`print` 能出 stdout（`strlen` 探针补完 Core 后打印 `15`），但**读**没有任何可用路径。
+后端协议两半都在 stdio 上（`Backend.php:75` `fread(STDIN,…)`、`:102` `fwrite(STDOUT,$s)`、`:103 fflush`），
+所以 ①②补完也只是从"起不来"变成"起来后 0 帧"。聚合体在 stock PHP 下与多文件树逐字节同帧，
+证明的是**聚合正确性**，从来不能证明 nano 可发货——这句以后不许再混用。
+
+### 3. 归因升级的通用配方：**"补上它，看墙是否往后挪"**
+
+对每个卡点都做了同一件事，而不是读源码下结论：
+
+- 链接：把 `Args::get/toArray` 搬进**已在清单里**的 `variant.cc` ⇒ 发货后端链成 6,933,344 B、`ldd` 无 libphp。
+  顺手量到"显而易见的修法"不成立：把 `src/core/extension.cc` 直接加进 nano 清单**编不过**
+  （`ZEND_RESULT_CODE` 不成类型、`addIniEntry` 声明不匹配、`_check_args_num` 未见 ×2，rc=255）。
+- 启动：tpc 里 nano 模式跳过 `core`（4 行）⇒ `strlen` 程序 rc=1 → 打印 `15`，`phpversion()` → `8.6.0beta3`。
+- 两次实验**都在容器里留了补丁**，收尾必须还原并 `diff` 校验；本仓库的还原配方就是把 `.bak` 放 `/tmp`、
+  还原后 `diff -q` 必须无输出（composer.json 也改过，已先还原并核对 `extension.cc` 计数为 0）。
+
+### 4. 冷目录纪律的代价：一次被污染的再测量
+
+Phase 25 想给 `24-closure-nm.txt` 补"聚合体自己也声明 Core"这一行，直接在**留了实验补丁**的
+`/tmp/tpgui-tier6` 上重跑 `tier6-nm-evidence.sh`，得到 `objects=242 define=[variant-b5576ceab9f9.o]`——
+比 Phase 24 的 `240 / define=[]` 多出来的正是实验补丁的产物。**入库文件当场按备份还原**（`sha256` 回到清单记录的那份），
+污染文件在容器里改名 `closure-nm.CONTAMINATED-by-variant-patch.txt` 以免被当新产物。
+结论：`tier6-nm-evidence.sh` 顶部加了 COLD-DIR RULE；需要的"聚合体 deps"改从 `25-deps-vs-modules.txt` §1 取，
+并在收集器里新增 18c–18f 四条断言去 derive 它。**观察脚本读的是目录现状，不是"那一次运行"**——
+凡靠 leftover 目录出的证据，先问一句：这个目录后来被动过没有？
+
+## Phase 26（26a，2026-09-27）— #21 的根因不是 `bind()`：**LaunchServices 拉起的 app 在非启动卷上"创建任何新文件"都会被 TCC 挂起**
+
+Phase 21c 当时只量到"`open` 拉起的 bundle 卡在 `__bind`（sample 787/787），同二进制直跑正常"，
+于是记成"GUI 上下文对非启动卷的安全层限制，不是代码问题"。方向对，但**归因停在了错误的 syscall 上**——
+那条结论既没解释为什么直跑没事，也顺手关掉了"我们能不能绕开"这个问题。本轮用一个不含任何产品代码的判别实验重开。
+
+### 1. 判别实验：2×2，外加"第一步就写普通文件"
+
+`experiments/ls-bind-probe/probe.c` 三步、每步**先落日志再调 syscall**（日志带场景 tag，`fsync` 每行）：
+`[1]` 在 exe 同目录 `open(O_CREAT)` 一个**普通文件**；`[2]` 同目录 `bind()` AF_UNIX；`[3]` `/tmp` 里 `bind()`。
+同一份二进制放两个卷（`/tmp` = 启动卷、仓库卷 `/Volumes/data` = 外部 HFS+），各用两种方式起（shell 直跑、`open`）：
+
+| 场景 | 结果 |
+|---|---|
+| `direct-on-volume` | `[1] ok` `[2] not ok`（sun_path 113 B > 107）`[3] ok` ⇒ **卷本身完全能用** |
+| `direct-on-boot` | `[1][2][3] ok` |
+| `ls-on-boot` | `[1][2][3] ok` ⇒ LaunchServices 本身没坏 |
+| **`ls-on-volume`** | **`[1] begin` 之后没有任何后续**，两步独立复现（19:17:35、19:18:59 各一次） |
+
+**卡死发生在创建普通文件这一步**，socket 还没被碰过。所以 `__bind` 只是**产品 shim 第一次往卷上写文件的位置**，
+不是原因。附带一条独立测量：`python3` 直接向 `/Volumes/data/…/probe.sock` `bind()` 成功（`mode 0o140755`）
+⇒ HFS+ 支持 socket 文件，"外部卷不支持 AF_UNIX"这个替代解释可以排除。
+
+### 2. 内核在等什么：可中断睡眠 + `tccd` 的授权请求挂起
+
+- `sample` 81 行里 call graph 只有一条：`main → open → __open`，`Sort by top of stack` 是
+  **`__open (in libsystem_kernel.dylib) 786`**（786/786，全在第一个 syscall 上）。
+- `ps -o stat` = **`S`**（可中断睡眠）。磁盘睡觉导致的挂起会是 `U`（不可中断），TCC 等授权才是 `S`。
+- 同一时刻 `tccd` 替 `sandboxd` 发了请求，逐字（已入 `evidence/mac/26a-tcc-log.txt`）：
+  `AUTHREQ_PROMPTING: msgID=25698.106, service=kTCCServiceSystemPolicyRemovableVolumes`
+  —— 被访问方就是 `binary_path=/Volumes/data/…/ProbeLsBind.app/Contents/MacOS/ProbeLsBind`。
+  **请求是"挂起"而不是"拒绝"**，所以没有 errno、没有报错，进程就停在那儿。
+
+⇒ 修正后的 #21 说法：**macOS 对非启动卷（TCC 归类为 Removable Volumes）的写访问需要用户授权；
+由 LaunchServices 起的进程第一次往该卷创建文件时会阻塞等待授权，而我们的 shim 恰好把 `bind()` 当作第一次写。**
+读取自己的 bundle（`App.conf`、`Resources/app/*.php`）不受影响——Phase 21c 能跑到 `bind()` 本身就证明了这点。
+
+### 3. 顺带量到的第二条：仓库卷上的 bundle **连就地建 socket 都放不下**
+
+`direct-on-volume` 的 `[2] not ok` 不是权限问题：路径长 113 B，`sun_path` 上限 107 B（`sizeof addr.sun_path - 1`）。
+也就是说打包方向在深路径下**必须**回退到 `/tmp`，而今天 shim 里那条回退只以"长度"为条件
+（`shim/backend_shell.cpp:728-730`）。26a 的结论把它扩成两个条件：**长度** 与 **卷**。
+
+### 4. 诚实边界
+
+探针是 **ad-hoc 签名 + `LSUIElement`**，因此"用户会不会看到授权框"这条**没实测**（本轮不去动用户 TCC 数据库，
+也不改系统设置）。真实 app 若有正常 GUI 身份，`open` 时 macOS 可能弹框，用户点"允许"后许可持久化、下一次就正常；
+但"双击第一次静默卡死、进程停在 `__open`"本身已经是不可接受的默认体验，所以产品侧走**避开在卷上写**这条路，
+而不是要求用户去授权。另外 `log show` 在这个 shell 里必须写 `/usr/bin/log`——用户 zsh profile 有个同名函数会吞掉它
+（`too many arguments`），脚本里用 bash 跑没这个问题。
+
+### 5. 授权是**按 bundle identifier 记账**的（26b 实测，19:38–19:42 之间翻盘的那次负控）
+
+`evidence/mac/26b-macos-bundle-launch.txt` 的 [B] 段在 19:40 那次跑**连上了**（同一天早些时候同一个
+pre-fix 二进制是卡住的），产品代码一个字节没动。`/usr/bin/log show` 里两行把这件事解释清楚：
+
+- 19:38 那次：`AUTHREQ_ATTRIBUTION … responsible={identifier=prefix-shim … responsible_path=…/build/26c-ctl.app/Contents/MacOS/App …}`
+  紧跟着 `AUTHREQ_SUBJECT: subject=com.typephp.TypePHPDemo` —— 控制 bundle 继承的是**产品 id**，
+  而这个 id 的卷授权在此之前已被回答过一次（谁答的没观测到：TCC.db 要 Full Disk Access 才读得到），
+  于是 `open(O_CREAT)` 不再阻塞，窗口正常起来了。
+- 19:39 那次：从没答过的 `cn.think.bot.probe.lsbind` 照样 `AUTHREQ_PROMPTING: service=kTCCServiceSystemPolicyRemovableVolumes`
+  并停在 `[1]`（`experiments/ls-bind-probe` 重跑，`ls-on-volume begin=1 settled=0 INCOMPLETE`）。
+
+⇒ 结论：**负控不能复用产品 id**。控制 bundle 现在自带 `CTL_ID`（默认 `com.typephp.macbundle.pre26fix`），
+并且连上了只记 SKIP（附 `tccutil reset SystemPolicyRemovableVolumes <id>`）而不是 FAIL——FAIL 会去断言
+这台机器的授权表，而不是我们的代码。附带一条：`log show` 里 Privacy 设置面板那行
+`loadAuthorizationStates(for:) new entry: kTCCServiceSystemPolicyRemovableVolumes <id> full`
+**不能当"已授权"读**——`cn.think.bot.probe.lsbind` 那行也写着 `full`，而它同一分钟还在挂起。
+判"有没有被授权"只能靠行为（`open` 后卡不卡），别拿这行日志当证据。
+
+### 6. `Contents/MacOS/<App>.conf` 让 bundle 封不起来（候选 ④ 的第一块前置砖）
+
+给控制 bundle 改 `Info.plist` 后想重签，实测：
+
+```
+codesign --force --sign - TypePHP-Demo.app
+→ code object is not signed at all
+  In subcomponent: …/Contents/MacOS/App.conf
+```
+
+`Contents/MacOS/` 下**每个**条目都按嵌套代码处理，文本 conf 不是 code object ⇒ 整包签名直接拒。
+本机不受影响（bundle 本来不封，入口二进制带链接器 ad-hoc 签名就能跑，改 plist 也不需要重签，
+驱动里用 `codesign --verify --deep --strict` 的成败来分支）。但 Developer ID + 公证**必须**先把 conf
+挪到 `Resources/`（并让 shim 两处都找得到），否则 ④ 连签名的第一步都迈不出去。
+
+### 7. mac 的 Screen Recording 授权会在同一个 shell 里自己掉，且掉的表现是"单色图"不是"报错"
+
+同一台机器、同一个 shell：19:49 `screencapture -x -o -l4683` 出 182 KB 真窗口图；19:57 起
+`-l<id>` 一律 `could not create image from window`，而**不带 `-l` 的整屏抓取仍"成功"退出 0，只是产出
+1920x1080 且 `sips` 数出来正好 1 种颜色**。 ⇒ 判权限掉没掉的最小诊断是抓一张全屏再数颜色，而不是看
+`screencapture` 的退出码；驱动里 A4b 因此把"抓不到像素"记成 SKIP（附 `-R<rect>` 兜底），产品链路照常验收。
+这条决定了取证配方必须**三层**：像素 → 区域抓取 → 离线 DOM harness（`test/posix/demo-chain-harness.js`），
+否则文案类改动会被一个和代码无关的权限开关卡住。
+
+### 8. `git show HEAD:` 做负控有两种，只有一种有牙
+
+对"整个函数在 HEAD 里不存在"的改动，旧文件跑断言会以 `chainFor() not found` 失败 —— 这是**空控**：
+它断言的是"文件不同"，不是"这条断言锁住了某个事实"。一行级文案变更的正确控制是**只回退那一行**的 scratch
+副本，并要求**恰好且只有**对应那条断言 FAIL（Phase 26 实测 12 ok / 1 fail，红的是新加的 `$TMPDIR` 那条，
+Windows/Linux/unknown-os 三条 fixture 全绿）。判据：控制运行里**绿的那些**必须和被控事实正交，
+否则控制宽严未知。

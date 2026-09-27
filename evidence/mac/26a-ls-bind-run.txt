@@ -1,0 +1,109 @@
+== volumes
+   /dev/disk3s1s1 on / (apfs, sealed, local, read-only, journaled)
+   /dev/disk6s1 on /Volumes/data (hfs, local, nodev, nosuid, journaled, noowners)
+
+== building the probe
+   boot  : /tmp/ls-bind-probe-boot/ProbeLsBind.app
+   volume: /Volumes/data/git/php/typephp-tinygui/experiments/ls-bind-probe/out/vol/ProbeLsBind.app
+
+== C1 direct exec, bundle on the volume
+> 1790507921.967 direct-on-volume == direct-on-volume pid=77321 uid=501 exe_dir=/Volumes/data/git/php/typephp-tinygui/experiments/ls-bind-probe/out/vol/ProbeLsBind.app/Contents/MacOS
+> 1790507921.967 direct-on-volume [1] begin create regular file /Volumes/data/git/php/typephp-tinygui/experiments/ls-bind-probe/out/vol/ProbeLsBind.app/Contents/MacOS/probe.txt
+> 1790507921.968 direct-on-volume [1] ok wrote=2
+> 1790507921.968 direct-on-volume [2] begin bind AF_UNIX in exe_dir /Volumes/data/git/php/typephp-tinygui/experiments/ls-bind-probe/out/vol/ProbeLsBind.app/Contents/MacOS/probe.sock (sun_path used 113 B)
+> 1790507921.968 direct-on-volume path too long (113): /Volumes/data/git/php/typephp-tinygui/experiments/ls-bind-probe/out/vol/ProbeLsBind.app/Contents/MacOS/probe.sock
+> 1790507921.968 direct-on-volume [2] not ok
+> 1790507921.968 direct-on-volume [3] begin bind AF_UNIX in /tmp /tmp/ls-bind-probe-77321.sock
+> 1790507921.968 direct-on-volume [3] ok
+> 1790507921.969 direct-on-volume == direct-on-volume done
+  rc=0
+
+== C2 direct exec, bundle on the boot volume
+> 1790507922.362 direct-on-boot   == direct-on-boot pid=77322 uid=501 exe_dir=/private/tmp/ls-bind-probe-boot/ProbeLsBind.app/Contents/MacOS
+> 1790507922.363 direct-on-boot   [1] begin create regular file /private/tmp/ls-bind-probe-boot/ProbeLsBind.app/Contents/MacOS/probe.txt
+> 1790507922.363 direct-on-boot   [1] ok wrote=2
+> 1790507922.363 direct-on-boot   [2] begin bind AF_UNIX in exe_dir /private/tmp/ls-bind-probe-boot/ProbeLsBind.app/Contents/MacOS/probe.sock (sun_path used 73 B)
+> 1790507922.363 direct-on-boot   [2] ok
+> 1790507922.363 direct-on-boot   [3] begin bind AF_UNIX in /tmp /tmp/ls-bind-probe-77322.sock
+> 1790507922.363 direct-on-boot   [3] ok
+> 1790507922.364 direct-on-boot   == direct-on-boot done
+  rc=0
+
+== A `open` on the boot volume (known-good LaunchServices control)
+  NO PROCESS AND NO '== ls-on-boot done' LINE — check for a launch failure
+  rc=3
+
+== B `open` on the volume (the #21 repro)
+  HANG: pid=77840 still alive after 12s
+       PID  PPID STAT ELAPSED COMMAND
+     77840     1 S      00:17 /Volumes/data/git/php/typephp-tinygui/experiments/ls-bind-probe/out/vol/ProbeLsBind.app/Contents/MacOS/ProbeLsBind ls-on-volume
+     Identifier:      cn.think.bot.probe.lsbind
+     Version:         1.0 (0)
+     Code Type:       ARM64
+     Platform:        macOS
+  rc=2
+
+== probe log (/tmp/ls-bind-probe.log)
+   > 1790507921.967 direct-on-volume == direct-on-volume pid=77321 uid=501 exe_dir=/Volumes/data/git/php/typephp-tinygui/experiments/ls-bind-probe/out/vol/ProbeLsBind.app/Contents/MacOS
+   > 1790507921.967 direct-on-volume [1] begin create regular file /Volumes/data/git/php/typephp-tinygui/experiments/ls-bind-probe/out/vol/ProbeLsBind.app/Contents/MacOS/probe.txt
+   > 1790507921.968 direct-on-volume [1] ok wrote=2
+   > 1790507921.968 direct-on-volume [2] begin bind AF_UNIX in exe_dir /Volumes/data/git/php/typephp-tinygui/experiments/ls-bind-probe/out/vol/ProbeLsBind.app/Contents/MacOS/probe.sock (sun_path used 113 B)
+   > 1790507921.968 direct-on-volume path too long (113): /Volumes/data/git/php/typephp-tinygui/experiments/ls-bind-probe/out/vol/ProbeLsBind.app/Contents/MacOS/probe.sock
+   > 1790507921.968 direct-on-volume [2] not ok
+   > 1790507921.968 direct-on-volume [3] begin bind AF_UNIX in /tmp /tmp/ls-bind-probe-77321.sock
+   > 1790507921.968 direct-on-volume [3] ok
+   > 1790507921.969 direct-on-volume == direct-on-volume done
+   > 1790507922.362 direct-on-boot   == direct-on-boot pid=77322 uid=501 exe_dir=/private/tmp/ls-bind-probe-boot/ProbeLsBind.app/Contents/MacOS
+   > 1790507922.363 direct-on-boot   [1] begin create regular file /private/tmp/ls-bind-probe-boot/ProbeLsBind.app/Contents/MacOS/probe.txt
+   > 1790507922.363 direct-on-boot   [1] ok wrote=2
+   > 1790507922.363 direct-on-boot   [2] begin bind AF_UNIX in exe_dir /private/tmp/ls-bind-probe-boot/ProbeLsBind.app/Contents/MacOS/probe.sock (sun_path used 73 B)
+   > 1790507922.363 direct-on-boot   [2] ok
+   > 1790507922.363 direct-on-boot   [3] begin bind AF_UNIX in /tmp /tmp/ls-bind-probe-77322.sock
+   > 1790507922.363 direct-on-boot   [3] ok
+   > 1790507922.364 direct-on-boot   == direct-on-boot done
+   > 1790507922.429 ls-on-boot       == ls-on-boot pid=77325 uid=501 exe_dir=/private/tmp/ls-bind-probe-boot/ProbeLsBind.app/Contents/MacOS
+   > 1790507922.429 ls-on-boot       [1] begin create regular file /private/tmp/ls-bind-probe-boot/ProbeLsBind.app/Contents/MacOS/probe.txt
+   > 1790507922.430 ls-on-boot       [1] ok wrote=2
+   > 1790507922.430 ls-on-boot       [2] begin bind AF_UNIX in exe_dir /private/tmp/ls-bind-probe-boot/ProbeLsBind.app/Contents/MacOS/probe.sock (sun_path used 73 B)
+   > 1790507922.430 ls-on-boot       [2] ok
+   > 1790507922.430 ls-on-boot       [3] begin bind AF_UNIX in /tmp /tmp/ls-bind-probe-77325.sock
+   > 1790507922.430 ls-on-boot       [3] ok
+   > 1790507922.430 ls-on-boot       == ls-on-boot done
+   > 1790507939.113 ls-on-volume     == ls-on-volume pid=77840 uid=501 exe_dir=/Volumes/data/git/php/typephp-tinygui/experiments/ls-bind-probe/out/vol/ProbeLsBind.app/Contents/MacOS
+   > 1790507939.113 ls-on-volume     [1] begin create regular file /Volumes/data/git/php/typephp-tinygui/experiments/ls-bind-probe/out/vol/ProbeLsBind.app/Contents/MacOS/probe.txt
+
+== what the security layer said about ProbeLsBind
+   2026-09-27 19:18:41.388 Df amfid[28492:40a56b] /Volumes/data/git/php/typephp-tinygui/experiments/ls-bind-probe/out/vol/ProbeLsBind.app/Contents/MacOS/ProbeLsBind not valid: Error Domain=AppleMobileFileIntegrityError Code=-423 "The file is adhoc signed or signed by an unknown certificate chain" UserInfo={NSURL=file:///Volumes/data/git/php/typephp-tinygui/experiments/ls-bind-probe/out/vol/ProbeLsBind.app/Contents/MacOS/ProbeLsBind, NSLocalizedDescription=The file is adhoc signed or signed by an unknown certificate chain}
+   2026-09-27 19:18:41.932 Df amfid[28492:40a56b] /private/tmp/ls-bind-probe-boot/ProbeLsBind.app/Contents/MacOS/ProbeLsBind not valid: Error Domain=AppleMobileFileIntegrityError Code=-423 "The file is adhoc signed or signed by an unknown certificate chain" UserInfo={NSURL=file:///private/tmp/ls-bind-probe-boot/ProbeLsBind.app/Contents/MacOS/ProbeLsBind, NSLocalizedDescription=The file is adhoc signed or signed by an unknown certificate chain}
+   2026-09-27 19:18:42.370 Df runningboardd[711:411cc6] [com.apple.runningboard:process] Checking PreventLaunch: global:0 exPath:/private/tmp/ls-bind-probe-boot/ProbeLsBind.app/Contents/MacOS/ProbeLsBind predicates:(null) allow:(null)
+   2026-09-27 19:18:42.381 Df launchd[1:411dd8] [gui/501/application.cn.think.bot.probe.lsbind.178004030.178004040.961E2D80-292B-4DCF-8286-1BFEF2847315 [77325]:] Successfully spawned ProbeLsBind[77325] because launch job demand
+   2026-09-27 19:18:42.386 Df loginwindow[702:2219] [com.apple.loginwindow.logging:Standard] -[Application _updateInformationInternal] | Got App URL: file:///tmp/ls-bind-probe-boot/ProbeLsBind.app/
+   2026-09-27 19:18:42.386 Df loginwindow[702:2219] [com.apple.loginwindow.logging:Standard] -[Application setState:] | enter: <Application: 0xac5bdb5c0: ProbeLsBind> state 2
+   2026-09-27 19:18:42.386 Df loginwindow[702:2219] [com.apple.loginwindow.logging:Standard] -[ApplicationManager checkInAppContext:eventData:] | ApplicationManager: Checked in app : ProbeLsBind
+   2026-09-27 19:18:42.398 Df loginwindow[702:2219] [com.apple.loginwindow.logging:AppExit] -[ApplicationManager handleCASEvent:withData:] | CAS notification for appDeath for cn.think.bot.probe.lsbind with asn: LSASN:{hi=0x0;lo=0xa5ba5b} for bundle path: /tmp/ls-bind-probe-boot/ProbeLsBind.app with URL: file:///tmp/ls-bind-probe-boot/ProbeLsBind.app/
+   2026-09-27 19:18:42.398 Df loginwindow[702:2219] [com.apple.loginwindow.logging:Standard] -[Application setState:] | enter: <Application: 0xac5bdb5c0: ProbeLsBind> state 3
+   2026-09-27 19:18:42.398 Df loginwindow[702:2219] [com.apple.loginwindow.logging:TAL] -[PersistentAppsSupport applicationQuit:] | for app:ProbeLsBind, _appTrackingState = 2
+   2026-09-27 19:18:42.398 Df loginwindow[702:2219] [com.apple.loginwindow.logging:Standard] -[Application setState:] | enter: <Application: 0xac5bdb5c0: ProbeLsBind> state 4
+   2026-09-27 19:18:42.398 Df loginwindow[702:2219] [com.apple.loginwindow.logging:TAL] -[PersistentAppsSupport applicationQuit:] | for app:ProbeLsBind, _appTrackingState = 2
+   2026-09-27 19:18:59.052 Df runningboardd[711:4122e4] [com.apple.runningboard:process] Checking PreventLaunch: global:0 exPath:/Volumes/data/git/php/typephp-tinygui/experiments/ls-bind-probe/out/vol/ProbeLsBind.app/Contents/MacOS/ProbeLsBind predicates:(null) allow:(null)
+   2026-09-27 19:18:59.064 Df launchd[1:4122e7] [gui/501/application.cn.think.bot.probe.lsbind.43970749.43970756.546717EA-80AE-42F2-9D11-CBB36F7A6D73 [77840]:] Successfully spawned ProbeLsBind[77840] because launch job demand
+   2026-09-27 19:18:59.069 Df loginwindow[702:2219] [com.apple.loginwindow.logging:Standard] -[Application _updateInformationInternal] | Got App URL: file:///Volumes/data/git/php/typephp-tinygui/experiments/ls-bind-probe/out/vol/ProbeLsBind.app/
+   2026-09-27 19:18:59.072 Df loginwindow[702:2219] [com.apple.loginwindow.logging:Standard] -[Application setState:] | enter: <Application: 0xac5bdb5c0: ProbeLsBind> state 2
+   2026-09-27 19:18:59.072 Df loginwindow[702:2219] [com.apple.loginwindow.logging:Standard] -[ApplicationManager checkInAppContext:eventData:] | ApplicationManager: Checked in app : ProbeLsBind
+   2026-09-27 19:18:59.074 Df tccd[20274:411452] [com.apple.TCC:access] AUTHREQ_ATTRIBUTION: msgID=25698.107, attribution={accessing={TCCDProcess: identifier=cn.think.bot.probe.lsbind, pid=77840, auid=501, euid=501, binary_path=/Volumes/data/git/php/typephp-tinygui/experiments/ls-bind-probe/out/vol/ProbeLsBind.app/Contents/MacOS/ProbeLsBind}, requesting={TCCDProcess: identifier=com.apple.sandboxd, pid=25698, auid=0, euid=0, binary_path=/usr/libexec/sandboxd}, },
+   2026-09-27 19:18:59.081 Df tccd[20274:411452] [com.apple.TCC:access] -[TCCDAccessIdentity staticCode]: static code for: identifier cn.think.bot.probe.lsbind, type: 0: 0x884d58300 at /Volumes/data/git/php/typephp-tinygui/experiments/ls-bind-probe/out/vol/ProbeLsBind.app
+   2026-09-27 19:19:17.054 Df loginwindow[702:2219] [com.apple.loginwindow.logging:AppExit] -[ApplicationManager handleCASEvent:withData:] | CAS notification for appDeath for cn.think.bot.probe.lsbind with asn: LSASN:{hi=0x0;lo=0xa5ca5c} for bundle path: /Volumes/data/git/php/typephp-tinygui/experiments/ls-bind-probe/out/vol/ProbeLsBind.app with URL: file:///Volumes/data/git/php/typephp-tinygui/experiments/ls-bind-probe/out/vol/ProbeLsBind.app/
+   2026-09-27 19:19:17.054 Df loginwindow[702:2219] [com.apple.loginwindow.logging:Standard] -[Application setState:] | enter: <Application: 0xac5bdb5c0: ProbeLsBind> state 3
+   2026-09-27 19:19:17.054 Df loginwindow[702:2219] [com.apple.loginwindow.logging:TAL] -[PersistentAppsSupport applicationQuit:] | for app:ProbeLsBind, _appTrackingState = 2
+   2026-09-27 19:19:17.054 Df loginwindow[702:2219] [com.apple.loginwindow.logging:Standard] -[Application setState:] | enter: <Application: 0xac5bdb5c0: ProbeLsBind> state 4
+   2026-09-27 19:19:17.054 Df loginwindow[702:2219] [com.apple.loginwindow.logging:TAL] -[PersistentAppsSupport applicationQuit:] | for app:ProbeLsBind, _appTrackingState = 2
+   2026-09-27 19:19:17.057 Df log[78598:412a88] [com.apple.log:] log run noninteractively, parent: 77297 (bash), args: 'log' 'show' '--style' 'compact' '--last' '3m' '--predicate' 'process == "ProbeLsBind" OR (subsystem == "com.apple.TCC" AND eventMessage CONTAINS[c] "ProbeLsBind") OR (eventMessage CONTAINS[c] "ProbeLs
+   (empty above = the unified log holds nothing about the probe)
+
+== verdict
+   steps: [1] regular file in exe_dir   [2] AF_UNIX bind in exe_dir   [3] AF_UNIX bind in /tmp
+   direct-on-volume begin=3 settled=3 COMPLETE  [1] ok [2] not ok [3] ok 
+   direct-on-boot   begin=3 settled=3 COMPLETE  [1] ok [2] ok [3] ok 
+   ls-on-boot       begin=3 settled=3 COMPLETE  [1] ok [2] ok [3] ok 
+   ls-on-volume     begin=1 settled=0 INCOMPLETE <no step settled>
+                    stuck at: > 1790507939.113 ls-on-volume     [1] begin create regular file /Volumes/data/git/php/typephp-tinygui/experiments/ls-bind-probe/out/vol/ProbeLsBind.app/Contents/MacOS/probe.txt

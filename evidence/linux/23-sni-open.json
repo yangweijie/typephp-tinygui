@@ -1,0 +1,102 @@
+{
+ "watcher": "org.kde.StatusNotifierWatcher",
+ "rc": 0,
+ "items": [
+  {
+   "service": "/org/ayatana/NotificationItem/tinyjs_app",
+   "bus": ":1.17",
+   "path": "/org/ayatana/NotificationItem/tinyjs_app",
+   "props": {
+    "Id": "tinyjs-app",
+    "Category": "ApplicationStatus",
+    "Status": "Active",
+    "IconName": "icon",
+    "Title": "TypePHP Desktop-Tray",
+    "Menu": "/org/ayatana/NotificationItem/tinyjs_app/Menu",
+    "ItemIsMenu": false,
+    "IconPixmap": {
+     "width": 0,
+     "height": 0,
+     "pixels": 0
+    }
+   },
+   "dbusmenu": {
+    "revision": 2,
+    "items": [
+     {
+      "id": 0,
+      "label": "",
+      "type": "",
+      "enabled": true
+     },
+     {
+      "id": 2,
+      "label": "desktop-tray",
+      "type": "",
+      "enabled": true
+     },
+     {
+      "id": 3,
+      "label": "",
+      "type": "separator",
+      "enabled": true
+     },
+     {
+      "id": 4,
+      "label": "Say hello",
+      "type": "",
+      "enabled": true
+     },
+     {
+      "id": 5,
+      "label": "Write a note",
+      "type": "",
+      "enabled": true
+     }
+    ]
+   },
+   "click_sent": {
+    "id": 2,
+    "label": "desktop-tray",
+    "type": "",
+    "enabled": true
+   }
+  }
+ ],
+ "menus": [
+  [
+   {
+    "id": 0,
+    "label": "",
+    "type": "",
+    "enabled": true
+   },
+   {
+    "id": 2,
+    "label": "desktop-tray",
+    "type": "",
+    "enabled": true
+   },
+   {
+    "id": 3,
+    "label": "",
+    "type": "separator",
+    "enabled": true
+   },
+   {
+    "id": 4,
+    "label": "Say hello",
+    "type": "",
+    "enabled": true
+   },
+   {
+    "id": 5,
+    "label": "Write a note",
+    "type": "",
+    "enabled": true
+   }
+  ]
+ ],
+ "unregistered": [],
+ "finished": true
+}

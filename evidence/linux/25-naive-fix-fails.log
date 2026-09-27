@@ -1,0 +1,289 @@
+Initialized platform/backend: Linux + GCC (g++)
+prepare: build/backend_aggregated.php
+prepare completed: 1 source files in total
+convert: build/backend_aggregated.php
+generate arginfo file: build/backend_aggregated.php
+Starting parallel compilation with 4 jobs for 241 files
+[1/241] 1% work/tpc/vendor/swoole/php-nano/ext/pcre/pcre2lib/pcre2_jit_compile.c
+[2/241] 1% work/tpc/vendor/swoole/php-nano/ext/pcre/pcre2lib/pcre2_ucd.c
+[3/241] 2% work/tpc/vendor/swoole/php-nano/ext/pcre/pcre2lib/pcre2_compile.c
+[4/241] 2% nano-entry-app_exttest.cc
+[5/241] 3% work/tpc/vendor/swoole/php-nano/ext/pcre/pcre2lib/pcre2_match.c
+[6/241] 3% work/tpc/vendor/swoole/php-nano/ext/date/lib/parse_date.c
+[7/241] 3% work/tpc/vendor/swoole/php-nano/ext/reflection/php_reflection.c
+[8/241] 4% work/tpc/vendor/swoole/phpx/src/std/datetime.cc
+[9/241] 4% work/tpc/vendor/swoole/php-nano/Zend/zend_frameless_function.c
+[10/241] 5% work/tpc/vendor/swoole/php-nano/Zend/zend_execute.c
+[11/241] 5% work/tpc/vendor/swoole/php-nano/ext/standard/array.c
+[12/241] 5% work/tpc/vendor/swoole/phpx/src/typephp/typephp_main_nano.cc
+[13/241] 6% composer_extensions.cpp
+[14/241] 6% work/tpc/vendor/swoole/php-nano/Zend/zend_API.c
+[15/241] 7% work/tpc/vendor/swoole/php-nano/ext/date/php_date.c
+[16/241] 7% work/repo/build/backend_aggregated.cc
+[17/241] 8% work/tpc/vendor/swoole/phpx/src/core/scope.cc
+[18/241] 8% work/tpc/vendor/swoole/php-nano/Zend/zend_inheritance.c
+[19/241] 8% work/tpc/vendor/swoole/php-nano/ext/pcre/pcre2lib/pcre2_dfa_match.c
+[20/241] 9% work/tpc/vendor/swoole/php-nano/src/bcmath.c
+[21/241] 9% work/tpc/vendor/swoole/php-nano/ext/standard/string.c
+[22/241] 10% work/tpc/vendor/swoole/php-nano/Zend/zend_alloc.c
+[23/241] 10% work/tpc/vendor/swoole/php-nano/Zend/zend_operators.c
+[24/241] 10% work/tpc/vendor/swoole/php-nano/Zend/zend_strtod.c
+[25/241] 11% work/tpc/vendor/swoole/php-nano/ext/spl/spl_iterators.c
+[26/241] 11% work/tpc/vendor/swoole/phpx/src/std/math.cc
+[27/241] 12% work/tpc/vendor/swoole/php-nano/ext/pcre/php_pcre.c
+[28/241] 12% work/tpc/vendor/swoole/php-nano/ext/spl/spl_functions.c
+[29/241] 13% work/tpc/vendor/swoole/php-nano/Zend/zend_object_handlers.c
+[30/241] 13% work/tpc/vendor/swoole/php-nano/Zend/zend_hash.c
+[31/241] 13% work/tpc/vendor/swoole/php-nano/ext/bcmath/libbcmath/src/neg.c
+[32/241] 14% work/tpc/vendor/swoole/php-nano/ext/standard/basic_functions.c
+[33/241] 14% work/tpc/vendor/swoole/php-nano/main/streams/streams.c
+[34/241] 15% work/tpc/vendor/swoole/php-nano/Zend/zend.c
+[35/241] 15% work/tpc/vendor/swoole/php-nano/Zend/zend_gc.c
+[36/241] 15% work/tpc/vendor/swoole/php-nano/Zend/zend_builtin_functions.c
+[37/241] 16% work/tpc/vendor/swoole/php-nano/ext/pcre/pcre2lib/pcre2_study.c
+[38/241] 16% work/tpc/vendor/swoole/phpx/src/std/fs.cc
+[39/241] 17% work/tpc/vendor/swoole/php-nano/Zend/zend_execute_API.c
+[40/241] 17% work/tpc/vendor/swoole/php-nano/ext/standard/file.c
+[41/241] 18% work/tpc/vendor/swoole/php-nano/ext/spl/spl_array.c
+[42/241] 18% work/tpc/vendor/swoole/php-nano/ext/filter/callback_filter.c
+[43/241] 18% work/tpc/vendor/swoole/php-nano/ext/json/json_parser.tab.c
+[44/241] 19% work/tpc/vendor/swoole/php-nano/ext/hash/hash.c
+[45/241] 19% work/tpc/vendor/swoole/php-nano/main/safe_bcmp.c
+[46/241] 20% work/tpc/vendor/swoole/php-nano/main/output.c
+[47/241] 20% work/tpc/vendor/swoole/php-nano/ext/standard/streamsfuncs.c
+[48/241] 20% work/tpc/vendor/swoole/php-nano/ext/standard/var.c
+[49/241] 21% work/tpc/vendor/swoole/php-nano/ext/standard/var_unserializer.c
+[50/241] 21% work/tpc/vendor/swoole/php-nano/ext/standard/html.c
+[51/241] 22% work/tpc/vendor/swoole/php-nano/main/streams/plain_wrapper.c
+[52/241] 22% work/tpc/vendor/swoole/phpx/src/core/type_check.cc
+[53/241] 22% work/tpc/vendor/swoole/php-nano/ext/spl/spl_observer.c
+[54/241] 23% work/tpc/vendor/swoole/php-nano/ext/random/engine_secure.c
+[55/241] 23% work/tpc/vendor/swoole/php-nano/Zend/zend_virtual_cwd.c
+[56/241] 24% work/tpc/vendor/swoole/php-nano/main/explicit_bzero.c
+[57/241] 24% work/tpc/vendor/swoole/php-nano/ext/standard/info.c
+[58/241] 25% work/tpc/vendor/swoole/php-nano/ext/bcmath/libbcmath/src/long2num.c
+[59/241] 25% work/tpc/vendor/swoole/phpx/src/core/base.cc
+[60/241] 25% work/tpc/vendor/swoole/phpx/src/core/variant.cc
+[61/241] 26% work/tpc/vendor/swoole/php-nano/ext/standard/base64.c
+[62/241] 26% work/tpc/vendor/swoole/php-nano/Zend/zend_float.c
+[63/241] 27% work/tpc/vendor/swoole/php-nano/ext/pcre/pcre2lib/pcre2_auto_possess.c
+[64/241] 27% work/tpc/vendor/swoole/php-nano/Zend/zend_opcode.c
+[65/241] 27% work/tpc/vendor/swoole/php-nano/ext/bcmath/libbcmath/src/zero.c
+[66/241] 28% work/tpc/vendor/swoole/php-nano/ext/json/json_scanner.c
+[67/241] 28% work/tpc/vendor/swoole/php-nano/ext/spl/spl_heap.c
+[68/241] 29% work/tpc/vendor/swoole/php-nano/Zend/zend_default_classes.c
+[69/241] 29% work/tpc/vendor/swoole/php-nano/Zend/zend_exceptions.c
+[70/241] 30% work/tpc/vendor/swoole/php-nano/Zend/zend_closures.c
+[71/241] 30% work/tpc/vendor/swoole/php-nano/ext/bcmath/libbcmath/src/nearzero.c
+[72/241] 30% work/tpc/vendor/swoole/php-nano/ext/standard/math.c
+[73/241] 31% work/tpc/vendor/swoole/php-nano/ext/pcre/pcre2lib/pcre2_convert.c
+[74/241] 31% work/tpc/vendor/swoole/php-nano/main/streams/mmap.c
+[75/241] 32% work/tpc/vendor/swoole/php-nano/ext/filter/logical_filters.c
+[76/241] 32% work/tpc/vendor/swoole/php-nano/ext/pcre/pcre2lib/pcre2_substitute.c
+[77/241] 32% work/tpc/vendor/swoole/php-nano/ext/spl/spl_dllist.c
+[78/241] 33% work/tpc/vendor/swoole/php-nano/ext/bcmath/libbcmath/src/rmzero.c
+[79/241] 33% work/tpc/vendor/swoole/php-nano/main/php_glob.c
+[80/241] 34% work/tpc/vendor/swoole/phpx/src/typephp/typephp_property.cc
+[81/241] 34% work/tpc/vendor/swoole/php-nano/ext/standard/filestat.c
+[82/241] 35% work/tpc/vendor/swoole/php-nano/ext/standard/scanf.c
+[83/241] 35% work/tpc/vendor/swoole/php-nano/main/snprintf.c
+[84/241] 35% work/tpc/vendor/swoole/php-nano/Zend/zend_ini.c
+[85/241] 36% work/tpc/vendor/swoole/php-nano/src/random.cpp
+[86/241] 36% work/tpc/vendor/swoole/php-nano/ext/spl/spl_fixedarray.c
+[87/241] 37% work/tpc/vendor/swoole/php-nano/ext/hash/hash_sha.c
+[88/241] 37% work/tpc/vendor/swoole/php-nano/Zend/zend_weakrefs.c
+[89/241] 37% work/tpc/vendor/swoole/php-nano/ext/bcmath/libbcmath/src/int2num.c
+[90/241] 38% work/tpc/vendor/swoole/php-nano/Zend/zend_lazy_objects.c
+[91/241] 38% work/tpc/vendor/swoole/php-nano/main/php_ini.c
+[92/241] 39% work/tpc/vendor/swoole/php-nano/ext/bcmath/libbcmath/src/floor_or_ceil.c
+[93/241] 39% work/tpc/vendor/swoole/php-nano/ext/hash/hash_ripemd.c
+[94/241] 40% work/tpc/vendor/swoole/php-nano/ext/random/random.c
+[95/241] 40% work/tpc/vendor/swoole/php-nano/ext/bcmath/libbcmath/src/num2long.c
+[96/241] 40% work/tpc/vendor/swoole/php-nano/ext/date/lib/parse_tz.c
+[97/241] 41% work/tpc/vendor/swoole/php-nano/main/streams/stream_errors.c
+[98/241] 41% work/tpc/vendor/swoole/php-nano/ext/bcmath/libbcmath/src/add.c
+[99/241] 42% work/tpc/vendor/swoole/php-nano/Zend/zend_enum.c
+[100/241] 42% work/tpc/vendor/swoole/php-nano/ext/date/lib/parse_iso_intervals.c
+[101/241] 42% work/tpc/vendor/swoole/php-nano/ext/bcmath/libbcmath/src/sub.c
+[102/241] 43% work/tpc/vendor/swoole/php-nano/ext/filter/filter.c
+[103/241] 43% work/tpc/vendor/swoole/php-nano/main/fopen_wrappers.c
+[104/241] 44% work/tpc/vendor/swoole/php-nano/ext/standard/formatted_print.c
+[105/241] 44% work/tpc/vendor/swoole/php-nano/ext/bcmath/libbcmath/src/num2str.c
+[106/241] 44% work/tpc/vendor/swoole/php-nano/ext/hash/murmur/PMurHash128.c
+[107/241] 45% work/tpc/vendor/swoole/php-nano/Zend/zend_interfaces.c
+[108/241] 45% work/tpc/vendor/swoole/php-nano/main/streams/memory.c
+[109/241] 46% work/tpc/vendor/swoole/php-nano/ext/random/engine_user.c
+[110/241] 46% work/tpc/vendor/swoole/php-nano/main/spprintf.c
+[111/241] 47% work/tpc/vendor/swoole/php-nano/ext/spl/php_spl.c
+[112/241] 47% work/tpc/vendor/swoole/php-nano/ext/standard/url.c
+[113/241] 47% work/tpc/vendor/swoole/php-nano/ext/hash/hash_adler32.c
+[114/241] 48% work/tpc/vendor/swoole/php-nano/ext/hash/hash_haval.c
+[115/241] 48% work/tpc/vendor/swoole/php-nano/ext/hash/hash_joaat.c
+[116/241] 49% work/tpc/vendor/swoole/php-nano/ext/json/json_encoder.c
+[117/241] 49% work/tpc/vendor/swoole/php-nano/ext/pcre/pcre2lib/pcre2_substring.c
+[118/241] 49% work/tpc/vendor/swoole/php-nano/Zend/zend_hrtime.c
+[119/241] 50% work/tpc/vendor/swoole/phpx/src/core/big_int_nano.cc
+[120/241] 50% work/tpc/vendor/swoole/php-nano/src/zend_compile_runtime.c
+[121/241] 51% work/tpc/vendor/swoole/phpx/src/typephp/typephp_attribute.cc
+[122/241] 51% extension-app_exttest.cc
+[123/241] 52% work/tpc/vendor/swoole/phpx/src/std/hash.cc
+[124/241] 52% work/tpc/vendor/swoole/php-nano/Zend/zend_string.c
+[125/241] 52% work/tpc/vendor/swoole/php-nano/Zend/zend_attributes.c
+[126/241] 53% work/tpc/vendor/swoole/php-nano/Zend/zend_observer.c
+[127/241] 53% work/tpc/vendor/swoole/php-nano/ext/bcmath/libbcmath/src/div.c
+[128/241] 54% work/tpc/vendor/swoole/php-nano/ext/random/zend_utils.c
+[129/241] 54% work/tpc/vendor/swoole/php-nano/Zend/zend_constants.c
+[130/241] 54% work/tpc/vendor/swoole/php-nano/ext/date/php_time.c
+[131/241] 55% work/tpc/vendor/swoole/php-nano/main/streams/filter.c
+[132/241] 55% work/tpc/vendor/swoole/php-nano/ext/bcmath/libbcmath/src/divmod.c
+[133/241] 56% work/tpc/vendor/swoole/php-nano/ext/hash/hash_whirlpool.c
+[134/241] 56% work/tpc/vendor/swoole/php-nano/ext/pcre/pcre2lib/pcre2_context.c
+[135/241] 57% work/tpc/vendor/swoole/php-nano/ext/standard/css.c
+[136/241] 57% work/tpc/vendor/swoole/php-nano/ext/standard/dir.c
+[137/241] 57% work/tpc/vendor/swoole/phpx/src/core/closure.cc
+[138/241] 58% work/tpc/vendor/swoole/phpx/src/core/array.cc
+[139/241] 58% work/tpc/vendor/swoole/php-nano/main/php_scandir.c
+[140/241] 59% work/tpc/vendor/swoole/php-nano/ext/date/lib/tm2unixtime.c
+[141/241] 59% work/tpc/vendor/swoole/php-nano/ext/bcmath/libbcmath/src/raisemod.c
+[142/241] 59% work/tpc/vendor/swoole/php-nano/ext/random/randomizer.c
+[143/241] 60% work/tpc/vendor/swoole/php-nano/Zend/zend_atomic.c
+[144/241] 60% work/tpc/vendor/swoole/php-nano/main/streams/transports.c
+[145/241] 61% work/tpc/vendor/swoole/phpx/src/typephp/typephp_nano.cc
+[146/241] 61% work/tpc/vendor/swoole/php-nano/Zend/zend_extensions.c
+[147/241] 61% work/tpc/vendor/swoole/php-nano/Zend/zend_ptr_stack.c
+[148/241] 62% work/tpc/vendor/swoole/php-nano/ext/spl/spl_exceptions.c
+[149/241] 62% work/tpc/vendor/swoole/phpx/src/typephp/typephp_call.cc
+[150/241] 63% work/tpc/vendor/swoole/php-nano/ext/pcre/pcre2lib/pcre2_error.c
+[151/241] 63% work/tpc/vendor/swoole/phpx/src/std/core.cc
+[152/241] 64% work/tpc/vendor/swoole/phpx/src/std/array.cc
+[153/241] 64% work/tpc/vendor/swoole/phpx/src/core/debug.cc
+[154/241] 64% work/tpc/vendor/swoole/php-nano/ext/date/lib/parse_posix.c
+[155/241] 65% work/tpc/vendor/swoole/php-nano/Zend/zend_property_hooks.c
+[156/241] 65% work/tpc/vendor/swoole/php-nano/ext/pcre/pcre2lib/pcre2_valid_utf.c
+[157/241] 66% work/tpc/vendor/swoole/phpx/thirdparty/wren-gc/src/wren_gc.c
+[158/241] 66% work/tpc/vendor/swoole/php-nano/main/strlcpy.c
+[159/241] 66% work/tpc/vendor/swoole/php-nano/ext/random/engine_mt19937.c
+[160/241] 67% work/tpc/vendor/swoole/php-nano/ext/pcre/pcre2lib/pcre2_chkdint.c
+[161/241] 67% work/tpc/vendor/swoole/php-nano/Zend/zend_iterators.c
+/work/tpc/vendor/swoole/phpx/src/core/extension.cc: In member function 'void php::Extension::require(const char*, const char*)':
+/work/tpc/vendor/swoole/phpx/src/core/extension.cc:39:22: warning: comparison of integer expressions of different signedness: 'std::vector<_zend_module_dep>::size_type' {aka 'long unsigned int'} and 'int' [-Wsign-compare]
+   39 |     if (deps_.size() < deps_count + 2) {
+      |         ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~
+/work/tpc/vendor/swoole/phpx/src/core/extension.cc: In member function 'void php::Extension::registerIniEntries(int)':
+/work/tpc/vendor/swoole/phpx/src/core/extension.cc:126:24: warning: comparison of integer expressions of different signedness: 'int' and 'std::vector<php::Extension::IniEntry>::size_type' {aka 'long unsigned int'} [-Wsign-compare]
+  126 |     for (auto i = 0; i < ini_entries.size(); ++i) {
+      |                      ~~^~~~~~~~~~~~~~~~~~~~
+/work/tpc/vendor/swoole/phpx/src/core/extension.cc: At global scope:
+/work/tpc/vendor/swoole/phpx/src/core/extension.cc:162:6: error: no declaration matches 'void php::Extension::addIniEntry(const char*, const char*, int)'
+  162 | void Extension::addIniEntry(const char *name, const char *default_value, int modifiable) {
+      |      ^~~~~~~~~
+/work/tpc/vendor/swoole/phpx/src/core/extension.cc:162:6: note: no functions named 'void php::Extension::addIniEntry(const char*, const char*, int)'
+In file included from /work/tpc/vendor/swoole/phpx/src/core/extension.cc:17:
+/work/tpc/vendor/swoole/phpx/include/phpx_ext.h:205:7: note: 'class php::Extension' defined here
+  205 | class Extension {
+      |       ^~~~~~~~~
+/work/tpc/vendor/swoole/phpx/src/core/extension.cc:296:8: error: 'ZEND_RESULT_CODE' does not name a type; did you mean 'ZEND_CALL_CODE'?
+  296 | static ZEND_RESULT_CODE _check_args_num(const zend_execute_data *data, const int num_args) {
+      |        ^~~~~~~~~~~~~~~~
+      |        ZEND_CALL_CODE
+/work/tpc/vendor/swoole/phpx/src/core/extension.cc: In function 'void php::_exec_function(zend_execute_data*, zval*)':
+/work/tpc/vendor/swoole/phpx/src/core/extension.cc:348:9: error: '_check_args_num' was not declared in this scope
+  348 |     if (_check_args_num(data, arg_count) == FAILURE) {
+      |         ^~~~~~~~~~~~~~~
+/work/tpc/vendor/swoole/phpx/src/core/extension.cc: In function 'void php::_exec_method(zend_execute_data*, zval*)':
+/work/tpc/vendor/swoole/phpx/src/core/extension.cc:393:9: error: '_check_args_num' was not declared in this scope
+  393 |     if (_check_args_num(data, arg_count) == FAILURE) {
+      |         ^~~~~~~~~~~~~~~
+Compilation failed: /work/tpc/vendor/swoole/phpx/src/core/extension.cc (exit status 1)
+g++ -c '/work/tpc/vendor/swoole/phpx/src/core/extension.cc' -o '/tmp/tpgui-tier6/nb-exttest/cache/objects/nano/extension-16790f2840ab.o' -I'/work/tpc/vendor/swoole/php-nano' -I'/work/tpc/vendor/swoole/php-nano/Zend' -I'/work/tpc/vendor/swoole/php-nano/include' -I'/work/tpc/vendor/swoole/php-nano/main' -I'/work/tpc/vendor/swoole/php-nano/TSRM' -I'/work/tpc/vendor/swoole/php-nano/ext/date/lib' -I'/work/tpc/vendor/swoole/php-nano/ext/pcre/pcre2lib' -I'/work/tpc/vendor/swoole/phpx/include' -I'/work/tpc/vendor/swoole/phpx/thirdparty/wren-gc/include' -I'/tmp/tpgui-tier6/nb-exttest/include' -O0 -Wall -std=c++17 -ffunction-sections -fdata-sections -DTYPEPHP_NATIVE=1 -DPHP_NANO=1 -DPHPX_NANO=1 -D_POSIX_C_SOURCE=200809L -DPHP_NANO_STANDARD_CORE=1 -DPHP_NANO_STANDARD_ARRAY=1 -DPHP_NANO_STANDARD_STRING=1 -DPHP_NANO_STANDARD_FILESYSTEM=1 -DPHP_NANO_STANDARD_MATH=1 -DPHP_NANO_STANDARD_HASH=1 -DPHP_NANO_STANDARD_ENCODING=1 -DPHP_NANO_STANDARD_FORMAT=1 -DPHP_NANO_STANDARD_VAR=1 -DPHP_NANO_STANDARD_INFO=1 -DPHP_NANO_STANDARD_TYPE=1 -DPHP_NANO_STANDARD_MISC=1 -DPHP_NANO_SELECTIVE=1
+[162/241] 68% work/tpc/vendor/swoole/phpx/src/core/extension.cc
+[163/241] 68% work/tpc/vendor/swoole/php-nano/src/core.cpp
+[164/241] 69% work/tpc/vendor/swoole/php-nano/ext/bcmath/libbcmath/src/init.c
+[165/241] 69% work/tpc/vendor/swoole/php-nano/ext/pcre/pcre2lib/pcre2_script_run.c
+[166/241] 69% work/tpc/vendor/swoole/phpx/src/core/foreach_iterator.cc
+[167/241] 70% work/tpc/vendor/swoole/php-nano/main/streams/cast.c
+[168/241] 70% work/tpc/vendor/swoole/php-nano/ext/bcmath/libbcmath/src/sqrt.c
+[169/241] 71% work/tpc/vendor/swoole/php-nano/ext/pcre/pcre2lib/pcre2_pattern_info.c
+[170/241] 71% work/tpc/vendor/swoole/php-nano/ext/pcre/pcre2lib/pcre2_ord2utf.c
+[171/241] 71% work/tpc/vendor/swoole/php-nano/ext/hash/hash_gost.c
+[172/241] 72% work/tpc/vendor/swoole/php-nano/Zend/zend_stack.c
+[173/241] 72% work/tpc/vendor/swoole/php-nano/ext/date/time_duration.c
+[174/241] 73% work/tpc/vendor/swoole/php-nano/ext/date/lib/astro.c
+[175/241] 73% work/tpc/vendor/swoole/php-nano/ext/standard/strnatcmp.c
+[176/241] 74% work/tpc/vendor/swoole/php-nano/ext/date/lib/interval.c
+[177/241] 74% work/tpc/vendor/swoole/phpx/src/core/decimal_nano.cc
+[178/241] 74% work/tpc/vendor/swoole/php-nano/ext/hash/hash_crc32.c
+[179/241] 75% work/tpc/vendor/swoole/php-nano/ext/standard/type.c
+[180/241] 75% work/tpc/vendor/swoole/php-nano/Zend/zend_objects.c
+[181/241] 76% work/tpc/vendor/swoole/php-nano/ext/random/gammasection.c
+[182/241] 76% work/tpc/vendor/swoole/php-nano/ext/standard/sha1.c
+[183/241] 76% work/tpc/vendor/swoole/php-nano/main/php_open_temporary_file.c
+[184/241] 77% work/tpc/vendor/swoole/php-nano/ext/bcmath/libbcmath/src/compare.c
+[185/241] 77% work/tpc/vendor/swoole/php-nano/ext/date/lib/timelib.c
+[186/241] 78% work/tpc/vendor/swoole/phpx/src/core/native_gc.cc
+[187/241] 78% work/tpc/vendor/swoole/php-nano/ext/date/lib/duration.c
+[188/241] 79% work/tpc/vendor/swoole/php-nano/ext/standard/incomplete_class.c
+[189/241] 79% work/tpc/vendor/swoole/php-nano/ext/hash/hash_md.c
+[190/241] 79% work/tpc/vendor/swoole/php-nano/ext/json/json.c
+[191/241] 80% work/tpc/vendor/swoole/php-nano/ext/standard/md5.c
+[192/241] 80% work/tpc/vendor/swoole/php-nano/ext/pcre/pcre2lib/pcre2_serialize.c
+[193/241] 81% work/tpc/vendor/swoole/php-nano/ext/hash/hash_sha3.c
+[194/241] 81% work/tpc/vendor/swoole/php-nano/ext/pcre/pcre2lib/pcre2_tables.c
+[195/241] 81% work/tpc/vendor/swoole/php-nano/Zend/zend_list.c
+[196/241] 82% work/tpc/vendor/swoole/php-nano/ext/filter/sanitizing_filters.c
+[197/241] 82% work/tpc/vendor/swoole/php-nano/ext/pcre/pcre2lib/pcre2_xclass.c
+[198/241] 83% work/tpc/vendor/swoole/phpx/src/core/class.cc
+[199/241] 83% work/tpc/vendor/swoole/phpx/src/std/string.cc
+[200/241] 83% work/tpc/vendor/swoole/php-nano/ext/bcmath/libbcmath/src/convert.c
+[201/241] 84% work/tpc/vendor/swoole/php-nano/Zend/zend_sort.c
+[202/241] 84% work/tpc/vendor/swoole/phpx/src/core/object.cc
+[203/241] 85% work/tpc/vendor/swoole/php-nano/Zend/zend_variables.c
+[204/241] 85% work/tpc/vendor/swoole/php-nano/ext/pcre/pcre2lib/pcre2_extuni.c
+[205/241] 86% work/tpc/vendor/swoole/phpx/src/typephp/typephp_trait.cc
+[206/241] 86% work/tpc/vendor/swoole/php-nano/ext/bcmath/libbcmath/src/doaddsub.c
+[207/241] 86% work/tpc/vendor/swoole/php-nano/ext/hash/hash_xxhash.c
+[208/241] 87% work/tpc/vendor/swoole/php-nano/ext/random/csprng.c
+[209/241] 87% work/tpc/vendor/swoole/php-nano/ext/bcmath/libbcmath/src/raise.c
+[210/241] 88% work/tpc/vendor/swoole/php-nano/ext/hash/hash_murmur.c
+[211/241] 88% work/tpc/vendor/swoole/php-nano/ext/pcre/pcre2lib/pcre2_config.c
+[212/241] 88% work/tpc/vendor/swoole/php-nano/ext/pcre/pcre2lib/pcre2_chartables.c
+[213/241] 89% work/tpc/vendor/swoole/php-nano/ext/hash/hash_tiger.c
+[214/241] 89% work/tpc/vendor/swoole/phpx/src/std/misc.cc
+[215/241] 90% work/tpc/vendor/swoole/php-nano/Zend/zend_smart_str.c
+[216/241] 90% work/tpc/vendor/swoole/php-nano/ext/standard/credits.c
+[217/241] 91% work/tpc/vendor/swoole/php-nano/src/time.cpp
+[218/241] 91% work/tpc/vendor/swoole/php-nano/main/streams/glob_wrapper.c
+[219/241] 91% work/tpc/vendor/swoole/phpx/src/core/big_float_nano.cc
+[220/241] 92% work/tpc/vendor/swoole/php-nano/ext/hash/murmur/PMurHash.c
+[221/241] 92% work/tpc/vendor/swoole/php-nano/Zend/zend_multibyte.c
+[222/241] 93% work/tpc/vendor/swoole/php-nano/ext/random/engine_xoshiro256starstar.c
+[223/241] 93% work/tpc/vendor/swoole/php-nano/ext/pcre/pcre2lib/pcre2_find_bracket.c
+[224/241] 93% work/tpc/vendor/swoole/php-nano/Zend/zend_objects_API.c
+[225/241] 94% work/tpc/vendor/swoole/php-nano/main/reentrancy.c
+[226/241] 94% work/tpc/vendor/swoole/php-nano/ext/date/lib/unixtime2tm.c
+[227/241] 95% work/tpc/vendor/swoole/php-nano/Zend/zend_llist.c
+[228/241] 95% work/tpc/vendor/swoole/phpx/src/core/string.cc
+[229/241] 96% work/tpc/vendor/swoole/php-nano/ext/bcmath/libbcmath/src/recmul.c
+[230/241] 96% work/tpc/vendor/swoole/php-nano/ext/pcre/pcre2lib/pcre2_maketables.c
+[231/241] 96% work/tpc/vendor/swoole/php-nano/ext/bcmath/libbcmath/src/str2num.c
+[232/241] 97% work/tpc/vendor/swoole/php-nano/src/extension.cpp
+[233/241] 97% work/tpc/vendor/swoole/php-nano/ext/hash/hash_fnv.c
+[234/241] 98% work/tpc/vendor/swoole/php-nano/ext/pcre/pcre2lib/pcre2_newline.c
+[235/241] 98% work/tpc/vendor/swoole/php-nano/ext/pcre/pcre2lib/pcre2_match_data.c
+[236/241] 98% work/tpc/vendor/swoole/php-nano/ext/random/engine_pcgoneseq128xslrr64.c
+[237/241] 99% work/tpc/vendor/swoole/php-nano/ext/bcmath/libbcmath/src/round.c
+[238/241] 99% work/tpc/vendor/swoole/php-nano/ext/date/lib/dow.c
+[239/241] 99% work/tpc/vendor/swoole/php-nano/ext/pcre/pcre2lib/pcre2_string_utils.c
+[240/241] 99% work/tpc/vendor/swoole/php-nano/ext/standard/versioning.c
+[241/241] 100% work/tpc/vendor/swoole/php-nano/ext/hash/hash_snefru.c
+PHP Fatal error:  Uncaught Exception: Compilation failed for: /work/tpc/vendor/swoole/phpx/src/core/extension.cc in /work/tpc/src/Translator.php:2822
+Stack trace:
+#0 /work/tpc/src/Translator.php(2720): TypePhp\Translator->compileWithProcessPoolUncached()
+#1 /work/tpc/src/Translator.php(2564): TypePhp\Translator->compileWithProcessPool()
+#2 /work/tpc/src/Translator.php(2489): TypePhp\Translator->dispatchNativeCompilation()
+#3 /work/tpc/src/Build/ProjectBuildRunner.php(101): TypePhp\Translator->compile()
+#4 /work/tpc/src/Build/ProjectBuildRunner.php(31): TypePhp\Build\ProjectBuildRunner->compileAndLink()
+#5 /work/tpc/src/compiler.php(79): TypePhp\Build\ProjectBuildRunner->run()
+#6 /work/tpc/bin/tpc.php(8): runCompiler()
+#7 {main}
+  thrown in /work/tpc/src/Translator.php on line 2822

@@ -1,0 +1,61 @@
+# Phase 26c — demo 页调用链文案：断言 harness + 负控
+#
+# host: macOS 26.6.2 (Darwin 25.6.0, arm64)  ·  run: 2026-09-27
+# command pair:
+#   node test/posix/demo-chain-harness.js                            # 现网页面
+#   node test/posix/demo-chain-harness.js /tmp/ctrl-chain.html       # 负控
+#
+# 负控生成方式（重要：不能用 `git show HEAD:` —— 本仓库 HEAD 里 chainFor()
+# 还不存在，旧页面会直接以 "chainFor() not found" 失败，那只能证明"文件不同"，
+# 证明不了"这条断言有牙"）。做法是把当前 index.html 拷到 scratch，仅把 Darwin
+# 分支的 c.endpoint 一行退回 Phase 26 之前的写法：
+#   '/tmp/…-<pid>.sock（打包：<exe 目录>/app.sock）'
+# 即"打包端点永远在 exe 目录"这句假话。其余三行/两分支一字不动。
+#
+# 为什么还需要第二层证据：本轮 A4b 想要像素复核，但 Screen Recording 权限在
+# 19:45 之后从宿主上掉了（screencapture -l<id> → could not create image from
+# window；整屏抓取是 1920x1080 单色），而 evidence/mac/26b-window.png 抓取时间
+# 早于这行文案变更。所以窗口里那个 chip 目前只有 harness 级证据，没有像素级。
+
+== positive: current demo/src/frontend/index.html
+== chainFor fixtures, from /Volumes/data/git/php/typephp-tinygui/demo/src/frontend/index.html
+  ok   Windows: engine
+  ok   Windows: endpoint is a named pipe
+  ok   Windows: banner names the AOT backend the shim reported
+  ok   Linux: engine
+  ok   Linux: notes the inverted direction
+  ok   Linux: does not claim AOT
+  ok   macOS: engine
+  ok   macOS: launcher
+  ok   macOS: endpoint names the packaged default
+  ok   macOS: endpoint names the off-boot-volume move
+  ok   macOS: does not claim AOT
+  ok   unknown os: falls back to the WKWebView branch, not WebView2
+  ok   unknown os + empty backend: admits it is unreported
+== harness: 13 ok / 0 fail
+rc=0
+
+== negative control: /tmp/ctrl-chain.html (Darwin c.endpoint line only, reverted)
+== chainFor fixtures, from /tmp/ctrl-chain.html
+  ok   Windows: engine
+  ok   Windows: endpoint is a named pipe
+  ok   Windows: banner names the AOT backend the shim reported
+  ok   Linux: engine
+  ok   Linux: notes the inverted direction
+  ok   Linux: does not claim AOT
+  ok   macOS: engine
+  ok   macOS: launcher
+  ok   macOS: endpoint names the packaged default
+  FAIL macOS: endpoint names the off-boot-volume move
+        got : "/tmp/…-<pid>.sock（打包：<exe 目录>/app.sock）"
+        expected to contain: $TMPDIR
+  ok   macOS: does not claim AOT
+  ok   unknown os: falls back to the WKWebView branch, not WebView2
+  ok   unknown os + empty backend: admits it is unreported
+== harness: 12 ok / 1 fail
+rc=1
+
+== 读法
+# 负控里恰好且只有 `macOS: endpoint names the off-boot-volume move` 一条 FAIL，
+# 其余 12 条（Windows/Linux/unknown-os/两条 AOT 反声称）全部照过 —— 说明这条
+# 断言锁的就是 Phase 26 改的那个事实，不是巧合通过。

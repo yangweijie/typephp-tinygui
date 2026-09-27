@@ -1,0 +1,79 @@
+# Phase 23 — Linux REAL DESKTOP SESSION evidence (Openbox + picom + SNI host)
+# collected: 2026-09-27T08:40:15Z by test/posix/collect-desktop-evidence.sh
+# source:    /tmp/tpgui-desktop inside the Apple Container 'tgl' (Debian bookworm, arm64)
+# repo rev:  d461a93
+# driver:    SKIP_BUILD=1 bash test/posix/desktop-session.sh  ->  expected final line:
+#              == desktop-session result: PASS
+#            (SKIP_BUILD=1 reuses build/; tools/build-linux.sh is byte-identical to the
+#             one that produced it, and desktop-session.sh / sni_host.py / mock_shim.py
+#             were sha256-matched against the repo copies before and after this run.)
+# this file is RE-DERIVED from the stored 23-* files below, not copied from stdout.
+
+== session facts (23-session-report.txt)
+   session: WM=Openbox compositor=0x200004 bus=unix:path=/tmp/dbus-KMpPiEus10,guid=c33800ac2b9469b5c67ac3686ab8d332 screen=1440x900x24
+   A1 managed: parent=0x400262 root=0x50d |_NET_FRAME_EXTENTS(CARDINAL) = 1, 1, 20, 5 | title=TypePHP Desktop | relY=20
+   A4 frames: CALL=56 RET=56 WINDOW-E2E OK ping=pong in 140ms
+   A3 WM events: minimized=6 maximized=6 width-after-maximize=1440px
+   A2 compositor: owner=0x200004 baseline=none window=0x60000f picom_alive=yes ext=1
+   A5 hidpi: logical=640x400 physical=1280x856 (GDK_SCALE=2)
+   B tray/hotkey: TRAY=1 TRAYCLICK=1 HOTKEY=1
+   C1 gap: HOTKEY -> ignore in Protocol::decode (tray/trayclick OK)
+   X teardown: survivors=none product-sockets=none
+
+== derived claims
+   ok   A1 the WM reparented the window and published non-zero frame extents
+   ok   A2 a compositor owned _NET_WM_CM_S0 with the window mapped
+   ok   A3 minimize rode back as a WINSTATE frame
+   ok   A3 maximize rode back as a WINSTATE frame
+   ok   A4 frame round trip completed in-session
+   ok   A5 GDK_SCALE=2 doubled the physical geometry
+   ok   B tray + hotkey frames all reached the pipe
+   ok   C1 recorded as a gap (HOTKEY undecoded), not a silent pass
+   ok   X teardown left no survivor and no product endpoint
+
+== raw frame proof, re-grepped from the logs (not the report)
+   shim.log            CALL=56 RET=56 marker=WINDOW-E2E OK ping=pong in 140ms
+   shim-hidpi.log      CALL=56 RET=56 marker=WINDOW-E2E OK ping=pong in 108ms
+   WINSTATE minimized=6 maximized=6
+   mock.log            TRAY=1 TRAYCLICK=1 HOTKEY=1
+
+== SNI host read-back (23-sni-click.json)
+   item Id='tinyjs-app' Status='Active' Menu=/org/ayatana/NotificationItem/tinyjs_app/Menu
+   menu  id=0 label='' type=''
+   menu  id=2 label='desktop-tray' type=''
+   menu  id=3 label='' type='separator'
+   menu  id=4 label='Say hello' type=''
+   menu  id=5 label='Write a note' type=''
+
+== pipe -> page leg (23-protocol-leg.txt)
+     TRAY tray-hello  -> type=notification event=tray
+     TRAYCLICK        -> type=notification event=trayclick
+     HOTKEY boss      -> type=ignore       event=-
+     HOTKEY is not decoded into a page event: type=ignore
+
+== compositor log tail (23-picom.log: proves picom ran, no vsync on Xvfb)
+   Xlib: ignoring invalid extension event 161
+   Xlib: ignoring invalid extension event 161
+   Xlib: ignoring invalid extension event 161
+
+== harness as committed (sha256; the run used byte-identical copies)
+   51929de0f6c20b98dda23849cc933e992517cd33c74e722983305acfb5cd1062  test/posix/desktop-session.sh
+   5d6bb1621acc0e52f17174062c4d22dde0739076b562a4d35d926210a1dfa676  test/posix/sni_host.py
+   bdc879b5bb841af87d7101c102b82f413adad6bf9ce863267de8389f865317a7  test/posix/mock_shim.py
+   d4d91545f968080e6ac79e326ce758b114d06836a3de66c7f2ad9408fd2d308e  tools/build-linux.sh
+
+== stored files (sha256, bytes)
+   cc02cc85be341d5414fdf94c5af4be73db767ae66e1e557fbd8e8d74e75e2793  23-frames.txt  186B
+   9804d2577799a3bf65424127efc6dc9acedecb17f24b58b25b8a3dc116c8b067  23-mock.log  3232B
+   d7ac0193af0d9334d71f0b5bb7d737fee3fe8091965a7d435d1a99001a6afeee  23-picom.log  1290B
+   b9930f4a5161d353ee0f6355a66fabfd5e8f0188ea9a3ff9acaf0041b3b4d3a9  23-protocol-leg.txt  210B
+   c72bc4ce76593877b41cbfc9f492bf4425fffed1f47b13c263c207a8f04d9608  23-session-report.txt  670B
+   785fbab468764d4503483adaf13534d84f9cbf40b030f0ecf69175126d0f729f  23-shim-hidpi.log  19760B
+   57c1afaa7460b60dc9fc92f06fd45b63e8661c1f8d3fd1fe26763a65b6dac688  23-shim.log  22174B
+   41a2ac2f111c1cef3bf809bf810d09a68ade493e568feafcf8040a5cf2fc2854  23-shot-hidpi.png  144715B
+   bb84ad2e77e9e11fa6f09e1a647c2ae78caadbe6c40772998f60ad49c4c32ebc  23-shot-session.png  127149B
+   9d138fa1e00991e8448c3d6146938b5366323f00910d2367e291e19ceac61f5f  23-shot-tray.png  70862B
+   fdf40eaf03eb1cf7b6bd459143cd61d2869999d85b79594dd8a78882f2c0f23b  23-shot-window.png  124374B
+   e85d0844cfbaa576ff44dafd2b45cb02c67d13a1dd11d590a2b18096a74b2a63  23-sni-click.json  1681B
+   e95b97e128dde79a423341e01c173881818496daad5f5fb6024415760ede8a9f  23-sni-open.json  1684B
+   5eca953589140ffbd4d84ad09d3f6a25f4048b39c43e5c624e76a995e57e1d1b  23-sni.json  1581B

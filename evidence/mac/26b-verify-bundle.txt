@@ -1,0 +1,12 @@
+== verify-bundle-macos: /Volumes/data/git/php/typephp-tinygui/demo/dist/TypePHP-Demo.app
+  ok   Info.plist parses; CFBundleExecutable -> App
+  ok   App: Mach-O ['arm64'] covers host arch; linker ad-hoc signature
+  ok   launcher-macos: Mach-O ['arm64'] covers host arch; linker ad-hoc signature
+  ok   App.conf html=../Resources/frontend/index.html -> exists
+  ok   App.conf app=../Resources/app/bin/run-backend.php -> exists
+  ok   App.conf launcher=launcher-macos -> exists
+  ok   backend is a shebang script (stock php route — target machine needs `php` on PATH)
+  ok   Resources/frontend/index.html present
+  ok   icon resource for CFBundleIconFile=AppIcon present
+  ok   endpoint leaves the app dir (app dir is not on the boot volume — a LaunchServices launch would block creating the socket there (bug #21)) -> /var/folders/f8/m2tq3zc92bv501cf1dr6h6wc0000gn/T/tinyjs-typephp-<pid>.sock
+== result: PASS, 0 warning(s)

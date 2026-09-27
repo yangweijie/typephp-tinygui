@@ -18,8 +18,10 @@ Everything is PARSED from the artifact, never assumed from the build log:
                    existing paths; app must start with '#!' (stock backend)
   6. exec bits   — App / launcher-macos / run-backend.php are executable
   7. icon        — CFBundleIconFile (if declared) resolves to a real resource
-  8. socket len  — <MacOS>/app.sock fits sun_path (~104B) or the shim's /tmp
-                   fallback kicks in at runtime (warning, not a failure)
+  8. endpoint    — where the launch-mode socket will really be, using the
+                   shim's own rule: <MacOS>/app.sock unless sun_path is full or
+                   the bundle sits off the boot volume (then the per-user temp
+                   dir — see bug #21)
 
 Exit 0 = all hard checks pass; 1 = at least one FAIL. WARNs don't fail.
 """
@@ -247,14 +249,37 @@ def main():
         warn("no CFBundleIconFile — Finder shows the generic icon "
              "(tgui build warns too; not fatal)")
 
-    # 8. sun_path budget for the launch-mode default endpoint
+    # 8. launch-mode endpoint: mirror the shim's own selection rule, so the
+    #   bundle we ship states where the socket will really be. Two measured
+    #   reasons it leaves the app dir (see shim/backend_shell.cpp):
+    #     a) sun_path holds 104 usable bytes on macOS;
+    #     b) macOS blocks a LaunchServices-spawned app's FIRST new file on a
+    #        non-boot volume until kTCCServiceSystemPolicyRemovableVolumes is
+    #        answered — and that request can stay pending forever (bug #21,
+    #        measured 2026-09-27 in experiments/ls-bind-probe: 786/786 samples
+    #        in __open at a plain open(O_CREAT), so it is NOT socket-specific).
+    #   A relocated endpoint is a fact about the layout, not a defect: `ok`.
+    CAP = 104
     sock = os.path.join(macos, "app.sock")
-    if len(sock.encode()) >= 104:
-        warn(f"launch-mode socket path {len(sock)}B >= sun_path cap: the shim "
-             f"falls back to /tmp/tinyjs-typephp-<pid>.sock (by design, "
-             f"tested by test/posix launch tier)")
+    same_vol = os.stat(macos).st_dev == os.stat("/").st_dev
+    why = None
+    if len(sock.encode()) >= CAP:
+        why = f"sun_path full ({len(sock)}B >= {CAP})"
+    elif not same_vol:
+        why = ("app dir is not on the boot volume — a LaunchServices launch "
+               "would block creating the socket there (bug #21)")
+
+    def tmp_endpoint():
+        d = (os.environ.get("TMPDIR") or "/tmp").rstrip("/") or "/tmp"
+        if len(d) + 40 >= CAP:
+            d = "/tmp"
+        return d + "/tinyjs-typephp-<pid>.sock"
+
+    if why:
+        ok(f"endpoint leaves the app dir ({why}) -> {tmp_endpoint()}")
     else:
-        ok(f"launch-mode socket fits sun_path ({len(sock)}/104B): {sock}")
+        ok(f"launch-mode endpoint stays in the bundle "
+           f"({len(sock.encode())}/{CAP}B): {sock}")
 
     report()
     return 1 if FAILS else 0

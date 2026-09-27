@@ -1,0 +1,6 @@
+Initialized platform/backend: Linux + GCC (g++)
+prepare: build/backend_aggregated.php
+prepare completed: 1 source files in total
+convert: build/backend_aggregated.php
+generate arginfo file: build/backend_aggregated.php
+Dry run completed: 3 C++ source file(s) generated in /tmp/tpgui-tier6/nanodry

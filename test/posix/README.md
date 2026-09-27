@@ -153,6 +153,8 @@ writer then blocks forever, so a chatty backend would wedge itself mid-protocol.
 | **2** | real PHP (`tier2.sh`) | a PHP ≥ 8.0 binary | the real `backend.php` logic over the POSIX shim | ✅ **11/11 pass**, 12 CALL → 12 RET → 24 EVAL |
 | **3** | AOT binary (`tpc`) | aot-compiler for **Linux** | nano size/behaviour — the original question | ❌ needs Linux (Cygwin cannot host a Linux ELF) |
 | **4** | + `launcher-linux` | `libgtk-3-dev`, `libwebkit2gtk-4.1-dev`, `xvfb-run` | the true window end-to-end | ❌ needs Linux |
+| **5** | the same, in a **real desktop session** | + `openbox picom xdotool wmctrl x11-utils imagemagick python3-dbus python3-gi dbus-x11` | WM/compositor/tray/hotkey paths that bare Xvfb cannot reach | ❌ needs Linux — ✅ in the `tgl` container (Phase 23) |
+| **6** | the **shipping backend**, compiled for real nano | + `tpc`/php-nano, `tools/aggregate-backend.php` | whether `require` was the only thing stopping `--nano` | ❌ needs Linux — ✅ in `tgl` as PASS-with-recorded-GAP (Phase 24) |
 
 Orthogonal to the tiers: `launch-mode.sh` covers the **packaged-entry** path
 (`argc==1` + `<name>.conf`) rather than a different backend — ✅ **13/13 pass** —
@@ -215,7 +217,9 @@ Three further traps the standalone home exposed, all now fixed:
   standalone run. `typephp_default_work` now returns early when `WORK` is set.
 - **A hard-coded socket path made an assertion blind.** In launch mode the
   *entry* names the endpoint (`<exe_dir>/app.sock`, or the shim's own
-  `/tmp/tinyjs-typephp-<pid>.sock` fallback when that would overflow `sun_path`).
+  `/tmp/tinyjs-typephp-<pid>.sock` fallback when that would overflow `sun_path` —
+  and on macOS also when `<exe_dir>` is not on the boot volume, see bug #21 and the
+  `macos-bundle-launch.sh` section below).
   `launch-mode.sh` asserted on `$WORK/app.sock`, so its "socket file unlinked on
   exit" check passed **vacuously** in exactly the case where the fallback fired —
   i.e. in the shipped home. It now reads the chosen path back out of the shim log
@@ -287,13 +291,233 @@ pipe, so a `fwrite(STDERR, …)` is a diagnostic, not a protocol hazard.)
 
 ```bash
 sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev xvfb
+bash tools/build-linux.sh        # canonical: passes -DTINYJS_APPINDICATOR -DTINYJS_X11
+XVFB=1 ./run.sh    # or drive build/launcher-linux directly against the socket
+```
+
+Do **not** hand-roll the `g++` line: the bare
+`$(pkg-config … gtk+-3.0 webkit2gtk-4.1)` form below compiles, links and runs,
+yet silently drops the tray (`TINYJS_APPINDICATOR`) and the global-hotkey
+(`TINYJS_X11`) code paths.
+
+```bash
 g++ -std=c++17 -O2 -o launcher-linux ../tinyjsapp/native/launcher-linux.cc \
-    $(pkg-config --cflags --libs gtk+-3.0 webkit2gtk-4.1)
-XVFB=1 ./run.sh    # or drive launcher-linux directly against the socket
+    $(pkg-config --cflags --libs gtk+-3.0 webkit2gtk-4.1)   # incomplete, see above
 ```
 
 Note `launcher-linux` needs `DISPLAY`/`WAYLAND_DISPLAY` (it exits `3` without
 one), hence `xvfb-run`.
+
+### Tier 5 — a real desktop session (`desktop-session.sh`, Phase 23)
+
+Tier 4 runs under **bare Xvfb**: no window manager, no compositor, no session
+bus, no tray host. Everything that only exists when a desktop is present was,
+by admission, unproven. This tier stands one up inside the container and
+asserts on it:
+
+```bash
+sudo apt-get install -y openbox picom xdotool wmctrl x11-utils imagemagick \
+                        python3-dbus python3-gi dbus-x11
+SKIP_BUILD=1 bash test/posix/desktop-session.sh      # ~2 min, prints PASS/FAIL
+REGEN=1 bash test/posix/collect-desktop-evidence.sh  # re-derive evidence/linux/23-MANIFEST.txt
+```
+
+| id | claim | how it is proven (not asserted in prose) |
+|---|---|---|
+| A1 | the WM really manages the window | `xwininfo -tree` parent ≠ root, `_NET_FRAME_EXTENTS = 1,1,20,5`, **and** the client's `Relative upper-left Y` equals the published top extent |
+| A2 | a compositor is compositing | `_NET_WM_CM_S0` has **no owner before picom starts** and an owner while our window is mapped |
+| A3 | WM state rides back into the app | `xdotool windowminimize` / `wmctrl -b add,maximized_*` each add `WINSTATE` frames carrying `minimized:true` / `maximized:true`; the client width follows the frame |
+| A4 | the frame loop still closes in-session | ≥13 `CALL`/`RET` + the `WINDOW-E2E OK ping=pong in Nms` marker |
+| A5 | high DPI | `GDK_SCALE=2` → a 640×400 logical window is 1280×856 physical |
+| B1–B2 | the tray is a real SNI item | `sni_host.py` (a spec-conformant `org.kde.StatusNotifierWatcher`) reads back Id/Status/Menu, flattens the `com.canonical.dbusmenu` layout, then *clicks* it → `TRAY tray-hello` / `TRAYCLICK` land on the pipe |
+| B3–B4 | global hotkeys are real grabs | `HKREG boss ctrl+alt+shift+F12` + `xdotool key` (XTest) → `HOTKEY boss`; F11 and a bare F12 add nothing (negative control) |
+| C1 | the pipe→page leg the mock cannot reach | `Protocol::decode` is called directly on the three notification lines |
+
+Three findings this tier produced, all of them product-side:
+
+1. **`tray.set` / `hotkey.register` do not exist in the PHP backend.** The
+   launcher implements both ends of the tray and hotkey grammar, and the shim
+   pumps both frame kinds, but `gui/php/src/Tiny/Gui/Handlers/*` exposes
+   `menu.set`, `win.*`, `fs.*`, `store.*`, `api.*` and nothing for tray or
+   hotkey. Section [B] therefore drives them through `mock_shim.py`, which
+   injects the frames an API that had the surface *would* send. That is a real
+   gap in the product, not a shortcut in the harness.
+2. **`Protocol::decode` has no `HOTKEY ` branch** — it returns
+   `type=ignore`, so even once the backend can register one, no page handler
+   will ever see it. `TRAY` → `tray` and `TRAYCLICK` → `trayclick` do decode.
+   Section [C] reports this as `GAP`, deliberately not folded into a pass.
+3. **`tools/build-linux.sh` was linking `-lX11 -lXtst` without
+   `-DTINYJS_X11`.** `TINYJS_X11` gates `parse_combo`/`xtest_display`/
+   `do_keystroke`/`x11_hotkey_register`, with no-op stubs behind `#else` — so
+   the binary answered `hotkey.register` with "ok" and grabbed nothing at all.
+   B3 failed before the flag was added and passes after; the flag is now in the
+   build script with a comment saying why.
+
+Harness gotchas, each one a wasted round:
+
+- `_NET_WM_CM_S0` is an X **selection**, not a root property. `xprop -root`
+  prints `not found.` forever even with a live compositor; ask
+  `XGetSelectionOwner` instead (`cm_owner()` in the driver).
+- picom 9's **xrender backend has no vsync method on Xvfb** (no GLX/SGI-sync),
+  so `--vsync` makes it exit `Failed to initialize the backend`.
+- GTK creates an **InputOnly `WM_CLIENT_LEADER` window with the same
+  `_NET_WM_NAME`** as the toplevel, and `xdotool search --name` returns it
+  first. It is 10×10 and unmapped — every geometry/WM assertion silently
+  measured it until `find_window()` filtered on `Map State: IsViewable`.
+- `xwininfo -root` starts with a **blank line**, and plain `xwininfo -id` has
+  **no `Parent` line at all** (only `-tree` prints one).
+- The shim unlinks its AF_UNIX endpoint only on a **clean exit**; `SIGTERM`
+  skips `io_cleanup_endpoint()`. So the driver closes the *launcher* and lets
+  the shim reach EOF, then asserts the unlink — killing the shim and calling
+  the leftover socket a leak would blame the product for the harness.
+
+## Tier 6 — the real nano target, from the shipping backend (`tier6-nano-aggregate.sh`, Phase 24)
+
+Tier 3 measured `tpc --nano` on a 5-line program, because the shipping demo backend
+`require`s its framework and real nano refuses `require` at compile time (Errors #22).
+This tier removes that excuse: `tools/aggregate-backend.php` flattens the `require`
+graph into one file, and the driver then asks nano — not us — what it thinks.
+
+```bash
+# inside the container (needs tpc + php-nano; repo at /work/repo)
+cd "$(git rev-parse --show-toplevel)"      # the driver expects to run from the repo root
+php8.4 tools/aggregate-backend.php src/backend.php -o build/backend_aggregated.php --root .
+                                                                  # regenerate
+rm -rf /tmp/tpgui-tier6      # cold cache, so no step can pass on [cached] reuse
+PHP_BIN=php8.4 TPC=/work/tpc/bin/tpc.php bash test/posix/tier6-nano-aggregate.sh
+# freshness of the aggregate alone (exit 2 = missing or stale; the driver itself
+# takes no flags — --check belongs to tools/aggregate-backend.php):
+php8.4 tools/aggregate-backend.php src/backend.php -o build/backend_aggregated.php --check
+bash test/posix/tier6-nm-evidence.sh                                  # re-measure the link gap
+REGEN=1 bash test/posix/collect-tier6-evidence.sh                     # evidence/linux/24-MANIFEST.txt
+```
+
+Expected final line while both upstream gaps are open (the gap list is derived from the
+driver's own `GAP` lines, so it changes with reality rather than being a fixed string):
+
+```
+== tier-6 result: PASS-with-recorded-GAP (2 upstream gap(s): link:php::Args::get | startup:basic_functions)
+```
+
+| step | claim | how it is proven |
+|---|---|---|
+| [1] | the aggregation is honest | deterministic re-run, `--check` both ways, **three refusal paths** exercised (dynamic `require`, target outside `--root`, surviving `__DIR__`), plus structural invariants: exactly one global `function main(): void`, one `namespace` block per module |
+| [2] | the aggregate **behaves** like the multi-file tree | same frames in, byte-identical frames out under stock PHP (11 RET, store round-trip, `QUIT` before its RET) after masking only the volatile sysinfo fields |
+| [3] | negative control | the unaggregated `src/backend.php` is still refused with the `require` message — if this ever passes, the finding it rests on is stale |
+| [4a] | nano's **front end** accepts the aggregate | `--nano --dry` runs prepare → convert → arginfo and emits C++, from a cold cache (no `[cached]` line) |
+| [4b] | the full build stops in **ld** | signature-matched GAP on `undefined reference to php::Args::get(unsigned long) const`; any other failure fails loudly |
+| [4c] | the gap is **attributed, not asserted** | a 15-line program with the same constructs links (1 763 104 B) *and runs*; both builds carry the byte-identical `closure-f8759031b18c.o`, both `nm`-scan to `define=0 / reference=1`, only the 240-object link dies |
+| [4d] | link ≠ run | a 3-line `echo strlen("…")` program links cleanly and still dies at startup (`Unable to start PHP Nano extensions`, rc=1). The decisive condition is that the generated entry declares `ZEND_MOD_REQUIRED("Core")` and **no composed array can ever hold that name**: the only entry named `Core` is a `static zend_module_entry` (`zend_builtin_module`) in `Zend/zend_builtin_functions.c`, while php-nano's `dependency_state()` searches only the composed set. Whether a build also drops `basic_functions_module` is a separate observation (`basic_functions_module` is named `standard`, never `Core`) |
+
+Phase 25 corrected two things this tier originally got wrong, and both corrections are machine-checked
+in `24-MANIFEST.txt` (claims 18c–18f):
+
+- `[4c]` used to print "the aggregated build keeps `basic_functions_module`, so its
+  `ZEND_MOD_REQUIRED("Core")` is satisfiable". **False** — the aggregate carries the same
+  unsatisfiable dep, and once the `Args` link gap was patched locally, the linked aggregate died at
+  startup exactly like the 3-line probe.
+- The upstream blockers are **three**, not two, and they stack: `php::Args::get` (link) →
+  `ZEND_MOD_REQUIRED("Core")` (startup) → no stdio handles in a nano binary (run: `STDIN`/`STDOUT`
+  undefined, `php://` wrapper absent, `/dev/std*` unopenable). Our frame protocol lives entirely on
+  stdin/stdout, so the third one bounds the whole `--nano` route for this product.
+
+The probes, transcripts and filing-ready write-ups live in
+[`docs/upstream-issues/`](../../docs/upstream-issues/README.md); the probe sources and the
+transcript generator are in `test/posix/upstream-nano-probes/`.
+
+Two rules this tier had to learn the hard way, both undocumented by the error text:
+
+- **The output name comes from the source basename and must be a valid identifier** —
+  hence `backend_aggregated.php`, not `backend.aggregated.php`.
+- **A namespace body may contain declarations only** (`prepareNamespace` → "found stray
+  code"), and the entry is the **global** `function main` (`CompilerBase::ENTRY_FUNCTION`).
+  So the aggregator hoists the entry tail into `main()` *and* wraps every module in its own
+  braced `namespace X { … }` block — concatenating `namespace Tiny\Gui;` would otherwise
+  swallow the global entry into that namespace.
+
+`$TPC` must be `/work/tpc/bin/tpc.php`. `cli.php` is a *run* wrapper
+(`require polyfills; include $argv[1]; main($argc,$argv)`), so pointing at it makes tpc
+execute our backend as PHP — it prints `READY`, answers stdin, then dies on `undefined
+function main()`. The driver refuses a log that starts with `READY` for exactly that reason.
+
+**What is NOT claimed**: there is still no nano binary of the shipping backend (the link
+dies upstream), and the size / `ldd` / frame-equivalence assertions in [4b] are staged for
+the day upstream defines `php::Args::get` — this run never reached them. Behavioural
+equivalence in [2] is proven under stock PHP only.
+
+## macOS packaged launch on a non-boot volume (`macos-bundle-launch.sh`, Phase 26)
+
+Bug #21 was recorded in Phase 21c as "LaunchServices-launched app hangs on `bind()`
+when the bundle sits on an external volume, environment limitation". It is an
+environment rule, but the attribution was wrong and the shim can obey it — so this
+script is both the regression guard and the measurement.
+
+```bash
+bash tools/build-macos.sh                       # shim + launcher-macos
+(cd demo && bash ../gui/bin/tgui build)         # demo/dist/TypePHP-Demo.app
+bash test/posix/macos-bundle-launch.sh          # A1..A6, ~40 s, needs a GUI session
+# with the negative control (see below) and a window screenshot:
+CTL_SHIM=/tmp/prefix-shim SHOT=/tmp/win.png bash test/posix/macos-bundle-launch.sh
+```
+
+What it asserts, in order: cold start; that `open`-ing the bundle reaches
+`launcher connected` (the one line #21 made impossible); where the endpoint really
+landed and that the bundle dir gained **no** file; frame balance + the demo's
+`WINDOW-E2E OK` marker; an optional `screencapture -l<window>` of the live window
+(`SHOT=`, via `tools/mac-winlist` — SKIP, never FAIL, since it needs the Screen
+Recording grant); teardown on window close; and that direct exec of the same entry
+still works. Last runs on this machine: **22 ok / 0 fail / 0 skip** with the window
+capture (`evidence/mac/26b-macos-bundle-launch.txt`), then **21 ok / 0 fail / 1 skip**
+after the demo page's Darwin chip line changed — the one SKIP is `SHOT`, because the
+Screen Recording grant dropped mid-session (`-l<id>` → `could not create image from
+window`, and even a full-screen grab came back 1920x1080 in exactly one colour, which
+is how you know it is permission-side and not the driver: see
+`evidence/mac/26c-macos-bundle-launch-final.txt`). Text that a window can no longer
+prove goes to the harness below.
+
+`WORK` must sit on the **boot volume**. The shim opens `TYPEPHP_SHELL_LOG` as its
+very first file operation; on a LaunchServices-spawned process that is exactly the
+`open(O_CREAT)` TCC holds on a non-boot volume, so a repo-relative `WORK` made every
+section "fail" with no log at all. The script now refuses such a `WORK` up front.
+
+**The negative control (`CTL_SHIM=<pre-fix binary>`)** re-runs the same launch with
+the relocation branch deleted from the same source, under its own bundle identifier
+(`CTL_ID`, default `com.typephp.macbundle.pre26fix`) so it cannot inherit an
+answered consent prompt. Two assertions are consent-independent and always run: the
+pre-fix log must name the in-bundle `app.sock` and must NOT contain the relocation
+line. The hang itself is environment-gated: if the identifier already has volume
+consent the control connects and reports **SKIP** with the
+`tccutil reset SystemPolicyRemovableVolumes <id>` recipe, because a FAIL there would
+be a claim about this Mac's TCC table, not about our code.
+
+**Why the mechanism is not `bind()`**: `experiments/ls-bind-probe/` runs three steps
+([1] plain file in the exe dir, [2] `AF_UNIX bind` in the exe dir, [3] `bind` in
+`/tmp`) across four launch shapes (direct/`open` × boot volume/external volume).
+Only `open` + non-boot volume hangs, and it hangs at **[1]** — a regular file. The
+`__bind` in the old sample was just the first syscall the shim happened to make.
+
+## What the demo page SAYS (`demo-chain-harness.js`, Phase 21c / 26)
+
+`demo/src/frontend/index.html` derives its five chips, footer and success banner from
+`chainFor(sysinfo.os, sysinfo.backend)` — a page that hardcoded "WebView2 → named pipe
+→ PHP AOT backend" was lying on mac and Linux. Asserting that with pixels needs a GUI
+session *and* the Screen Recording grant, which this Mac gives and takes back on its
+own schedule, and a photograph only ever proves the one platform in frame. So the
+harness brace-matches the **real** `chainFor()` out of the **real** file and runs it in
+`node`'s `vm` against four fixtures (Windows/Linux/Darwin/an unknown os):
+
+```bash
+node test/posix/demo-chain-harness.js            # → 13 ok / 0 fail
+```
+
+Its negative control is **not** `git show HEAD:demo/src/frontend/index.html`: HEAD
+predates `chainFor()` entirely, so that run dies with `chainFor() not found`, which
+proves the files differ and nothing about any single assertion. For a one-line label
+change, copy the page, revert **only** that line, and require exactly the matching
+assertion to fail — e.g. put the Darwin `c.endpoint` back to the pre-Phase-26
+"packaged endpoint always sits next to the exe" claim and the run comes out
+**12 ok / 1 fail**, with `$TMPDIR` (the off-boot-volume move bug #21 made necessary)
+the only red line. Worked example: `evidence/mac/26c-chain-harness.txt`.
 
 ## Cygwin gotchas (each one cost a debugging round)
 
@@ -380,6 +604,84 @@ one), hence `xvfb-run`.
   ```bash
   python3 selftest_fixtures.py     # → FIXTURES OK
   ```
+- `desktop-session.sh` — **tier 5**, the real desktop session driver described
+  above. Builds through `tools/build-linux.sh` (`SKIP_BUILD=1` reuses `build/`),
+  stands up Xvfb + dbus-launch + openbox + picom + `sni_host.py`, then runs
+  [A] real-app checks, [A5] HiDPI, [B] tray/hotkey checks against `mock_shim.py`,
+  [C] the `Protocol::decode` leg, and [X] teardown. `WORK=`, `TITLE=`, `KEEP=1`
+  (leave the session up for manual poking) are honoured.
+- `macos-bundle-launch.sh` — **macOS only**, the packaged `.app` on a non-boot
+  volume: LaunchServices launch, endpoint placement, frames, optional window
+  screenshot, teardown, direct-exec regression, and the `CTL_SHIM=` negative
+  control. See the section above; needs a real GUI session, so it is not part of
+  `all.sh`.
+- `demo-chain-harness.js` — the displayless half of the same evidence: extracts the
+  real `chainFor()` out of `demo/src/frontend/index.html` and asserts what the chips,
+  footer and banner *say* for four OS fixtures. Node only, no DOM stub needed, so it
+  runs anywhere; pair it with the one-line-revert control described above rather than
+  with `git show HEAD:`.
+- `sni_host.py` — a spec-conformant `org.kde.StatusNotifierWatcher`. Bookworm has
+  no packaged SNI host, and ayatana-appindicator3 is **SNI-only**, so an XEmbed
+  systray cannot host our item at all. Owns the bus name, accepts the item,
+  reads its properties, converts the ARGB32 `IconPixmap` to PNG with a
+  hand-rolled zlib writer, flattens the `com.canonical.dbusmenu` layout, and can
+  `--click '<label>'` a menu entry or the primary item. Writes a JSON report;
+  exit 0/1/3.
+- `mock_shim.py` — an AF_UNIX **server** standing in for `backend_shell`, used
+  only by section [B]: it logs every line the launcher sends, answers
+  `CALL <id> …` with `RET <id> 0 true`, and injects the tray/hotkey frames from
+  a file after `--inject-after N`. It exists because the PHP backend has no
+  `tray.set` / `hotkey.register` (finding 1 above) — it is a harness, and its
+  socket is not counted as a product leak at teardown.
+- `collect-desktop-evidence.sh` — re-derives `evidence/linux/23-MANIFEST.txt`
+  from the **stored** `23-*` files, so every number the README and plan files
+  quote is recomputed rather than restated from the driver's own stdout.
+  `REGEN=1` writes the manifest; without it the checks run and exit non-zero on
+  any claim that no longer derives.
+- `tools/aggregate-backend.php` (repo root, not this directory) — the token-level
+  `require` flattener tier 6 feeds to nano. Walks the graph from the entry file, strips `<?php`/`declare`/
+  requires, hoists the entry's trailing statements into `function main(): void`,
+  wraps every module in its own braced `namespace` block, and **refuses** anything
+  it cannot prove (dynamic require, target outside `--root`, surviving `__DIR__`).
+  Exit: 0 ok, 1 refusal/error, 2 `--check` found the output missing or stale.
+- `tier6-nano-aggregate.sh` — **tier 6**, the driver described above. Takes no
+  flags; `PHP_BIN=` and `TPC=` are the knobs. Records upstream blockers as `GAP`
+  lines (which keep the run at exit 0) and everything else as `FAIL`, so a *new*
+  failure mode can never hide inside a "PASS-with-recorded-GAP".
+- `tier6-nm-evidence.sh` — re-measures the link gap from a tier-6 work dir and
+  writes `closure-nm.txt`: per-build object counts, `nm` define/reference hits for
+  `php::Args::get`, the two builds' Closure TU sha256, the `ld` excerpt, the
+  control's run output, and the composed module sets. Pure observation — it builds
+  nothing, so it cannot change what it reports.
+- `collect-tier6-evidence.sh` — re-derives `evidence/linux/24-MANIFEST.txt` from
+  the stored `24-*` files, same contract as the tier-5 collector (`REGEN=1` writes,
+  otherwise verify and exit non-zero on drift).
+- `test/posix/upstream-nano-probes/` — the 3-to-8-line programs behind the upstream
+  issue material (`nano_trap` strlen, `nano_ctrl` closure control, `nano_ver`,
+  `nano_stdout`, `nano_stream`, `nano_devio`, `nano_file`) plus `run-probes.sh`,
+  which re-measures them inside the container and prints the transcript stored as
+  `evidence/linux/25-deps-vs-modules.txt`. Read-only against the tree; it rebuilds
+  two probes from scratch under `recheck-*` so the repro is verified on stock tpc.
+- Evidence from the container run: `<repo>/evidence/linux/24-*` —
+  `24-tier6-driver.log` (the whole run), `24-tier6-report.txt`, the three build
+  logs (aggregate / control / startup probe), `24-nano-unaggregated.log` (Errors
+  #22's refusal, verbatim), `24-nano-dry.log` (cold, zero `[cached]`),
+  `24-closure-nm.txt` and `24-MANIFEST.txt`. Result: **PASS-with-recorded-GAP**
+  (2 upstream gaps recorded at the time: `link:php::Args::get`,
+  `startup:basic_functions`; Phase 25 added the third — see the table above, and
+  `24-MANIFEST.txt` claims 18c–18f for the correction).
+- Evidence from Phase 25: `<repo>/evidence/linux/25-*` —
+  `25-deps-vs-modules.txt` (deps vs composed arrays, the `Core` citations, the
+  empirical startup table, the stock-tree recheck), `25-upstream-probe.txt` (the two
+  reverted patches and the successful 6.9 MB libphp-free link; two of its lines are
+  annotated as superseded inside the file), `25-naive-fix-fails.log` (why "just add
+  `src/core/extension.cc`" does not compile).
+- Evidence from the container run: `<repo>/evidence/linux/23-*` —
+  `23-session-report.txt` (one line per check), `23-shim.log` /
+  `23-shim-hidpi.log` (raw frames), `23-mock.log` (tray + hotkey frames),
+  `23-sni*.json` (what the tray host read back), `23-protocol-leg.txt`,
+  `23-picom.log`, four PNGs (WM decorations, client, HiDPI, tray session) and
+  `23-MANIFEST.txt`. Result: **desktop-session PASS**, with C1 recorded as a GAP.
 - Evidence from the local Cygwin run: `<repo>/evidence/kit/cygwin-all.log` (host
   probe + tier 1 + tier 2 + launch mode + stderr probe, **50 PASS / 0 FAIL**),
   `tier2-shim.log` (raw shim log — shows the real backend turning

@@ -1,0 +1,61 @@
+# 26b — bug #21 fix, macOS packaged-launch acceptance
+# host: macOS 26.6.2 (25.6.0 arm64); repo volume /Volumes/data is NOT the boot volume
+# date: 2026-09-27 19:49
+# cmd:  CTL_SHIM=/tmp/prefix-shim SHOT=/tmp/26b-window.png bash test/posix/macos-bundle-launch.sh
+# shim: shim/backend_shell.cpp sha256 ae19ef0e6348c8a9… (same bytes as the Linux build below)
+# pre-fix control binary: /tmp/prefix-shim = the same source with the endpoint-relocation
+#   block deleted, so the only difference is the selection rule.
+# boundaries of this file:
+#   - A4b's /tmp/26b-window.png shows the OLD demo-page chip text; the one-line
+#     Darwin chip change came after this capture, and the follow-up run could not
+#     re-photograph it (Screen Recording revoked itself mid-session). That label
+#     is covered at harness level instead — see evidence/mac/26c-chain-harness.txt.
+#   - the later full rerun of this same driver is
+#     evidence/mac/26c-macos-bundle-launch-final.txt (21 ok / 0 fail / 1 skip).
+
+
+== [A1] cold start
+  ok   no bundle entry running
+   note: 6 endpoint file(s) already in /var/folders/f8/m2tq3zc92bv501cf1dr6h6wc0000gn/T/ from other processes
+   note: bundle volume dev=16777241, / dev=16777234 -> NON-boot volume (the #21 case)
+
+== [A2] LaunchServices launch reaches the frame channel
+  ok   launcher connected (this is what #21 prevented)
+
+== [A3] endpoint placement
+  ok   endpoint = /var/folders/f8/m2tq3zc92bv501cf1dr6h6wc0000gn/T/tinyjs-typephp-84877.sock
+  ok   endpoint moved off the bundle (the #21 fix)
+  ok   the shim says WHY: endpoint moved off the app dir (app dir is not on the boot volume)
+  ok   the socket file exists while running
+  ok   the bundle dir gained no file (nothing was created on the volume)
+
+== [A4] frame balance and the end-to-end marker
+  ok   WINDOW-E2E OK ping=pong in 103ms
+  ok   CALL=13 RET=13 (balanced)
+
+== [A4b] screenshot of the LaunchServices window (SHOT=/tmp/26b-window.png)
+  ok   launcher pid 84880
+  ok   window 4683 (TypePHP-Demo TypePHP Demo 1100x792)
+  ok   captured /tmp/26b-window.png (182222 B)
+
+== [A5] closing the window tears everything down
+  ok   no shim left
+  ok   no launcher left
+  ok   shim logged the clean shutdown pair (launcher closed / done)
+  ok   endpoint file unlinked
+   note: full LaunchServices-run log kept at /var/folders/f8/m2tq3zc92bv501cf1dr6h6wc0000gn/T//typephp-mac-launch/launch-services-run.log
+
+== [A6] direct exec still works (regression guard for the fix)
+  ok   direct exec connected the launcher too
+  ok   nothing left after the direct run
+
+== [B] negative control with the pre-fix shim
+   note: not sealed, no re-sign needed — /Volumes/data/git/php/typephp-tinygui/build/26c-ctl-84845.app: code has no resources but signature indicates they must be present
+  ok   pre-fix shim never connected (the #21 symptom)
+   note: control pid 85061 state S (S = parked in a syscall, not spinning)
+  ok   stuck in __bind — file creation on the volume, not our frames
+  ok   the pre-fix log names the in-bundle endpoint it tried
+  ok   the pre-fix shim has no relocation branch (the fixed log does: endpoint moved off the app dir (app dir is not on the boot volume))
+
+== result
+== macos-bundle-launch: 22 ok / 0 fail / 0 skip  (artifacts: /var/folders/f8/m2tq3zc92bv501cf1dr6h6wc0000gn/T//typephp-mac-launch)

@@ -1,0 +1,27 @@
+> 1790507921.967 direct-on-volume == direct-on-volume pid=77321 uid=501 exe_dir=/Volumes/data/git/php/typephp-tinygui/experiments/ls-bind-probe/out/vol/ProbeLsBind.app/Contents/MacOS
+> 1790507921.967 direct-on-volume [1] begin create regular file /Volumes/data/git/php/typephp-tinygui/experiments/ls-bind-probe/out/vol/ProbeLsBind.app/Contents/MacOS/probe.txt
+> 1790507921.968 direct-on-volume [1] ok wrote=2
+> 1790507921.968 direct-on-volume [2] begin bind AF_UNIX in exe_dir /Volumes/data/git/php/typephp-tinygui/experiments/ls-bind-probe/out/vol/ProbeLsBind.app/Contents/MacOS/probe.sock (sun_path used 113 B)
+> 1790507921.968 direct-on-volume path too long (113): /Volumes/data/git/php/typephp-tinygui/experiments/ls-bind-probe/out/vol/ProbeLsBind.app/Contents/MacOS/probe.sock
+> 1790507921.968 direct-on-volume [2] not ok
+> 1790507921.968 direct-on-volume [3] begin bind AF_UNIX in /tmp /tmp/ls-bind-probe-77321.sock
+> 1790507921.968 direct-on-volume [3] ok
+> 1790507921.969 direct-on-volume == direct-on-volume done
+> 1790507922.362 direct-on-boot   == direct-on-boot pid=77322 uid=501 exe_dir=/private/tmp/ls-bind-probe-boot/ProbeLsBind.app/Contents/MacOS
+> 1790507922.363 direct-on-boot   [1] begin create regular file /private/tmp/ls-bind-probe-boot/ProbeLsBind.app/Contents/MacOS/probe.txt
+> 1790507922.363 direct-on-boot   [1] ok wrote=2
+> 1790507922.363 direct-on-boot   [2] begin bind AF_UNIX in exe_dir /private/tmp/ls-bind-probe-boot/ProbeLsBind.app/Contents/MacOS/probe.sock (sun_path used 73 B)
+> 1790507922.363 direct-on-boot   [2] ok
+> 1790507922.363 direct-on-boot   [3] begin bind AF_UNIX in /tmp /tmp/ls-bind-probe-77322.sock
+> 1790507922.363 direct-on-boot   [3] ok
+> 1790507922.364 direct-on-boot   == direct-on-boot done
+> 1790507922.429 ls-on-boot       == ls-on-boot pid=77325 uid=501 exe_dir=/private/tmp/ls-bind-probe-boot/ProbeLsBind.app/Contents/MacOS
+> 1790507922.429 ls-on-boot       [1] begin create regular file /private/tmp/ls-bind-probe-boot/ProbeLsBind.app/Contents/MacOS/probe.txt
+> 1790507922.430 ls-on-boot       [1] ok wrote=2
+> 1790507922.430 ls-on-boot       [2] begin bind AF_UNIX in exe_dir /private/tmp/ls-bind-probe-boot/ProbeLsBind.app/Contents/MacOS/probe.sock (sun_path used 73 B)
+> 1790507922.430 ls-on-boot       [2] ok
+> 1790507922.430 ls-on-boot       [3] begin bind AF_UNIX in /tmp /tmp/ls-bind-probe-77325.sock
+> 1790507922.430 ls-on-boot       [3] ok
+> 1790507922.430 ls-on-boot       == ls-on-boot done
+> 1790507939.113 ls-on-volume     == ls-on-volume pid=77840 uid=501 exe_dir=/Volumes/data/git/php/typephp-tinygui/experiments/ls-bind-probe/out/vol/ProbeLsBind.app/Contents/MacOS
+> 1790507939.113 ls-on-volume     [1] begin create regular file /Volumes/data/git/php/typephp-tinygui/experiments/ls-bind-probe/out/vol/ProbeLsBind.app/Contents/MacOS/probe.txt

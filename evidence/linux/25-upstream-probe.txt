@@ -1,0 +1,160 @@
+# Phase 25 — upstream nano gap probes (tpc v0.9.3 / php-nano v1.0.1 / phpx v2.9.2)
+# generated: 2026-09-27T10:28:29Z inside Apple Container 'tgl' (Debian bookworm, aarch64)
+# toolchain: g++ (Debian 12.2.0-14+deb12u1) 12.2.0 | GNU ld (GNU Binutils for Debian) 2.40
+# host php : 8.4.25  |  nano phpversion(): see probe A/B below
+# repo rev : n/a (copy in container)
+#
+# Two local patches were applied to the vendor/compiler tree to test whether
+# the recorded link/startup gaps are attributable to specific missing pieces.
+# Both patches were REVERTED after this transcript; diffs are appended below.
+#
+# KNOWN DEFECT (annotated 2026-09-27, Phase 25): section B's three `modules []` lines were
+# produced by a broken grep -- a composed array holds C *variables* (basic_functions_module,
+# date_module_entry, ...), not dependency-name strings, so no name set could be extracted that
+# way. Corrected raw data: evidence/linux/25-deps-vs-modules.txt section 1, and the empirical
+# startup table in its section 3. Nothing else in this file is superseded.
+
+== A. link gap: php::Args::get is defined only in phpx src/core/extension.cc,
+==    which is absent from extra.typephp-native.sources (and does not compile vs nano headers)
+-- unpatched aggregate build (stored in evidence/linux/24-nano-aggregate-build.log):
+closure.cc:(.text._ZZN3phpL22makeScopedCallableImplERKNS_7VariantERKNS_13CallableScopeEbENKUlP18_zend_execute_dataP12_zval_structRNS_6ObjectERNS_4ArgsEE_clES7_S9_SB_SD_+0xec): undefined reference to `php::Args::get(unsigned long) const'
+-- where the symbol lives:
+278:Variant Args::get(size_t i) const {
+2525:    Variant get(size_t i) const;
+-- the nano source list (phpx composer.json extra.typephp-native.sources):
+   30 sources; core/*.cc entries:
+   src/core/array.cc
+   src/core/base.cc
+   src/core/big_float_nano.cc
+   src/core/big_int_nano.cc
+   src/core/class.cc
+   src/core/closure.cc
+   src/core/decimal_nano.cc
+   src/core/debug.cc
+   src/core/foreach_iterator.cc
+   src/core/native_gc.cc
+   src/core/object.cc
+   src/core/scope.cc
+   src/core/string.cc
+   src/core/type_check.cc
+   src/core/variant.cc
+   extension.cc present? NO
+-- adding src/core/extension.cc to that list does NOT compile (why the naive fix fails):
+-- with Args defined in a composed TU (variant.cc patch) the shipping backend links:
+   g++ '@/tmp/tpgui-tier6/nanobuild/cache/link/app-nano-fixed.rsp' -o '/tmp/tpgui-tier6/app-nano-fixed' -Wl,--gc-sections
+   Auditing Nano runtime dependencies
+   Build successful: /tmp/tpgui-tier6/app-nano-fixed
+   binary=6933344 B, stripped=6169176 B
+   	linux-vdso.so.1 (0x0000ffff8c29d000)
+   	libstdc++.so.6 => /lib/aarch64-linux-gnu/libstdc++.so.6 (0x0000ffff8ba40000)
+   	libm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000ffff8b990000)
+   	libgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000ffff8b950000)
+   	libc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000ffff8b7a0000)
+   	/lib/ld-linux-aarch64.so.1 (0x0000ffff8c260000)
+   phpversion() under nano: 8.6.0beta3
+
+== B. startup gap: ZEND_MOD_REQUIRED("Core") can never be satisfied
+-- the aggregate links but dies at startup before any patch to the dep list:
+   Unhandled TypePHP exception
+   (app-nano-fixed, Args patch only: rc=1, stderr above, 0 RET frames)
+   CORRECTION (re-measured 2026-09-27 10:37Z, restored tree): app-nano-fixed actually prints
+   "Unable to start PHP Nano extensions"; "Unhandled TypePHP exception" is what app-nano-patched
+   (BOTH patches) prints. Both binaries die with rc=1 and 0 frames; the two messages were swapped
+   in the line above. See evidence/linux/25-deps-vs-modules.txt section 3.
+-- required deps in the generated module entry vs the composed module set:
+   nanobuild: requires [ZEND_MOD_REQUIRED("standard")ZEND_MOD_REQUIRED("date")ZEND_MOD_REQUIRED("hash")ZEND_MOD_REQUIRED("json")ZEND_MOD_REQUIRED("pcre")ZEND_MOD_REQUIRED("Core")ZEND_MOD_REQUIRED("SPL")ZEND_MOD_REQUIRED("standard")ZEND_MOD_REQUIRED("date")ZEND_MOD_REQUIRED("hash")ZEND_MOD_REQUIRED("json")ZEND_MOD_REQUIRED("pcre")ZEND_MOD_REQUIRED("Core")ZEND_MOD_REQUIRED("SPL")]
+      modules []
+   ctrlbuild: requires [ZEND_MOD_REQUIRED("standard")]
+      modules []
+   trapbuild: requires [ZEND_MOD_REQUIRED("Core")]
+      modules []
+-- php-nano resolves deps ONLY against that composed list:
+   DependencyState dependency_state(
+       const zend_module_entry *extension,
+       zend_module_entry *const *extensions,
+       size_t count) {
+       if (extension->deps == nullptr) {
+           return DependencyState::Ready;
+       }
+           if (dependency->type != MODULE_DEP_REQUIRED
+               && dependency->type != MODULE_DEP_OPTIONAL) {
+               return DependencyState::Invalid;
+           }
+           if (available == nullptr) {
+               if (dependency->type == MODULE_DEP_REQUIRED) {
+                   return DependencyState::Invalid;
+               }
+               continue;
+           }
+-- while the module actually named "Core" is registered outside that list:
+   
+   static zend_module_entry zend_builtin_module = { /* {{{ */
+   	STANDARD_MODULE_HEADER,
+   	"Core",
+   zend_result zend_startup_builtin_functions(void) /* {{{ */
+   {
+   	zend_module_entry *module;
+   	EG(current_module) = module = zend_register_module_ex(&zend_builtin_module, MODULE_PERSISTENT);
+   	if (UNEXPECTED(module == NULL)) {
+       php_output_startup();
+   
+       if (zend_startup_builtin_functions() != SUCCESS) {
+           return FAILURE;
+       }
+-- with tpc skipping "Core" in nano mode the same programs start:
+   strlen probe : 15 (rc=0; unpatched it printed 'Unable to start PHP Nano extensions' rc=1)
+   stdout probe : Undefined constant "STDOUT" (rc=134)
+
+== C. stdio gap: a nano program has no handle on its own stdin/stdout
+-- STDIN/STDOUT/STDERR are not defined (they are CLI-SAPI constants):
+   fwrite(STDOUT, ...) -> Undefined constant "STDOUT"
+-- the php:// wrapper is absent:
+   (rerun) Unable to find the wrapper "php" - did you forget to enable it when you configured PHP?
+   (rerun) Failed to open stream: No such file or directory
+-- /dev/std* symlinks exist in the container, yet nano cannot open them; regular files and
+-- /dev/null open fine in the SAME binary:
+   lrwxrwxrwx 1 root root 15 Sep 26 17:33 /dev/stdin -> /proc/self/fd/0
+   lrwxrwxrwx 1 root root 15 Sep 26 17:33 /dev/stdout -> /proc/self/fd/1
+   regular fopen ok: line-one
+   /dev/null: ok
+
+== patch 1/2: provide php::Args methods in a nano-composed TU (phpx)
+--- /tmp/variant.cc.bak	2026-09-27 10:20:14.255737175 +0000
++++ /work/tpc/vendor/swoole/phpx/src/core/variant.cc	2026-09-27 10:20:22.069355012 +0000
+@@ -1431,3 +1431,21 @@
+     return *this;
+ }
+ }  // namespace php
++
++// --- tier-6 experiment: provide php::Args methods in a nano-composed TU ---
++namespace php {
++Variant Args::get(size_t i) const {
++    if (i >= count()) {
++        return null;
++    }
++    return {&params.at(i), Ctor::CopyRef};
++}
++
++Array Args::toArray() const {
++    Array array(params.size());
++    for (const auto &param : params) {
++        array.append(Variant(&param, Ctor::Indirect));
++    }
++    return array;
++}
++}  // namespace php
+
+== patch 2/2: skip the unsatisfiable "Core" dependency in nano mode (tpc)
+--- /tmp/Translator.php.bak	2026-09-27 10:22:09.984136422 +0000
++++ /work/tpc/src/Translator.php	2026-09-27 10:22:27.956706888 +0000
+@@ -2094,6 +2094,10 @@
+             return;
+         }
+         $key = strtolower($extension);
++        // EXPERIMENT (tier-6 upstream repro): php-nano registers no module named "Core".
++        if ($key === 'core' && $this->isNanoMode()) {
++            return;
++        }
+         if (!isset($seen[$key])) {
+             $dependencies[] = $extension;
+             $seen[$key] = true;

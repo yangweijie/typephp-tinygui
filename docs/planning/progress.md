@@ -742,3 +742,294 @@ session 14 立下的规矩——**一个 kit 资产只有在"它被分发到的�
   的错误说法、去掉"README 尚无落库证据"这句已失效的自述）。`bash -n` 过。
 - **本文件仍未提交**：`test/win/README.md`（新）、`test/win/collect-evidence.sh`、`README.md`。
   下一轮方向还是那四个候选，等用户选。
+
+## Session 2026-09-27 (11) — 候选②：demo 页"调用链"文案改为按平台事实派生
+
+- **改了什么**（唯一被改的产品文件：`demo/src/frontend/index.html`，+84/-9）：副标题、①–⑤ 五个 chip、
+  页脚、成功横幅、"关于"对话框原本硬编码 Windows 三件套，在 mac/Linux 上是假话。现在由
+  `chainFor(sysinfo.os, sysinfo.backend)` 在 `CALL sysinfo` 回来后填充（新增 `renderChain(si)`，
+  `CHAIN` 缓存给横幅/页脚/关于复用）；markup 侧给元素加 id，占位文案改成平台中立
+  （握手完成前不许诺任何具体引擎名）。
+- **为什么不用 UA 嗅探**：`sysinfo` 已经回 `os`（`PHP_OS_FAMILY`）与 `backend`（shim 按 app 二进制前两字节
+  分类后注入的 `TYPEPHP_APP_KIND`，见 `CoreHandler::backend_kind`），这两个是本仓库里**已被证伪机制保护**的
+  事实；UA 字符串在三种 WebView 里都长得像 WebKit，靠它区分反而是猜。⑤ 因此绝不默认声称 AOT：mac dev 实测
+  `app_kind=stock` ⇒ 文案自动变"PHP 后端（系统 php，未经 AOT）"。
+- **本轮真机跑出来的端点事实**（写进文案前逐条核对，不是照抄旧措辞）：mac dev 由 `launcher-macos` 自选
+  `/tmp/tinyjs-typephp-<launcher pid>.sock`（现场日志 `transport=unix-socket pipe=/tmp/tinyjs-typephp-38870.sock
+  app=…/bin/run-backend.php app_kind=stock`）；Linux dev 的端点由 `gui/bin/tgui` 给
+  （`DEV_SOCK=/tmp/tinyjs-typephp-dev-$$.sock`，注释写明是为绕 `sun_path` 108B 上限 = bug #15）；只有打包方向
+  才是 `<exe 目录>/app.sock`（`backend_shell.cpp` 的 launch-mode 分支，超长才退 /tmp）。
+- **mac 拿不到像素**：`screencapture -x` 报 `could not create image from display`（进程无 Screen Recording
+  权限），`tools/e2e/*.py` 又是 ctypes+user32 的 Windows 工具。⇒ 视觉验证换轨成**离线 DOM harness**：
+  `/tmp/demo-chain-harness.js`（`vm` + stub `document`/`window.__invoke`/`tiny.*`）跑整套页面脚本，三套 fixture
+  （Windows+aot / Darwin+stock / Linux+aot）→ 每平台的 chip、页脚、横幅文本全部符合预期，且
+  `WINDOW-E2E OK ping=pong in Nms` marker **逐字未变**（这条是所有平台驱动 grep 的目标，动它等于废掉证据链）。
+- **负控（断言有没有牙）**：同一 harness 跑 `git show HEAD:demo/src/frontend/index.html` 的旧页面 ⇒
+  `engine/launcher/endpoint/shim/app/note/footer_*` 全 `(missing)`，横幅仍写死
+  "WebView2 → launcher → 命名管道 → shim → PHP AOT 后端" —— 在 Darwin fixture 下正好暴露旧 bug。
+- **顺带的 mac 真机事实核对**（跑 `tgui dev` 于 `demo/`）：13 CALL + marker `135ms`；本轮多次编辑
+  `index.html` 触发 **3 次 bounce（shim 日志 4 个 `[shell] transport=` 周期）**；`pkill launcher-macos` 后
+  `launcher-macos`/`backend_shell`/`run-backend.php` 零残留、dev socket 无遗留、`tgui dev` 随窗口退出。
+  这是 21b 的 mac 生命周期在改动 demo 页后的再次通过，非新断言。
+- **纪律**：`WINDOW-E2E` marker 的格式没动（只改了它上面的 `setBanner` 文案，并在代码里写了注释说明这条
+  不能改）；`git status` 确认工作树只有 `demo/src/frontend/index.html` 一处产品改动，harness 留在 `/tmp` 未入库。
+- **剩余候选**：Linux 真桌面会话验收 / mac Developer ID + 公证（Errors #20、#21）/ `--nano` 单文件聚合入口
+  （Errors #22）。**要用户定方向。**
+
+## Session 2026-09-27 (12) — 候选②补像素验收（用户授予 Screen Recording 后）
+
+- **权限变化**：用户授予屏幕录制后 `screencapture -x` 可用（全屏 1920x1080 抓取成功），
+  上一轮"mac 拿不到像素"的前提失效 ⇒ 本轮把候选②从"只有离线 harness"升级为**真窗口像素复核**。
+- **抓取配方**（可复用）：全屏截图里 demo 窗口被 Qoder 挡住，`System Events` 取窗口仍报
+  `-1719 不允许辅助访问`（Accessibility ≠ Screen Recording，两条独立授权）⇒ 写 `/tmp/winlist2.c`
+  用 `CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly|kCGWindowListExcludeDesktopElements)`
+  拿 window number（需 `-framework CoreGraphics -framework CoreFoundation`），再
+  `screencapture -x -o -l<id> win.png` **直接按窗口号抓，遮挡无关**。
+- **像素确认的文案**（窗口 1100x792，`/tmp/tpgui-demo2/header2x.png`）：副标题"宿主 WebView 页面 →
+  C++ launcher → 本机 IPC 端点 → C++ shim → PHP 后端"；五枚 chip ①WKWebView 渲染 ②launcher-macos (C++)
+  ③AF_UNIX：/tmp/…-<pid>.sock（打包：<exe 目录>/app.sock）④backend_shell (C++) ⑤PHP 后端（系统 php，
+  未经 AOT）；note"dev 下由 launcher 以 --typephp 拉起 shim"；绿横幅"✓ 全链路已连通 — WKWebView →
+  launcher-macos → AF_UNIX → backend_shell → 系统 PHP 直跑的后端（首次往返 56 ms）"。
+  **同一张图里 `CALL SYSINFO → RET` 面板就写着 `backend  stock PHP CLI (no AOT)`** —— 文案派生的输入
+  和输出同框，等于自证不是硬编码。本轮两次实跑 marker：56ms / 49ms / 44ms。
+- **页脚拿不到像素（记录边界，不是缺陷）**：页脚在滚动折叠线以下。试过把 conf `size` 临时改
+  `1100x1000`→`1100x1600`（macOS 把高度钳到屏幕 1050）→`1860x1000`（加宽不重排，页面高度不变），
+  又试过 `/tmp/scroll.c` 合成滚轮事件（`CGEventPost` 返回 0 但页面纹丝不动 —— 输入注入受
+  Accessibility 管，仍被拒）。⇒ 页脚/关于/alert 三处文案的验证仍只靠离线 harness + 代码走读；
+  已把 `demo/tinyjs.json` 改回 `1100x760`（`git status` 里它不出现 = 回滚干净）。
+- **teardown 复核**：三次启动各自 `kill launcher-macos` 后 `launcher-macos|backend_shell|run-backend.php`
+  零残留、`/tmp/tinyjs-typephp-*` 无遗留 socket、`tgui dev` 随窗口退出 ⇒ mac 生命周期在改文案后仍成立。
+- **回写**：`task_plan.md` 候选②标注"像素已复核（头部/横幅），页脚受屏幕高度限制"，并**删掉/改写**
+  关键约束里"mac 这台机器拿不到像素"那条已失效的说法；memory `project-mac-verification-no-pixels.md`
+  同步纠正为"已授权，附抓取配方"。
+
+## Session 2026-09-27 (13) — Phase 23：Linux 真桌面会话验收 **PASS**
+
+- **做了什么**：在容器 `tgl` 里把"裸 Xvfb"升级成真桌面（Xvfb :97 → `dbus-launch` → Openbox → picom →
+  自写 SNI `StatusNotifierWatcher`），新增三个工装：
+  `test/posix/desktop-session.sh`（驱动）、`test/posix/sni_host.py`（SNI 宿主 + dbusmenu 展平 + 点击）、
+  `test/posix/mock_shim.py`（AF_UNIX 服务端替身，注入 `TRAYBEGIN/ITEM/TRAYEND`、`HKREG` 帧），
+  以及 `test/posix/collect-desktop-evidence.sh`（从**入库文件**独立重算全部结论）。
+- **结果**：`== desktop-session result: PASS`。A1 reparent + `_NET_FRAME_EXTENTS 1,1,20,5` + relY==top extent；
+  A2 合成器持 `_NET_WM_CM_S0`（启动前无 owner 作基线）；A3 minimize/maximize 回 `WINSTATE`；
+  A4 56 CALL / 56 RET + `WINDOW-E2E OK ping=pong in 140ms`；A5 `GDK_SCALE=2` ⇒ 1280×856；
+  B1 托盘项被宿主读到并展平出 5 项菜单；B2 `TRAY tray-hello` + `TRAYCLICK`；B3 `HOTKEY boss`；
+  B4 负控（F11、裸 F12 无帧）；X 零残留 + 两个 sock 由 shim 自行 unlink。
+- **C1 记为 GAP 不算通过**：`Protocol::decode` 对 `HOTKEY ` 返回 `type=ignore`（`TRAY`/`TRAYCLICK` 正常）。
+- **第一轮 FAIL 的四条，全是驱动自己的问题，逐条修**：picom `--vsync` 在 Xvfb 上 FATAL 退出 +
+  `_NET_WM_CM_S0` 是 selection 不是 property（`xprop -root` 永远查不到）；A1 的 `xwininfo` 解析
+  （`-root` 首行是空行、普通 `-id` 没有 Parent 行）；B4 基线取在正控之前；teardown 把 `<defunct>`
+  当存活进程、把"驱动 SIGTERM 掉 shim"造成的 socket 残留算成产品泄漏。
+  另有一条**产品侧**结论被这轮证实：`tools/build-linux.sh` 缺 `-DTINYJS_X11` ⇒ 热键注册返回成功但
+  什么都没抓（加宏前 B3 失败、加宏后通过）。
+- **像素取证**：4 张 PNG 已入库（`23-shot-session.png` 里能看到 Openbox 标题栏 + 菜单条 + 渲染后的 demo 页；
+  `23-shot-hidpi.png` 里同一版式字号明显 2 倍）。
+- **回写**：`README.md` 验证表新增 tier 5 行 + 已知限制①改写（真桌面已证，剩真硬件/Wayland/分数缩放）
+  + 新增一条"Linux 桌面集成的两个产品缺口"；`test/posix/README.md` 新增 Tier 5 段（断言表 + 三条发现 +
+  工装坑清单）与 4 个 Files 条目，并修正 tier 4 的"手敲 g++ 命令行"会静默丢掉两个宏；
+  `task_plan.md` 新增 Phase 23 闭环段并勾掉 22d 的"仍未证明：真桌面"；`findings.md` 新增一节。
+  证据：`evidence/linux/23-*`（15 个文件）+ `23-MANIFEST.txt`。
+- **未做**：没有提交（等用户明确要）；后端 `tray.set` / `hotkey.register` 与 `Protocol::decode`
+  的 `HOTKEY` 分支属产品改动，本轮只记录不实现。
+
+## Session 2026-09-27 (14) — 候选⑤：`--nano` 单文件聚合入口 **PASS-with-recorded-GAP**（Phase 24）
+
+- 用户指令「继续 5」→ 本 session 只做候选⑤的收尾（tier6 驱动闭环 + 证据入库 + 文档/计划回写），不开新方向。
+- **`[4c]` 的契约改完了**：驱动原先用 `-x app-ctrl && ./app-ctrl | grep nano-ctrl-ok` 一条复合断言同时代表
+  "链得上"和"跑得动"，于是把上游第二个坑读成了"容器里 php-nano 全坏了"。现在拆成两条独立断言
+  （link rc / run rc），并加 [4d] 专项复现后者。冷缓存整轮重跑结果：
+  `== tier-6 result: PASS-with-recorded-GAP (2 upstream gap(s): link:php::Args::get | startup:basic_functions)`。
+- **归因量到底**：聚合体 240 个对象、对照程序 138 个对象，两边 `nm` 都是 `define php::Args::get=0 / reference=1`，
+  且 Closure TU 同名同哈希（`closure-f8759031b18c.o`，sha256 前缀 `55c5e4bad9996223`）；对照程序链上**并跑出**
+  `nano-ctrl-ok a` ⇒ 变量只剩"组合后的 runtime 留下哪些 section"。
+- **新量到的上游缺陷（#34）**：`strlen`/`strcmp`/`array_key_exists` 会让 tpc 把 `basic_functions_module` 从
+  组合集合里丢掉，而生成的模块入口仍声明 `ZEND_MOD_REQUIRED("Core")` ⇒ php-nano `dependency_state()` 找不到依赖
+  ⇒ 链上的二进制启动即 `Unable to start PHP Nano extensions`（rc=1）。`implode`/`ucfirst`/`usort` 不受影响；
+  `json_encode` 也丢 basic_functions 但**能跑**（它要的是 `ZEND_MOD_REQUIRED("json")`，而 `json` 在集合里）
+  ⇒ 决定生死的是"生成的依赖名"与"保留的集合"是否配对。demo 聚合体的集合保留 basic_functions（[4c] 已断言），不受此坑影响。
+- **21d 的 tier-3 结论复核通过**（这次误判差点把它一起推翻）：仓库自带 fixture
+  `experiments/nano-stdio-test/nano_min.php` 本轮重编重跑 = **1 160 600 B / `nano-policy-build-ok` / rc=0 / `ldd` 无 libphp**。
+  顺带一条新认知：**nano 产物尺寸不逐字节稳定**（README 记的 1,160,624 B 是同程序那次运行的数字），
+  所以 README 已注明"引用 nano 产物尺寸必须带日期"（tier-3 行与 tier-6 的对照程序尺寸都加了这句），
+  而聚合体的 41,995 B **可以**直接引用——它是 token 级聚合的确定性输出，[1] 有"重跑逐字节相同"这条断言守着，
+  只是产物本身在 gitignore 的 `build/` 下、随源码重新生成。
+- **tpc 入口陷阱（#29）**：`TPC` 必须是 `/work/tpc/bin/tpc.php`；指到 `cli.php` 会把我们的后端**当 PHP 跑**
+  （打 `READY`、应答 stdin）再死在 `undefined function main()`——长得像成功的静默穿帮。驱动加了"日志首行是 `READY` 就 FAIL"守卫。
+- **入库**：`evidence/linux/24-*`（一次冷缓存驱动运行 + `24-closure-nm.txt`）+ 新收集器
+  `test/posix/collect-tier6-evidence.sh`（27 条 claim 全部**从入库文件重算**；`REGEN=1` 重写清单，
+  校验模式除时间戳行外必须逐字一致 ⇒ 手改清单会被抓）+ 生成器 `test/posix/tier6-nm-evidence.sh`
+  （原先误放在 gitignore 的 `test/posix/.work/`，已提为正式脚本，否则清单引用的哈希文件根本不在仓库里）。
+  本机 `REGEN=1` 与校验模式各跑一次：均 rc=0、`ALL CLAIMS DERIVE CLEAN`。
+- **回写**：`test/posix/README.md` 加 Tier 6 段 + 档位总表补 5/6 两行 + 文件清单补五条条目
+  （聚合器、tier6 驱动、`tier6-nm-evidence.sh`、`collect-tier6-evidence.sh`、`evidence/linux/24-*`），
+  并改掉一处我自己写错的示例：`tier6-nano-aggregate.sh --check` —— 驱动不解析 argv，`--check`
+  属于 `tools/aggregate-backend.php`（已按真实用法重写，并在本机以系统 PHP 跑过：`--check` 对
+  `build/backend_aggregated.php` 出 rc=0）；根 `README.md` 的验证表新增 tier-6 行、tier-3 行补"尺寸带日期"、
+  已知限制里"demo 编不过"的结论改为**"聚合后过 nano 前端，链接阶段卡上游缺 `php::Args::get` 定义，另有 #34 运行时坑"**，
+  并把"要先去 `getenv`/`gethostname`"这条前置条件改成已完成（`AppRoot::fromEnv()` / `CoreHandler::backend_kind()`
+  统一读 `$_SERVER`→`$_ENV`，`--dry` 过前端即验证）；
+  `task_plan.md` 新增 Phase 24 段 + Errors #29–#34 + Current Phase 候选清单更新（③⑤ 已闭环，只剩 ④ mac 签名/公证）。
+- **诚实边界**：nano 产物**仍不存在**（[4b] 卡在 ld）；"聚合体与多文件树同帧"只在 stock PHP 下证过；
+  驱动里 size/strip/`ldd`/帧等价那几段是为上游修好后准备的，本轮**没走到**；Windows 侧 `--nano` 依旧是 policy 包装。
+- 下一步（等用户选）：④ mac Developer ID + 公证（Errors #20/#21），或把 #33/#34 整理成给 php-nano/tpc 的上游 issue 素材。
+
+## Session 2026-09-27 (15) — 候选⑥：把 Phase 24 的上游卡点整理成可直接提的 issue 素材（Phase 25，**交付文档、未提交上游**）
+
+- 用户指令「把 #33/#34 整理成给 tpc/php-nano 的上游 issue 素材」。做法不是"把日志排个版"，
+  而是**先把每条归因量到符号/文件/行为止，再把证不到的部分显式标成假设** —— 结果这一轮把 Phase 24 自己
+  写下的一个结论证伪了，并挖出**第三个**卡点。
+- **[4c] 的推断被证伪（Errors #35）**：Phase 24 写过"聚合体的集合保留 basic_functions，所以它的
+  `ZEND_MOD_REQUIRED("Core")` 可满足、demo 不受 [4d] 影响"。两条都错：
+  ① `Core` 这个名字在 nano 里**只有一个**入口持有 —— `static zend_module_entry zend_builtin_module`
+  （`Zend/zend_builtin_functions.c:52-54`），而 `static` ⇒ 任何自动生成的 `composer_extensions.cpp`
+  都引用不到它（实测 **14 个组合数组里 0 次命中**）⇒ `ZEND_MOD_REQUIRED("Core")` 对**每一个** nano 构建
+  结构性不可满足，与"留下哪些模块"无关；② 聚合体自己的 requires 是
+  `standard date hash json pcre Core SPL`（**它自己也要求 Core**），补上 `Args::get` 后链上的
+  `app-nano-fixed` 直接跑出 `Unable to start PHP Nano extensions`、rc=1。
+  教训一句话：**grep 到某个变量 ≠ 该变量的 `->name` 能匹配上依赖串**（`basic_functions_module` 的 name 是 `"standard"`）。
+- **第三个卡点：nano 产物没有标准流句柄（Errors #37）**。同一套工装下的实测表：
+  `echo STDOUT` → rc=134 `Undefined constant "STDOUT"`；`fopen('php://stdin')` / `stream_socket_server` /
+  包一层重定向 wrapper 全失败；**同一个二进制的 `fopen('/tmp/regular-file')` 与 `php://output` 正常**；
+  容器里 `/dev/stdin`→`/proc/self/fd/0` 符号链接存在，但 nano 读它仍失败（`nano_ver` 同一轮 rc=0 出 `8.6.0beta3`，
+  所以不是构建坏了）。这决定了：**即使 ①② 都修好，stdio 帧协议也跑不到出帧那一步**，
+  得换 socket/文件信道或让上游补 `STDIN`/`STDOUT`/`STDERR` 常量与流封装。
+- **#33 重新定性**：那不是上游缺口，是**我们自己的复合断言**（`链得上 && 跑得动` 用 `&&` 并成一条）把
+  上游第二个坑读成"容器里 php-nano 全坏了"。素材里按"我们的 bug"写，不给上游提。
+- **两个可验证的本地补丁（写进素材当"证据 + 复现"，不是给上游的方案）**：
+  ① 往 phpx 的 `src/core/variant.cc` 末尾补 `Args::get` / `Args::toArray` 两个定义 ⇒ 聚合体
+  **链接通过**，产物 6,933,344 B（strip 后 6,169,176 B，2026-09-27 该轮，尺寸不逐字节稳定）；
+  ② 往 tpc 的 `Translator::appendExtensionDependency()` 补 4 行（nano 模式下丢掉 `core` 依赖）⇒
+  `strlen` 探针从 rc=1 变成**打印 `15`**。反向证据：只把 `src/core/extension.cc` 单独塞进构建**编不过**
+  （`no declaration matches ...addIniEntry`、`ZEND_RESULT_CODE does not name a type`、
+  `_check_args_num` 未声明 ×2，rc=255）⇒ 归因是"该文件未列入 nano manifest"，不是"少编一个文件就行"。
+- **归因配方（本轮真正值钱的东西）**：**打补丁 → 立刻重测 → 立刻还原 → `diff -q` 确认**。容器侧
+  `/work/tpc/src/Translator.php`、`/work/tpc/vendor/swoole/phpx/src/core/variant.cc` 已按此还原并验证。
+- **冷缓存污染（Errors #36）**：第一次想重算 `24-closure-nm.txt` 时数字变成 `objects=242`、
+  `define=[variant-b5576ceab9f9.o]` —— 因为 ① 的 vendor 补丁就在**同一批 build-dir** 里编过，
+  等于拿"已修好的树"去测"未修的坑"。处理：入库文件当场按备份还原（`sha256` 回到清单记录的那份，2,183 B），
+  容器侧脏产物改名 `closure-nm.CONTAMINATED-by-variant-patch.txt` 隔离，
+  `tier6-nm-evidence.sh` 顶部加 **COLD-DIR RULE** 注释 + 输出里写 `# provenance:` 行。
+  聚合体"也要求 Core"这个需要的数据改从 `25-deps-vs-modules.txt` §1 取，并由收集器 claim 18c–18f 重算。
+- **入库**：`evidence/linux/25-deps-vs-modules.txt`（6,641 B，rev-D：requires vs 组合数组、"Core" 三处引文、
+  实测启动表、stock 树复核、探针源码），`25-upstream-probe.txt`（7,719 B，含两处**当场写在文件里**的更正标注：
+  §B 那三行 `modules []` 来自坏 grep、已被 §1 取代；`Unhandled TypePHP exception` 属于 `app-nano-patched`
+  不是 `app-nano-fixed`），`25-naive-fix-fails.log`（21,563 B），探针工装 `test/posix/upstream-nano-probes/`
+  （7 个 .php + `run-probes.sh`，一条命令在容器里重算全部）。
+- **交付的素材**：`docs/upstream-issues/README.md`（三缺口表 + 依赖顺序 链接→启动→运行 + 共享环境/复现 +
+  已知缺陷标注 + "对 Phase 24 记录的一处更正"），`phpx-nano-args-get-link-gap.md`（含"最小复现做不到那么小"
+  的诚实说明：`nano_ctrl.php` 单独能链能跑，失败用例是 16 模块 / 1,223 行聚合体），
+  `tpc-nano-core-dependency-unsatisfiable.md`（最小复现 + requires/集合对照表 + 三段根因带引文 + 4 行补丁前后表 +
+  3 个修法建议含报错文案），`php-nano-missing-stdio-handles.md`（4 探针表 + 同二进制成功对照 +
+  为什么卡住我们的协议 + 3 条诉求）。**全部只在本地，一条都没往上游提。**
+- **代码/文档回写**：`tier6-nano-aggregate.sh` 的 `[4d]` 改成** verdict 只由"跑那个二进制"决定**
+  （输出 `15` → ok/上游已修；`Unable to start PHP Nano extensions` → gap），`DEP`/`KEEPS_BF` 降级为归因信息；
+  `[4c]` 现在把聚合体自己的 deps 打出来（不再"证明"它不受影响）；gap id `startup:basic_functions` **故意保留**，
+  否则入库日志与清单对不上（旁边写了注释）。`collect-tier6-evidence.sh` 加 `25-*` 存在性检查、SUPERSEDED 说明块、
+  claim 18c–18f、`25-*` 与探针目录的 sha 段（探针工装带"provenance"caveat）。
+  本机 `REGEN=1` 重写清单（113 行 / 32 条 ok claim）后，无参独立重算 **rc=0、`ALL CLAIMS DERIVE CLEAN`**。
+  另外 `README.md`（tier-6 行改成三缺口 + 已知限制① ②③）、`test/posix/README.md`、`findings.md`
+  （改掉"basic_functions 的模块名就叫 Core"那条错判 + 新增 Phase 25 一节）、`task_plan.md`
+  （Phase 24 `[4d]` 那行划掉改正、诚实边界扩写、新增 Phase 25 段、Errors #35–#37）全部回写。
+- **诚实边界**：素材里"聚合体为什么死"是**结构性论证 + 实测 rc/err**，不是逐模块解析器插桩；
+  `app-nano-patched` 那个 `Unhandled TypePHP exception` 只测到现象、没归因；
+  上游修法建议是我们单方面写的，没和 tpc/php-nano 维护者对过；提交与否等用户明确指示。
+- 下一步（等用户选）：① 按素材真去提 issue（需用户批准，含账号/网络动作）；② 候选 ④ mac Developer ID + 公证；
+  ③ 把 nano 路线的"换信道"（socket/文件帧）做成一条新候选。
+
+## Session 2026-09-27 (16) — Phase 26：把 #21 从"环境限制"做成"已修的产品行为"（**实机 22/22 PASS**）
+
+- 用户指令「继续推进下一阶段」。先确认唯一剩下的候选 ④（Developer ID + 公证）**本机无法验收**：
+  `security find-identity -v -p codesigning` → `0 valid identities`。用 AskUserQuestion 请用户选方向，
+  **用户未答**，按推荐项自行推进 = 修 #21（纯本地、不需要账号/证书）。
+- **26a 量根因**（`experiments/ls-bind-probe/`，`probe.c` + `run.sh`）：三步判据 × 四种起法。
+  只有 `open` + 非启动卷卡住，且卡在 **[1] 建普通文件**（`__open`、state `S`、
+  `AUTHREQ_PROMPTING: kTCCServiceSystemPolicyRemovableVolumes` 长期 pending）。
+  ⇒ 旧记录里"AF_UNIX `bind()` 特异"是**错归因**：`__bind` 只是 shim 第一个碰文件系统的调用。
+  顺带量到 mac 的 `sun_path` 可用 **104 B**（Linux 108），探针那条深路径 113 B 直接 `[2] not ok`。
+- **26b 修法**（`shim/backend_shell.cpp`）：launch 模式选端点时增加"app 目录是否与 `/` 同卷"判据
+  （`stat` 两处 `st_dev`，`#if defined(__APPLE__` 包住以免 Linux 出现 unused-function），
+  不同卷或长度超 `sun_path` ⇒ 落 `tmp_endpoint()`（优先 `$TMPDIR`），并写
+  `[shell] endpoint moved off the app dir (<why>): <from> -> <to>`。
+  `tools/verify-bundle-macos.py` §8 改成镜像同一条规则、**报出真实落点**（从 warn 变 ok）。
+- **Linux 侧回归**（容器 `tgl`，同一份源码 sha256 `ae19ef0e…`）：`g++ -std=c++17 -O2 -Wall -Wextra` →
+  rc=0、**0 warning 行**；`bash test/posix/all.sh` → **ALL TIERS OK**（11/11/14/15），
+  launch 档仍断言 `/work/repo/test/posix/.work/launch/app.sock`，日志里 0 次 relocation 行
+  ⇒ "Apple 才搬家"这条规则在 Linux 上确实没生效。证据 `evidence/mac/26b-linux-all.log`。
+- **26c 实机验收**（`test/posix/macos-bundle-launch.sh`，**22 ok / 0 fail / 0 skip**，rc=0）：
+  `open` 到 `launcher connected`；端点在 `$TMPDIR`、**bundle 目录零新增文件**；
+  **13 CALL / 13 RET** + `WINDOW-E2E OK ping=pong in 103ms`；A4b 用新加的 `tools/mac-winlist.c`
+  拿 window number 后 `screencapture -x -o -l<id>` 抓到真窗口（`evidence/mac/26b-window.png`，
+  图里 chip ③ 与 `CALL SYSINFO → RET` 面板同框）；A5 关窗后 shim/launcher/socket 全清；A6 直跑回归；
+  B 负控（pre-fix 二进制 + 未授权 id）20s 不连接、`sample` 停在 `__bind`、state `S`。
+- **本轮踩到并修掉的三个 harness 陷阱**：
+  ① 负控一度"连上了"⇒ 授权按 **bundle identifier** 记账，产品 id 已被答过一次（Errors #38）→ 控制 bundle
+     自带 `CTL_ID`，且"连上"降级为 SKIP + `tccutil reset` 配方，另加两条与授权无关的确定性断言；
+  ② 固定名 `build/26c-ctl.app` 让上一轮孤立的挂起进程被当成本轮结果（`sample` 采到 19:38 那个 pid，
+     栈里全是 `nanosleep`/`poll`）→ 目录带 `$$` + 跑前先杀 `build/26c-ctl*` 残留；
+  ③ 想重签控制 bundle 时 `codesign` 报 `code object is not signed at all / In subcomponent: …/App.conf`
+     （Errors #39）→ 不重签，改用 `codesign --verify` 的成败分支；这条同时是候选 ④ 的前置砖。
+- **文档回写**：根 `README.md`（验证表新增"外部卷双击"一行 + mac 打包段改写 + 已知限制 ②③ 重写、
+  目录树补 `mac-winlist.c`/`experiments/ls-bind-probe`）、`test/posix/README.md`（新章节 + 文件清单 +
+  端点回退条件从"只看长度"扩成"长度与卷"）、`demo/src/frontend/index.html`（Darwin chip ③ 端点串补
+  "不在启动卷时落 `$TMPDIR`"）、`task_plan.md`（Phase 26 段 + Errors #21 改写 + #38/#39）、`findings.md` §5/§6。
+- **诚实边界**：① Windows 侧本轮**未重编**（新代码全在 `#ifndef _WIN32` / `#if defined(__APPLE__)` 内，
+  命名管道分支不受影响，但没跑过实机）；② `SIGTERM`/`kill -9` 打断仍留端点文件（与 Phase 23 的 #28 同源，未改）；
+  ③ 用户会不会真的看到卷授权弹框**没测**——我们走的是"在卷上不写文件、根本不触发弹框"；
+  ④ 负控的"挂起"半段依赖本机 TCC 表，已按 #38 降级；⑤ 未提交 git（等用户明说）。
+
+- **26c 收尾（同一天 19:5x–20:0x）**：改完 Darwin chip 那行后想补像素，**Screen Recording 授权中途掉了**
+  （`screencapture -x -o -l4713` → `could not create image from window`；整屏抓取成 1920x1080 **单色**图 ⇒
+  权限侧症状，不是驱动坏了）。于是把这一格文案的证据换成第二层：驱动**复跑得 21 ok / 0 fail / 1 skip**
+  （唯一 skip = A4b，`evidence/mac/26c-macos-bundle-launch-final.txt`），文案断言入库为
+  `test/posix/demo-chain-harness.js`（**13 ok / 0 fail**）。
+- **负控第一版是空控，记 Errors #40**：习惯性地拿 `git show HEAD:demo/src/frontend/index.html` 做控制 ⇒
+  `FAIL chainFor() not found`。HEAD 里派生函数根本不存在，这条失败只证明"文件不同"。
+  改成**只回退被改的那一行**的 scratch 副本 ⇒ 12 ok / **恰好 1 条** FAIL（红的正是新加的 `$TMPDIR` 断言），
+  Windows/Linux/unknown-os 三条 fixture 全照过 —— 这才算证明断言有牙。两次运行连同生成方式一起写在
+  `evidence/mac/26c-chain-harness.txt`。
+- 文档同步：`README.md` 验证表那行补"复跑 21/0/1 skip + skip 的原因 + 文案改由 harness 覆盖"；
+  `test/posix/README.md` 加"demo 页在说什么"一节（含 harness 用法与有效负控的写法）、Files 清单补
+  `demo-chain-harness.js`、驱动那节改写两次运行的关系；`task_plan.md` Phase 26 26c 段与 Errors #40、
+  "关键约束"里授权会自己掉 + 三层取证配方（像素 → `-R<rect>` → harness，抓不到记 SKIP）。
+
+## Session 2026-09-27 (17) — Phase 27：用 VuePress 给仓库补一个能按"我要干什么"进去的文档站
+
+- **起手前先定边界**（用户只说了"用 vuepress 添加文档"）：站点装在 `docs/` 下、`package.json` 独立，
+  不进 composer 依赖图；**仓库文件仍是唯一权威**，站点是它的可读视图。这条写在根 README 新增的那一节末尾。
+- **磁盘纪律**：`node_modules` 约 140MB、npm 缓存全部落 `/Volumes/data`
+  （`npm_config_cache=/Volumes/data/.npm-cache-typephp`），启动卷全程没动。
+- **三堵安装/配置墙**（细节已固化进 README 那一节，这里只留索引）：
+  rc 版本配对（`vuepress@2.0.0-rc.31` ↔ `theme-default@2.0.0-rc.136`）、`vuepress/cli` 没有 `defineConfig`、
+  默认主题要 `sass-embedded`。最贵的是 **`@vuepress/markdown` 强制 `html: true`**：文档里
+  `<pid>` / `<App>` / `<html>` 这类占位符会被当 HTML 送去 Vue 模板编译，报
+  `Element is missing end tag`（`docs/planning/task_plan.md`、`progress.md` 自己就是受害者），
+  **配置项关不掉** ⇒ 写了 `escapeRawHtml` 插件转义 `html_block`/`html_inline`；
+  前置检查：全仓 markdown 无合法 HTML 标签、无 HTML 注释（不然这条会静默吃掉真 HTML）。
+- **同步脚本不是"复制"那么简单**：`docs/sync-external.sh` 要 ① 在页首声明来源，② 把仓库相对链接改写成
+  站点路由（`docs/x/y.md` → `/x/y.html`，`docs/x/README.md` → `/x/`），③ **改不动的就降级**成
+  "标签（仓库路径 `rel`）"而不是留个死链，④ 删掉上次同步留下、这次不在清单里的孤儿页。
+  实跑：4 份同步、遗留相对链接 0、真改写 2 条（指 `docs/upstream-issues/`）。
+- **写导览页顺带量出四条新事实**（全部回写 `docs/guide/`，其中 ①② 是本轮真正的收获）：
+  ① `demo/src/backend.php` 的 0 字节**是设计**不是遗留：`tgui dev` watch `$PWD/src`
+  （`gui/bin/tgui:241-242`），Linux 验收 `cd demo && tgui dev`（`test/posix/linux-tgui-window.sh:118`），
+  该文件就是热重启的触碰靶子（`:73` 报错原文 "the touch target"）；真实后端入口是仓库根 `src/backend.php`
+  （1,061 B，`bin/run-backend.php` `require __DIR__.'/../src/backend.php'`）。
+  ② **页面能调 ≠ 后端会答**：反射数出 `demoDispatcher()` 是 27 exact / 0 prefix；`tiny.js` 的
+  `call('<字面量>')` 有 141 个名字 ⇒ 122 个走 `unknown method`。其中 7 个 `dialog.*` 由
+  `Protocol::dialogFrame()` 在**进 Dispatcher 之前**短路（发 `DLG` 不发 RET，`Backend.php:46-50`），
+  所以"会回的"是 19 个而不是 27 个。两支 launcher 都只转发不代答（`launcher-win.cc:4740/7642`；
+  `method == "…"` 在两份 launcher 源里零命中）。
+  ③ `HandlerInterface.php` 的 `Dispatcher::addHandler()`、`DemoApiHandler::methods()` 里
+  "bootstrap.php 有 `app.*` 前缀注册"两处注释**都是错的**（实为 `add()`；prefix 表是空的）。文档没抄，
+  并按②的方式标注。
+  ④ 早先我自己读源码读出来的两个口误本轮改掉了：`TRAYCLICK` **有**解码（`Protocol.php:225`，
+  第一次用 awk 取区间截断在 225 行之前所以看漏）；"Linux 方向相反"相反的是**谁 spawn 谁**，
+  不是 client/server 角色 —— 端点服务端**永远**是 shim。 ⇒ demo 页 Linux chip 那句文案仍是误导，**还没修**。
+- **验收**：`npm run build` 绿（25 页 + 404，1.36s）；`dist/` 全部 `href="/…"` 做存在性校验 0 缺失；
+  `planning/task_plan.html` 里 `<pid>` = 0、`&lt;pid&gt;` 有（证明转义生效而非页面丢失）；
+  `vuepress dev` 起 9341 后页面 200，随后停掉。**未做**：真实浏览器渲染 / 水合无错
+  （本机无 Chrome 可执行文件，chrome-devtools MCP 直接报路径不存在），这条是推断不是实测。
+- 回写：根 README（新增「文档站」一节、目录树 `docs/` 子项、相关文档表首行）、`.gitignore`
+  （`docs/node_modules/`、`docs/.vuepress/.temp|/.cache/`、`docs/reference/`）、`task_plan.md` Phase 27。
+  `check-complete.sh` 仍报 **24/24**（Phase 23 起的叙述块按约定用二级标题，有意不计入）。
+  **本轮没有任何 git 提交**，全部改动留在工作树。

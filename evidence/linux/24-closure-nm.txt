@@ -1,0 +1,37 @@
+# tier-6 link-gap evidence — generated 2026-09-27T09:53:23Z inside container tgl
+# toolchain: g++ (Debian 12.2.0-14+deb12u1) 12.2.0 | GNU ld (GNU Binutils for Debian) 2.40
+# phpx: ?
+
+== php::Args::get over the composed nano object sets
+  nanobuild: objects=240 define=[] reference=[closure-f8759031b18c.o ]
+  ctrlbuild: objects=138 define=[] reference=[closure-f8759031b18c.o ]
+
+== the closure translation unit in both builds (same content hash => same TU)
+  55c5e4bad9996223 closure-f8759031b18c.o
+  55c5e4bad9996223 closure-f8759031b18c.o
+
+== what the linker said (aggregate build log)
+  /usr/bin/ld: /tmp/tpgui-tier6/nanobuild/cache/objects/nano/closure-f8759031b18c.o: in function `php::makeScopedCallableImpl(php::Variant const&, php::CallableScope const&, bool)::{lambda(_zend_execute_data*, _zval_struct*, php::Object&, php::Args&)#1}::operator()(_zend_execute_data*, _zval_struct*, php::Object&, php::Args&) const':
+  closure.cc:(.text._ZZN3phpL22makeScopedCallableImplERKNS_7VariantERKNS_13CallableScopeEbENKUlP18_zend_execute_dataP12_zval_structRNS_6ObjectERNS_4ArgsEE_clES7_S9_SB_SD_+0xec): undefined reference to `php::Args::get(unsigned long) const'
+
+== what the control build log ends with
+  Auditing Nano runtime dependencies
+  Build successful: /tmp/tpgui-tier6/app-ctrl
+
+== the control binary runs
+nano-ctrl-ok a
+  rc=0
+
+== composed nano runtime module set (which extensions each build keeps alive)
+  nanobuild: basic_functions_module date_module_entry filter_module_entry hash_module_entry json_module_entry pcre_module_entry reflection_module_entry random_module_entry spl_module_entry 
+  ctrlbuild: basic_functions_module random_module_entry 
+  (# basic_functions_module present == the generated ZEND_MOD_REQUIRED("Core") is satisfiable;
+  #  a 3-line program using strlen/strcmp/array_key_exists drops it and then dies at startup with
+  #  "Unable to start PHP Nano extensions" — measured by [4d] below.)
+
+== [4d] the startup probe: three lines of PHP that link and still cannot start
+  module set  : 
+  generated dep:  ZEND_MOD_REQUIRED("Core")
+  build outcome: Build successful: /tmp/tpgui-tier6/app-trap
+Unable to start PHP Nano extensions
+  startup rc=1

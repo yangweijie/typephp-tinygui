@@ -1,0 +1,82 @@
+   php: 8.4.25
+   tpc: /work/tpc/bin/tpc.php
+
+== [1] aggregate the require graph
+   ok   tools/aggregate-backend.php
+   aggregated 16 module(s) -> /work/repo/build/backend_aggregated.php (41995 B, 1223 lines)
+     - gui/php/src/Tiny/Gui/Request.php
+     - gui/php/src/Tiny/Gui/Response.php
+     - gui/php/src/Tiny/Gui/HandlerInterface.php
+     - gui/php/src/Tiny/Gui/AppRoot.php
+     - gui/php/src/Tiny/Gui/Protocol.php
+     - gui/php/src/Tiny/Gui/State.php
+     - gui/php/src/Tiny/Gui/Dispatcher.php
+     - gui/php/src/Tiny/Gui/Gui.php
+     - gui/php/src/Tiny/Gui/Backend.php
+     - gui/php/src/Tiny/Gui/Handlers/CoreHandler.php
+     - gui/php/src/Tiny/Gui/Handlers/WinHandler.php
+     - gui/php/src/Tiny/Gui/Handlers/MenuHandler.php
+     - gui/php/src/Tiny/Gui/Handlers/StoreHandler.php
+     - gui/php/src/Tiny/Gui/Handlers/DemoApiHandler.php
+     - gui/php/src/Tiny/Gui/bootstrap.php
+     - src/backend.php
+   ok   pulled in 16 modules
+   ok   aggregated file parses
+   ok   deterministic: re-aggregation is byte-identical
+   ok   --check passes on a fresh output
+   ok   --check catches a stale output (exit 2)
+   ok   refuses a dynamic require
+   ok   refuses a target outside --root
+   ok   refuses a surviving __DIR__
+   ok   exactly one hoisted entry function main()
+   ok   the global entry sits in its own namespace block
+   ok   every module keeps its own namespace scope (16 blocks)
+
+== [2] the aggregated file behaves like the multi-file tree (stock PHP)
+   ok   byte-identical frames after masking volatile sysinfo fields
+   ok   11 RET frames answered
+   ok   stateful round-trip present (store.get returned what store.set stored)
+   ok   quit emitted QUIT before its RET (frame order intact)
+   [2] stock-php equivalence: RET=11 diff=empty
+
+== [3] negative control — real nano still refuses the unaggregated entry
+   ok   tpc --nano on src/backend.php fails as Errors #22 recorded
+        Fatal error: `require` is not supported in nano mode in /work/repo/src/backend.php:29
+   [3] control: unaggregated --nano rc=255 (require` is not supported in nano mode in /work/repo/src/backend)
+
+== [4] compile the aggregated backend for the freestanding nano target
+   ok   nano front end accepts the aggregate (--dry: convert + arginfo generated)
+   [4a] nano --dry front end: accepted
+   this is the slow part (full source build); see /tmp/tpgui-tier6/nano-agg.log
+   GAP  full --nano link blocked upstream (undefined reference to .php::Args::get) — front end is clean
+        /usr/bin/ld: /tmp/tpgui-tier6/nanobuild/cache/objects/nano/closure-f8759031b18c.o: in function `php::makeScopedCallableImpl(php::Variant const&, php::CallableScope const&, bool)::{lambda(_zend_execute_data*, _zval_struct*, php::Object&, php::Args&)#1}::operator()(_zend_execute_data*, _zval_struct*, php::Object&, php::Args&) const':
+        closure.cc:(.text._ZZN3phpL22makeScopedCallableImplERKNS_7VariantERKNS_13CallableScopeEbENKUlP18_zend_execute_dataP12_zval_structRNS_6ObjectERNS_4ArgsEE_clES7_S9_SB_SD_+0xec): undefined reference to `php::Args::get(unsigned long) const'
+   [4b] full --nano link: GAP (upstream) — closure.cc:(.text._ZZN3phpL22makeScopedCallableImplERKNS_7VariantERKNS_13CallableScopeEbENKUlP18_zend_execute_
+
+== [4c] control — the same Closure object links in a minimal nano program
+   ok   the minimal program links (rc=0, 1763104 B)
+   ok   and runs: nano-ctrl-ok a
+   failing build : 240 objects, define php::Args::get=0, reference it=1
+   control build : 138 objects, define php::Args::get=0, reference it=1
+   ok   both compose the same Closure TU (closure-f8759031b18c.o) — only the big link keeps its call section alive
+   [4c] control: the minimal nano program links AND runs; same Closure TU closure-f8759031b18c.o
+   [4c] failing build objects: 240 objects, define php::Args::get=0, reference it=1
+   [4c] control build objects : 138 objects, define php::Args::get=0, reference it=1
+   ok   the aggregated build keeps basic_functions_module, so its ZEND_MOD_REQUIRED("Core") is satisfiable
+   [4c] aggregated runtime set: keeps basic_functions_module (10 modules listed)
+
+== [4d] a nano binary can link and still fail at startup (the strcmp/strlen trap)
+   GAP  clean link, dead startup — measured: basic_functions dropped, ZEND_MOD_REQUIRED("Core"), rc=1
+   [4d] startup probe: LINKED but startup FAILED (Unable to start PHP Nano extensions, rc=1); composer set has no basic_functions_module; generated ZEND_MOD_REQUIRED("Core")
+
+== tier-6 result: PASS-with-recorded-GAP (2 upstream gap(s): link:php::Args::get | startup:basic_functions)
+== report: /tmp/tpgui-tier6/tier6-report.txt
+   [2] stock-php equivalence: RET=11 diff=empty
+   [3] control: unaggregated --nano rc=255 (require` is not supported in nano mode in /work/repo/src/backend)
+   [4a] nano --dry front end: accepted
+   [4b] full --nano link: GAP (upstream) — closure.cc:(.text._ZZN3phpL22makeScopedCallableImplERKNS_7VariantERKNS_13CallableScopeEbENKUlP18_zend_execute_
+   [4c] control: the minimal nano program links AND runs; same Closure TU closure-f8759031b18c.o
+   [4c] failing build objects: 240 objects, define php::Args::get=0, reference it=1
+   [4c] control build objects : 138 objects, define php::Args::get=0, reference it=1
+   [4c] aggregated runtime set: keeps basic_functions_module (10 modules listed)
+   [4d] startup probe: LINKED but startup FAILED (Unable to start PHP Nano extensions, rc=1); composer set has no basic_functions_module; generated ZEND_MOD_REQUIRED("Core")

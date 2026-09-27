@@ -1,0 +1,4 @@
+  TRAY tray-hello  -> type=notification event=tray
+  TRAYCLICK        -> type=notification event=trayclick
+  HOTKEY boss      -> type=ignore       event=-
+  HOTKEY is not decoded into a page event: type=ignore

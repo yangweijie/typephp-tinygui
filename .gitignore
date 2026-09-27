@@ -54,6 +54,16 @@ toolchain.local.sh
 /vendor/
 
 # ---------------------------------------------------------------------------
+# 文档站（VuePress 2，源码在 docs/）。站点 markdown 要提交，工具链产物不要：
+# node_modules / .vuepress 的 temp+cache 都是生成物。dist/ 已被上面的规则覆盖。
+# ---------------------------------------------------------------------------
+docs/node_modules/
+docs/.vuepress/.temp/
+docs/.vuepress/.cache/
+# sync-external.sh 每次构建前重生成的镜像页
+docs/reference/
+
+# ---------------------------------------------------------------------------
 # Evidence: keep tracked kit/e2e artifacts (evidence/e2e/e2e-*, evidence/kit/).
 # Ignore local scratch dumps from TYPEPHP_SHELL_LOG / ad-hoc runs.
 # ---------------------------------------------------------------------------

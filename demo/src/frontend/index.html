@@ -43,11 +43,17 @@
 <body>
 <header>
   <h1>TypePHP <b>×</b> tinyjsapp —— 真实窗口联调</h1>
-  <div class="sub">WebView2 页面 → C++ launcher → 命名管道 → C++ shim → <b>aot-compiler 编出的 PHP 原生后端</b></div>
-  <div class="chain">
-    <span>① WebView2 render</span><span>② <em>launcher-win.exe</em> (C++)</span>
-    <span>③ <em>\\.\pipe\tinyjs-typephp-&lt;pid&gt;</em></span><span>④ <em>backend_shell.exe</em> (shim)</span>
-    <span>⑤ <em>app.exe</em> = PHP→C++17 AOT</span>
+  <!-- Platform-specific wording is FILLED after `CALL sysinfo` returns: the demo
+       runs on WebView2/Windows, WKWebView/macOS and WebKitGTK/Linux, and the chip
+       text used to be hard-coded to the Windows trio (launcher-win.exe + named
+       pipe + app.exe), which read as false on the other two. Placeholders below
+       are deliberately platform-neutral. -->
+  <div class="sub" id="sub">宿主 WebView 页面 → C++ launcher → 本机 IPC 端点 → C++ shim → <b>PHP 后端</b></div>
+  <div class="chain" id="chain">
+    <span>① <em id="c-engine">WebView 渲染</em></span><span>② <em id="c-launcher">launcher</em> (C++)</span>
+    <span>③ <em id="c-endpoint">本机 IPC 端点</em></span><span>④ <em id="c-shim">shim</em> (C++)</span>
+    <span>⑤ <em id="c-app">PHP 后端</em></span>
+    <span id="c-note" style="display:none;color:#9aa4b2"></span>
   </div>
 </header>
 
@@ -106,7 +112,7 @@
   </div>
 </main>
 
-<footer>每一行结果都是从 <code>app.exe</code>（PHP AOT 原生）经命名管道回传的 <code>RET</code> 帧渲染出来的。</footer>
+<footer>每一行结果都是从 <code id="f-app">PHP 后端</code> 经 <span id="f-endpoint">本机 IPC</span> 回传的 <code>RET</code> 帧渲染出来的。</footer>
 
 <script>
 // --- diagnostics: surface ANY page-side error into the banner ---
@@ -153,6 +159,74 @@ const call = (method, params = {}) =>
 const $ = (id) => document.getElementById(id);
 const setBanner = (msg, cls) => { const b = $('banner'); b.textContent = msg;
   b.className = cls; };
+
+// --- the call-chain labels are FACTS, not decoration ------------------------
+// Nothing on this page can know the host platform before `CALL sysinfo` comes
+// back, and the copy used to be hard-coded to the Windows trio — so the same
+// HTML lied on macOS (WKWebView + AF_UNIX) and Linux (WebKitGTK + AF_UNIX, and
+// there the shim owns the endpoint while the pristine launcher connects to it).
+// Each field below is therefore filled from what the backend actually reported.
+let CHAIN = null;   // cached for the banner / footer / about dialog
+function chainFor(os, backend) {
+  const c = { os, backend };
+  switch (os) {
+    case 'Windows':
+      c.engine   = 'WebView2 渲染';
+      c.launcher = 'launcher-win.exe';
+      c.endpoint = '\\\\.\\pipe\\tinyjs-typephp-<pid>';
+      c.transp   = '命名管道';
+      c.shim     = 'backend.exe';
+      c.note     = 'dev 下由 launcher 以 --typephp 拉起 shim';
+      break;
+    case 'Linux':
+      c.engine   = 'WebKitGTK 渲染';
+      c.launcher = 'launcher-linux（保持 pristine）';
+      // sun_path caps at ~108 bytes (bug #15), so the dev endpoint deliberately
+      // lives in /tmp while the packaged one sits next to the exe.
+      c.endpoint = '/tmp/…-<pid>.sock（打包：<exe 目录>/app.sock）';
+      c.transp   = 'AF_UNIX';
+      c.shim     = 'backend_shell';
+      // The one direction that genuinely differs: see gui/bin/tgui's `dev` Linux
+      // branch — the shim stands as endpoint server, the stock launcher is the
+      // client. Saying "launcher → shim" without this would be half true.
+      c.note     = 'Linux 方向相反：shim 持有端点作服务端，launcher 作客户端连入';
+      break;
+    default:                       // 'Darwin' and anything unrecognized
+      c.engine   = 'WKWebView 渲染';
+      c.launcher = 'launcher-macos';
+      // Packaged endpoint is <exe dir>/app.sock — but only while that dir sits on
+      // the boot volume. A LaunchServices-spawned process that creates its first
+      // new file on another volume blocks until macOS answers the volume consent
+      // prompt (bug #21), so the shim moves the socket to the per-user temp dir
+      // and logs why. Dev already lives in /tmp (see bug #15's sun_path note).
+      c.endpoint = '/tmp/…-<pid>.sock（打包：<exe 目录>/app.sock；不在启动卷时落 $TMPDIR）';
+      c.transp   = 'AF_UNIX';
+      c.shim     = 'backend_shell';
+      c.note     = 'dev 下由 launcher 以 --typephp 拉起 shim';
+  }
+  // The AOT-vs-stock question is answered by the shim, which classifies the app
+  // binary's first bytes and injects TYPEPHP_APP_KIND (see CoreHandler::backend_kind
+  // and Tiny\\Gui\\Protocol's stdio contract). Never claim AOT here by default.
+  if (/aot-compiler/.test(backend))      { c.app = 'PHP→C++17 AOT 原生程序'; c.appShort = 'tpc 编出的原生后端'; }
+  else if (/stock PHP/.test(backend))    { c.app = 'PHP 后端（系统 php，未经 AOT）'; c.appShort = '系统 PHP 直跑的后端'; }
+  else                                   { c.app = backend || 'PHP 后端（未上报）'; c.appShort = c.app; }
+  c.banner = c.engine.replace(' 渲染', '') + ' → ' + c.launcher + ' → ' + c.transp +
+             ' → ' + c.shim + ' → ' + c.appShort;
+  c.chip = c.transp + '：' + c.endpoint;
+  return c;
+}
+function renderChain(si) {
+  CHAIN = chainFor(si.os, si.backend);
+  $('c-engine').textContent   = CHAIN.engine;
+  $('c-launcher').textContent = CHAIN.launcher;
+  $('c-endpoint').textContent = CHAIN.chip;
+  $('c-shim').textContent     = CHAIN.shim;
+  $('c-app').textContent      = CHAIN.app;
+  $('f-app').textContent      = CHAIN.app;
+  $('f-endpoint').textContent = CHAIN.chip;
+  const n = $('c-note');
+  if (CHAIN.note) { n.textContent = CHAIN.note; n.style.display = ''; }
+}
 const last = (label, val) => {
   $('last').textContent = label + '  →  ' +
     (typeof val === 'string' ? val : JSON.stringify(val));
@@ -181,6 +255,7 @@ async function main() {
       dl.append(dt, dd);
     }
     $('path').value = si.cwd || '';
+    renderChain(si);            // header chips + footer now speak THIS platform
   } catch (e) { $('sysinfo').innerHTML = '<dt class="bad">'+e+'</dt>'; }
 
   // PHP compute
@@ -213,7 +288,11 @@ async function main() {
   try { const w = await call('win.getState'); onEvent('window-state', w, 'pull'); } catch (e) {}
 
   const ms = Math.round(performance.now() - t0);
-  setBanner('✓ 全链路已连通 — WebView2 → launcher → 命名管道 → shim → PHP AOT 后端（首次往返 ' + ms + ' ms）', 'ok');
+  setBanner('✓ 全链路已连通 — ' + (CHAIN ? CHAIN.banner : '宿主 WebView → launcher → IPC → shim → PHP 后端') +
+            '（首次往返 ' + ms + ' ms）', 'ok');
+  // The marker line below is what every platform driver greps for
+  // (test/win/dev-bounce.sh, test/posix/linux-tgui-window.sh, evidence/*):
+  // keep its exact shape, do not localise or extend it.
   await call('log', { msg: 'WINDOW-E2E OK ping=' + results.ping + ' in ' + ms + 'ms' });
 }
 
@@ -232,7 +311,7 @@ const dlast = (label, val) => {
   $('dlast').textContent = label + '  →  ' +
     (typeof val === 'string' ? val : JSON.stringify(val));
 };
-$('d-alert').onclick   = async () => dlast('alert', await tiny.dialog.alert('这是原生 MessageBox', '由 launcher 的 DLG 帧应答'));
+$('d-alert').onclick   = async () => dlast('alert', await tiny.dialog.alert('这是 launcher 应答的原生对话框', '由后端下发的 DLG 帧触发'));
 $('d-confirm').onclick = async () => dlast('confirm', await tiny.dialog.confirm('继续吗？', { ok: '继续', cancel: '算了' }));
 $('d-prompt').onclick  = async () => dlast('prompt', await tiny.dialog.prompt('输入点什么', { default: 'tiny' }));
 $('d-open').onclick    = async () => dlast('openFile', await tiny.dialog.openFile({ types: ['png', 'jpg', 'md', 'txt'] }));
@@ -258,7 +337,8 @@ $('d-folder').onclick  = async () => dlast('pickFolder', await tiny.dialog.pickF
     ]);
     tiny.menu.on((id) => {
       onEvent('menu', { id }, 'push');
-      if (id === 'about') tiny.dialog.alert('TypePHP × tinyjsapp', '后端 = aot-compiler 编出的 PHP 原生程序');
+      if (id === 'about') tiny.dialog.alert('TypePHP × tinyjsapp',
+        '后端 = ' + (CHAIN ? CHAIN.app : 'PHP（尚未上报 sysinfo）'));
       if (id === 'quit') call('quit');
       if (id === 'open') $('d-open').click();
       if (id === 'pick') $('d-folder').click();

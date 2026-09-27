@@ -75,7 +75,14 @@ else need_pkg ayatana-appindicator3-0.1 libayatana-appindicator3-1-dev libayatan
   printf '%s\n' "     (Fedora/Arch name: libayatana-appindicator3.0 / libappindicator-devel-ish)" >&2
   die "no ayatana appindicator — pristine launcher-linux.cc does NOT compile without it (#23)"
 fi
-# launcher-linux links -lX11 -lXtst (the libs, not the TINYJS_X11 code path).
+# TINYJS_X11 gates the vendor's whole X11 integration block — parse_combo,
+# do_keystroke (XTest), x11_hotkey_register/unregister (XGrabKey on the root
+# window) — and every one of them has a no-op stub behind #else. Linking -lX11
+# -lXtst WITHOUT the flag therefore produced a binary that answered
+# hotkey.register with "ok" and grabbed nothing at all; test/posix/
+# desktop-session.sh only got a real session to press keys in, and B3 failed
+# until the flag was added. Keep it on: it is the difference between a global
+# hotkey and a lie.
 for lib in libX11 libXtst; do
   ldconfig -p 2>/dev/null | grep -q "$lib" && continue
   command -v gcc >/dev/null 2>&1 && gcc -print-file-name="$lib.so" 2>/dev/null | grep -q '^/' && continue
@@ -109,7 +116,7 @@ mkdir -p "$BUILD"
 
 echo "== [4/4] launcher-linux (GTK3 + $WK) -> build/launcher-linux =="
 "$CXX" -std=c++17 -O2 -I "$ROOT/gui/host/include" -I "$ROOT/gui/host/src" \
-  -DTINYJS_APPINDICATOR \
+  -DTINYJS_APPINDICATOR -DTINYJS_X11 \
   -o "$BUILD/launcher-linux" "$ROOT/gui/host/src/launcher-linux.cc" \
   $(pkg-config --cflags gtk+-3.0 "$WK" "$IND") $(pkg-config --libs gtk+-3.0 "$WK" "$IND") \
   -lX11 -lXtst -lpthread || die "launcher-linux compile failed"

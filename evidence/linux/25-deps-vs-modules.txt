@@ -1,0 +1,147 @@
+== Phase 25 rev D: nano dependency / stdio gap measurements ==
+# generated: 2026-09-27T10:37:18Z inside Apple Container 'tgl' (Debian bookworm aarch64)
+# tpc v0.9.3 | php-nano v1.0.1 | phpx ~2.9.2 | host php 8.4.25
+# compiler: g++ (Debian 12.2.0-14+deb12u1) 12.2.0 | GNU ld (GNU Binutils for Debian) 2.40
+# tree state: /work/tpc/src/Translator.php and vendor/swoole/phpx/src/core/variant.cc
+#             are the UNPATCHED originals (restored from /tmp/*.bak before this run).
+# probe sources are printed in the last section; build dirs are the ones the
+# tier-6 driver + the phase-25 probes left behind.
+
+==================== 1. required deps vs the composed module array ====================
+# a generated nano module entry declares deps as ZEND_MOD_REQUIRED("<name>");
+# php-nano hands the array in composer_extensions.cpp to php_nano_startup_extensions().
+--- nanobuild  (entry: nanobuild/extension-app_nano.cc)
+    requires : standard date hash json pcre Core SPL 
+    composed : basic_functions_module date_module_entry filter_module_entry hash_module_entry json_module_entry pcre_module_entry reflection_module_entry random_module_entry spl_module_entry typephp_project_app_nano_fixed::typephp_app_nano_fixed_module_entry 
+--- ctrlbuild  (entry: ctrlbuild/extension-app_ctrl.cc)
+    requires : standard 
+    composed : basic_functions_module random_module_entry typephp_project_app_ctrl::typephp_app_ctrl_module_entry 
+--- trapbuild  (entry: trapbuild/extension-app_trap.cc)
+    requires : Core 
+    composed : typephp_project_app_trap::typephp_app_trap_module_entry 
+# NOTE: the composed entries are C variables, not names; a variable's extension name
+#       lives in its own source (e.g. basic_functions_module -> "standard" in
+#       ext/standard/basic_functions.c:347). This file deliberately does not guess the
+#       remaining mappings: section 3 measures which requirement actually blocks startup.
+
+==================== 2. the only module named "Core" is unreachable by construction ====================
+52:static zend_module_entry zend_builtin_module = { /* {{{ */
+53-	STANDARD_MODULE_HEADER,
+54-	"Core",
+55-	ext_functions,
+-- its registration path (Zend, not an ext/ module the composer can reference):
+/work/tpc/vendor/swoole/php-nano/Zend/zend_builtin_functions.c:66:zend_result zend_startup_builtin_functions(void) /* {{{ */
+/work/tpc/vendor/swoole/php-nano/src/core.cpp:43:zend_result zend_startup_builtin_functions(void);
+/work/tpc/vendor/swoole/php-nano/src/core.cpp:272:    if (zend_startup_builtin_functions() != SUCCESS) {
+-- references to zend_builtin_module inside any generated composer array:
+   0 (of 14 composer arrays)
+
+==================== 3. empirical startup: which requirement blocks ====================
+# each binary is run with stdin=/dev/null and a 5s timeout.
+# PATCH STATE: the tpc 'Core'-skip experiment was applied at 2026-09-27 10:22:27 UTC and
+# reverted afterwards (diff in 25-upstream-probe.txt). A binary built LATER than that
+# timestamp was built with the experiment in place; an earlier one is stock tpc.
+  app-min          built=2026-09-27 09:59:44 rc=0    out=[nano-policy-build-ok] err=[]
+  app-ctrl         built=2026-09-27 09:52:18 rc=0    out=[nano-ctrl-ok a] err=[]
+  app-trap         built=2026-09-27 09:52:26 rc=1    out=[] err=[Unable to start PHP Nano extensions ]
+  app-nano_trap2   built=2026-09-27 10:24:35 rc=0    out=[15] err=[]
+  app-nano_ver     built=2026-09-27 10:24:29 rc=0    out=[8.6.0beta3] err=[]
+Aborted
+  app-nano_stdout  built=2026-09-27 10:24:43 rc=134  out=[] err=[Undefined constant "STDOUT" ]
+  app-stream       built=2026-09-27 10:25:13 rc=0    out=[fopen failed] err=[Unable to find the wrapper "php" - did you forget to enable it when you configured PHP? Failed to open stream: No such f]
+  app-devio        built=2026-09-27 10:25:33 rc=0    out=[fopen failed] err=[Failed to open stream: No such file or directory ]
+  app-file         built=2026-09-27 10:26:01 rc=0    out=[regular fopen ok: line-one /dev/null: ok] err=[]
+  app-nano-fixed   built=2026-09-27 10:20:30 rc=1    out=[] err=[Unable to start PHP Nano extensions ]
+  app-nano-patched built=2026-09-27 10:22:45 rc=1    out=[] err=[Unhandled TypePHP exception ]
+
+==================== 4. stock-tree recheck (rebuild from scratch, then run) ====================
+  $ php8.4 /work/tpc/bin/tpc.php /tmp/tpgui-tier6/nano_trap.php --nano -o /tmp/tpgui-tier6/recheck-trap --build-dir /tmp/tpgui-tier6/rebuild-trap
+    build rc=0 elapsed=6s  (0 compile steps logged)
+    run rc=1 out=[] err=[Unable to start PHP Nano extensions]
+  $ php8.4 /work/tpc/bin/tpc.php /tmp/tpgui-tier6/nano_ctrl.php --nano -o /tmp/tpgui-tier6/recheck-ctrl --build-dir /tmp/tpgui-tier6/rebuild-ctrl
+    build rc=0 elapsed=8s  (0 compile steps logged)
+    run rc=0 out=[nano-ctrl-ok a] err=[]
+  -> the strlen program is reproducible on an unmodified tpc/php-nano/phpx tree.
+
+==================== 5. probe sources ====================
+----- nano_ctrl.php
+<?php
+declare(strict_types=1);
+
+final class Sorter
+{
+    public function rows(): array
+    {
+        $out = [["name" => "b", "isDir" => false], ["name" => "a", "isDir" => true]];
+        usort($out, function ($a, $b) {
+            return [$b['isDir'], $a['name']] <=> [$a['isDir'], $b['name']];
+        });
+        return $out;
+    }
+}
+
+function main(): void
+{
+    $s = new Sorter();
+    echo "nano-ctrl-ok ", $s->rows()[0]['name'], "\n";
+}
+----- nano_trap.php
+<?php
+declare(strict_types=1);
+
+function main(): void
+{
+    echo strlen("nano-trap-probe"), "\n";
+}
+----- nano_ver.php
+<?php
+declare(strict_types=1);
+
+function main(): void
+{
+    echo phpversion(), "\n";
+}
+----- nano_stdout.php
+<?php
+declare(strict_types=1);
+
+function main(): void
+{
+    fwrite(STDOUT, "stdout-ok\n");
+}
+----- nano_stream.php
+<?php
+declare(strict_types=1);
+
+function main(): void
+{
+    $out = fopen("php://stdout", "w");
+    if ($out === false) { echo "fopen failed\n"; return; }
+    fwrite($out, "php-stdout-ok\n");
+    fflush($out);
+}
+----- nano_devio.php
+<?php
+declare(strict_types=1);
+
+function main(): void
+{
+    $in = fopen("/dev/stdin", "r");
+    $out = fopen("/dev/stdout", "w");
+    if ($in === false || $out === false) { echo "fopen failed\n"; return; }
+    $l = fgets($in);
+    fwrite($out, "devio-ok:" . (string) $l);
+    fflush($out);
+}
+----- nano_file.php
+<?php
+declare(strict_types=1);
+
+function main(): void
+{
+    $f = fopen("probe.txt", "r");
+    if ($f === false) { echo "regular fopen FAILED\n"; return; }
+    echo "regular fopen ok: " . trim((string) fgets($f)) . "\n";
+    $g = @fopen("/dev/null", "r");
+    echo "/dev/null: " . ($g === false ? "failed" : "ok") . "\n";
+}

@@ -1,0 +1,9 @@
+[2] stock-php equivalence: RET=11 diff=empty
+[3] control: unaggregated --nano rc=255 (require` is not supported in nano mode in /work/repo/src/backend)
+[4a] nano --dry front end: accepted
+[4b] full --nano link: GAP (upstream) — closure.cc:(.text._ZZN3phpL22makeScopedCallableImplERKNS_7VariantERKNS_13CallableScopeEbENKUlP18_zend_execute_
+[4c] control: the minimal nano program links AND runs; same Closure TU closure-f8759031b18c.o
+[4c] failing build objects: 240 objects, define php::Args::get=0, reference it=1
+[4c] control build objects : 138 objects, define php::Args::get=0, reference it=1
+[4c] aggregated runtime set: keeps basic_functions_module (10 modules listed)
+[4d] startup probe: LINKED but startup FAILED (Unable to start PHP Nano extensions, rc=1); composer set has no basic_functions_module; generated ZEND_MOD_REQUIRED("Core")

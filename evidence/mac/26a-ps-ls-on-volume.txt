@@ -1,0 +1,2 @@
+  PID  PPID STAT ELAPSED COMMAND
+77840     1 S      00:17 /Volumes/data/git/php/typephp-tinygui/experiments/ls-bind-probe/out/vol/ProbeLsBind.app/Contents/MacOS/ProbeLsBind ls-on-volume

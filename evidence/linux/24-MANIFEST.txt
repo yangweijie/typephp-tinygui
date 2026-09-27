@@ -1,0 +1,113 @@
+# Phase 24 / candidate ⑤ — --nano SINGLE-FILE AGGREGATION evidence
+# collected: 2026-09-27T10:47:38Z by test/posix/collect-tier6-evidence.sh
+# source:    /tmp/tpgui-tier6 inside the Apple Container 'tgl' (Debian bookworm, arm64)
+# repo rev:  d461a93
+# inputs:    tools/aggregate-backend.php + test/posix/tier6-nano-aggregate.sh
+#            harness hashes: see == harness as committed below
+# stored-set provenance: every file below comes out of ONE cold driver run
+#   (rm -rf /tmp/tpgui-tier6 first, so nothing is [cached]), except
+#   24-closure-nm.txt, which test/posix/tier6-nm-evidence.sh generates
+#   from the object sets + logs that same run left behind.
+#   24-nano-dry.log is the driver's own [4a] output — the cold work dir is what
+#   lets claim 8c assert the absence of [cached] reuse honestly.
+#   the container's copies of tools/aggregate-backend.php and
+#   test/posix/tier6-nano-aggregate.sh were md5-matched against these host files
+#   before the run — see the == inputs section at the bottom.
+# driver:    PHP_BIN=php8.4 TPC=/work/tpc/bin/tpc.php bash test/posix/tier6-nano-aggregate.sh
+#            -> expected final line while both upstream gaps are open:
+#              == tier-6 result: PASS-with-recorded-GAP (2 upstream gap(s): link:php::Args::get | startup:basic_functions)
+#            (the gap list is derived from the driver's own GAP lines, so it grows
+#             or shrinks with reality instead of being a fixed string.)
+# SUPERSEDED IN PART — Phase 25 (2026-09-27). The [4c] ok line stored in
+#   24-tier6-driver.log line 65 said: "the aggregated build keeps
+#   basic_functions_module, so its ZEND_MOD_REQUIRED(Core) is satisfiable'.
+#   That inference is FALSE and Phase 25 measured it: basic_functions_module is
+#   named "standard" (php-nano ext/standard/basic_functions.c), and the ONLY entry
+#   named "Core" is a static zend_module_entry in Zend/zend_builtin_functions.c, so
+#   no composed array can ever satisfy that dep — the aggregate included. Once the
+#   Args link gap was patched locally, the linked aggregate died with the same
+#   "Unable to start PHP Nano extensions" as the 3-line probe. Claims 18c-18e below
+#   derive that correction from evidence/linux/25-*; the raw Phase 24 logs are kept
+#   unmodified as what that run actually printed.
+# this file is RE-DERIVED from the stored 24-* files below, not copied from stdout.
+
+== derived claims
+   ok   1 aggregation ran and lists its modules
+   ok   2 determinism + --check + the three refusal paths
+   ok   3 the aggregator refuses a dynamic require
+   ok   4 entry hoist: exactly one global main()
+   ok   5 every module keeps its own namespace scope
+   ok   6 stock-PHP behaviour is byte-identical
+   ok   7 negative control: unaggregated entry still refused
+   ok   7b the refusal is the require rule, verbatim
+   ok   8 nano FRONT END accepts the aggregate (--dry)
+   ok   8b --dry generated C++ out of it
+   ok   8c ...from a cold cache: no [cached] reuse line
+   ok   9 the full build stops in ld, by signature
+   ok   10 the undefined symbol is really upstream's
+   ok   11 control links (its build log says so)
+   ok   12 control link line present
+   ok   13 no composed object defines php::Args::get
+   ok   14 the control binary runs
+   ok   15 the aggregate keeps basic_functions alive
+   ok   16 [4d] the startup probe links
+   ok   17 [4d] ...and still cannot start
+   ok   18 [4d] its own set holds no modules at all
+   ok   18b [4d] while requiring a module named Core
+   ok   18c the aggregate itself also declares ZEND_MOD_REQUIRED("Core")
+   ok   18d and the linked aggregate dies at startup too
+   ok   18e both repros re-run on the stock (unpatched) tree
+   ok   18f the only "Core" entry is static, so no array can hold it
+   ok   define=[] in BOTH object sets (2/2) — nothing to link against
+   ok   both builds compose the SAME Closure TU (closure-f8759031b18c.o)
+   ok   ... byte-for-byte (one distinct sha256 over the two copies)
+   ok   and only the BIG link (240 objects) fails; the control's 138 link
+   ok   19 the driver's own verdict line is the gap-carrying one
+
+== numbers the docs quote (all recomputed here)
+   modules aggregated                                   16
+   aggregated file                                      41995 B / 1223 lines (build/, gitignored)
+   stock-PHP RET frames                                 11
+   nano --dry accepted                                  yes
+   ld undefined-Args::get                               1 hit(s) in the aggregate build log
+   objects: aggregate/control                           240 / 138
+   closure TU                                           closure-f8759031b18c.o
+
+== stored files (sha256, bytes)
+   5e40380e8d78e92cefe5d9590f33ddad67ad66b292b55bf220c5b29c65567b55  24-tier6-driver.log  5491B
+   48c6d5f781dc371a8904ba4b4123261db9246d0f55430a3d7d4be59613dae94f  24-tier6-report.txt  847B
+   1b46e50b98cca4eaacb52d00e4761e84a44fd0790ced587b3eeb82f80faf30a7  24-nano-aggregate-build.log  18402B
+   42460fbd75fa5c1bb9be92c8b57368e84ac3ce10461dfb89e711b93fdb873f66  24-nano-control-build.log  9761B
+   a6026b1f96620ae08f7f08cf4bafb574f1cd785fc4db8a12379810707d036a64  24-nano-startup-probe-build.log  8633B
+   043432938772f0432a2207563389d922664829111414ce4c76b3c8493b596705  24-nano-unaggregated.log  1776B
+   4896c4b35bb1c54a323af2f6b1de6bb60cdc30bcdb42dfce89dd2af81ccdc563  24-nano-dry.log  297B
+   efa448d7a9a204b3fc7557ccc7f9e2afa2caf7492eef1087ee050dbfe3b21d6b  24-closure-nm.txt  2183B
+== phase 25 upstream-gap files (sha256, bytes)
+#   25-upstream-probe.txt carries two in-file annotations: its section B printed
+#   'modules []' from a broken grep, and mislabelled which of the two aggregates
+#   printed 'Unhandled TypePHP exception'. Both are corrected there and in
+#   25-deps-vs-modules.txt, which is the authoritative version.
+   71b3efe619103d9fe3d6f5c6a8d296c0ab73fa456536324a957a2787a6c11b1c  25-deps-vs-modules.txt  6641B
+   6b099f5ef304bb1956731989cdc2626209f699d83fc41e5fdbf2ff3fa15c8741  25-upstream-probe.txt  7719B
+   886f8a7d2bb6fc77d6652a66ec1642d4c2f75fa24a7bdb367619a7a066b41a7c  25-naive-fix-fails.log  21563B
+
+== harness as committed (sha256; the run used md5-matched copies)
+#   these hashes are of the CURRENT working-tree files, not of what the cold run
+#   executed (that set was md5-matched at run time). They changed in Phase 25 when
+#   the [4c]/[4d] wording was corrected, so a hash shift here is expected history,
+#   not proof of a stale run.
+   9f0a265f16038929f750539c10e08783e9f895ea63020faf057b7dd54296fa66  tools/aggregate-backend.php
+   9fe484ba2f2a3f8fd32e5f4c580a31e2545d078141f32107e58f83861f630d3a  test/posix/tier6-nano-aggregate.sh
+   537f8f06247460eb1638790dc9a6713c7db8394552d760653792801aaace266a  test/posix/tier6-nm-evidence.sh
+   c25079999f750f1f8ef200281d0d81d240ca1ddbfb3f576e9a995f153382ac0b  test/posix/collect-tier6-evidence.sh
+== phase 25 probe harness (sha256)
+   487d4271fac7c103a4519a061b14e38f398c36c8dcfa97d67ac41183506d46da  test/posix/upstream-nano-probes/run-probes.sh
+   7b6b4a4d0ddf4db792d1dcbaa291bccb05c07fd843c46d13cebb9d732cee6897  test/posix/upstream-nano-probes/nano_trap.php
+   18e1f3f6515f197402f7413e6a5fe46a0cf621c7b26369fc1f391af816620339  test/posix/upstream-nano-probes/nano_ctrl.php
+   ba95514f26a357dd94eefbba4fdd777e0cef4ab65899e8995a39a35a0e274a67  test/posix/upstream-nano-probes/nano_stdout.php
+   4364ce08dc3199859188ee361fd1ab1c1ac0d982d847d229a80a86a484caf773  test/posix/upstream-nano-probes/nano_stream.php
+   3fecf23a866c8ba58c975ae748527850f985fd08f27dc4b188330e954207ac6f  test/posix/upstream-nano-probes/nano_devio.php
+   bab3a42746f6a433e465031be73e8f77bacf6a73b185a2f8ef804b450766b637  test/posix/upstream-nano-probes/nano_file.php
+
+== verdict as the driver printed it
+   == tier-6 result: PASS-with-recorded-GAP (2 upstream gap(s): link:php::Args::get | startup:basic_functions)

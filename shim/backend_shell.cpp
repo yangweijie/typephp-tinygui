@@ -87,6 +87,7 @@
 #include <time.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <sys/types.h>
 #if defined(__APPLE__)
@@ -213,6 +214,46 @@ static path_t stem_of(const path_t &p) {
 #endif
   return dot == path_t::npos ? base : base.substr(0, dot);
 }
+
+// ---------------------------------------------------------------------------
+// Where the packaged endpoint may live (POSIX only)
+// ---------------------------------------------------------------------------
+#ifndef _WIN32
+#if defined(__APPLE__)
+// True when `dir` shares a file system with `/`. st_dev is the mount id on both
+// BSD and Linux, so one comparison answers "is the app bundle on the boot
+// volume?". On failure we say true: the caller then keeps the historical
+// behaviour (socket next to the bundle) instead of inventing a new one.
+// Apple-only caller, so Apple-only definition — a Linux build would otherwise
+// carry an unused static and -Wall would say so.
+static bool on_boot_volume(const std::string &dir) {
+  struct stat root_st, dir_st;
+  if (stat("/", &root_st) != 0) return true;
+  if (stat(dir.c_str(), &dir_st) != 0) return true;
+  return root_st.st_dev == dir_st.st_dev;
+}
+#endif
+
+// Per-process endpoint path in a directory we know a GUI-launched process may
+// create files in. `pid` comes from the caller so the Windows build (which has
+// no use for this) does not drag in unistd.
+static std::string tmp_endpoint(long pid) {
+  std::string dir = "/tmp";
+#ifdef __APPLE__
+  // Prefer the per-user $TMPDIR (0700, on the boot volume): /tmp is world
+  // writable, and an endpoint name that survives across a reboot is a
+  // handover waiting to happen. Only if it is missing or too fat for sun_path
+  // do we take /tmp.
+  const char *t = getenv("TMPDIR");
+  if (t && *t) {
+    std::string s = t;
+    while (s.size() > 1 && s[s.size() - 1] == '/') s.erase(s.size() - 1);
+    if (s.size() + 40 < sizeof(((struct sockaddr_un *)nullptr)->sun_path)) dir = s;
+  }
+#endif
+  return dir + "/tinyjs-typephp-" + std::to_string(pid) + ".sock";
+}
+#endif
 
 // ---------------------------------------------------------------------------
 // Environment
@@ -725,9 +766,39 @@ int main(int argc, char **argv) {
            std::to_string((unsigned long)GetCurrentProcessId());
 #else
     name = narrow_(base) + "app.sock";
-    // sun_path is ~108 bytes; fall back to /tmp for deeply nested app dirs.
-    if (name.size() >= sizeof(((struct sockaddr_un *)nullptr)->sun_path))
-      name = "/tmp/tinyjs-typephp-" + std::to_string((long)getpid()) + ".sock";
+    // Two measured reasons to move the endpoint off the app dir; the log says
+    // which one fired.
+    //   1. sun_path holds 107 usable bytes, so a deeply nested bundle simply
+    //      cannot fit "<dir>/app.sock" (bug #15; re-measured 2026-09-27: 113 B
+    //      for this repo's own bundle dir).
+    //   2. APPLE ONLY: a LaunchServices-spawned process that creates its FIRST
+    //      new file on a volume other than the boot volume blocks inside
+    //      open(O_CREAT) — no errno, no timeout — until the user answers
+    //      kTCCServiceSystemPolicyRemovableVolumes, and that request can sit
+    //      pending forever (bug #21, measured 2026-09-27 in
+    //      experiments/ls-bind-probe: 786/786 samples in __open at the plain
+    //      file step, so it is NOT socket-specific; the old "__bind" stack was
+    //      just where the shim happened to write first). Reading the bundle is
+    //      unaffected, so relocating the socket is enough to make a .app on an
+    //      external volume launch. Linux keeps the socket next to the bundle:
+    //      there is no such gate there, and the tier evidence expects it.
+    const size_t sun_cap = sizeof(((struct sockaddr_un *)nullptr)->sun_path);
+    const char *why = nullptr;
+    if (name.size() >= sun_cap) why = "sun_path full";
+#if defined(__APPLE__)
+    else if (!on_boot_volume(narrow_(base))) why = "app dir is not on the boot volume";
+#endif
+    if (why) {
+      std::string fb = tmp_endpoint((long)getpid());
+      if (fb.size() < sun_cap) {
+        logf_("[shell] endpoint moved off the app dir (%s): %s -> %s\n", why,
+              name.c_str(), fb.c_str());
+        name = fb;
+      } else {
+        logf_("[shell] no endpoint fallback fits sun_path (%zu): %s\n",
+              fb.size(), fb.c_str());
+      }
+    }
 #endif
   } else if (argc > 1) {
     name = argv[1];

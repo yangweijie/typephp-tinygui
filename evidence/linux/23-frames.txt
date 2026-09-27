@@ -1,0 +1,5 @@
+TRAYBEGIN desktop-tray\t/work/repo/demo/icon.png\t0\ttypephp desktop acceptance\t1
+ITEM tray-hello\tSay hello\t\t
+ITEM tray-note\tWrite a note\t\t
+TRAYEND
+HKREG boss\tctrl+alt+shift+F12
