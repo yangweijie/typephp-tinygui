@@ -13,7 +13,7 @@ require __DIR__ . '/../gui/php/src/Tiny/Gui/bootstrap.php';
 | 验证项 | 结果 |
 |---|---|
 | POSIX 套件（host probe + tier1/2 + 启动模式 + stderr 隔离） | **50 PASS / 0 FAIL** |
-| Windows 开发方向（`tgui dev`，Phase 21e 真机复验） | 窗口正常，**13 CALL / 13 RET**，`WINDOW-E2E OK ping=pong in 416ms`（三次弹窗分别 416 / 370 / 415ms）；`touch` 后端文件 → CLI 打 `sources changed — bouncing` → 新 pipe 重发、整窗 bounce（再 13/13）、launcher/shim/app 仍 1/1/1 无泄漏；关窗零残留（`test/win/dev-bounce.sh` **PASS**，真实桌面、无 Xvfb；现场见 `evidence/win/`，`bash test/win/collect-evidence.sh REGEN=1 OUT="$PWD/evidence/win"` 可从入库文件重算核对） |
+| Windows 开发方向（`tgui dev`，Phase 21e 真机复验） | 窗口正常，**13 CALL / 13 RET**，`WINDOW-E2E OK ping=pong in 416ms`（三次弹窗分别 416 / 370 / 415ms）；`touch` 后端文件 → CLI 打 `sources changed — bouncing` → 新 pipe 重发、整窗 bounce（再 13/13）、launcher/shim/app 仍 1/1/1 无泄漏；关窗零残留（`test/win/dev-bounce.sh` **PASS**，真实桌面、无 Xvfb；现场见 `evidence/win/`，`CHECK=1 OUT="$PWD/evidence/win" bash test/win/collect-evidence.sh` 可从入库文件独立重算核对） |
 | Windows 打包方向（双击 `dist\<App>.exe`） | 窗口正常，**13 CALL / 13 RET**，`WINDOW-E2E OK ping=pong in 430ms`（融合后真机复验，含 PE 补丁后的入口） |
 | macOS 打包方向（`tools/build-macos.sh --run`，WKWebView + 系统 PHP 后端） | 窗口正常，**13 CALL / 13 RET**，`WINDOW-E2E OK ping=pong in 48ms`；POSIX 套件 **ALL TIERS OK**（Apple Silicon 实机） |
 | macOS 开发方向（`tgui dev`，launcher-macos `--typephp`，Phase 21b） | 窗口正常，**13 CALL / 13 RET**，`WINDOW-E2E OK ping=pong in 56ms`；改后端文件 → 窗口闪一下重启（实测新 shim 实例再 13/13）；关窗/退出零残留（Apple Silicon 实机） |
@@ -112,6 +112,7 @@ typephp-gui/
 │   └── e2e/                   截图 / 点窗口 / 关窗口的小工具（ctypes，无依赖）
 ├── demo/                     一个完整示例（PHP 后端 + tiny.js 前端）
 ├── test/posix/               POSIX 验证套件（可独立拷出去用）
+├── test/win/                 Windows 开发方向验收：dev-bounce 驱动 + 证据收集器
 ├── docs/                     调研、落地报告、融合设计
 │   ├── GUI_FUSION_DESIGN.md   迁移范围/目标/模块划分/集成/兼容/开发者友好设计
 │   └── planning/             开发计划 + 踩坑记录
@@ -486,6 +487,7 @@ bash tools/build-launcher.sh && php gui/php/test/smoke.php
 | `docs/GUI_FUSION_DESIGN.md` | 融合设计：迁移范围/目标、模块划分、集成方式、兼容策略、开发者友好设计 |
 | `gui/README.md` | `gui/` 模块说明：布局、与上游的差异、构建、扩展、兼容 |
 | `test/posix/README.md` | 套件每一档在测什么、两条路径规则、怎么拿出去独立用 |
+| `test/win/README.md` | Windows 开发方向的两支脚本：`dev-bounce.sh` 为什么把承重断言放在"两次 bounce 后仍 1/1/1 + 每轮换新管道"，`collect-evidence.sh` 的完整性守卫与 `REGEN=1` 独立重算 |
 | `docs/feasibility-aot-compiler-backend.md` | 最初的可行性调研 |
 | `docs/nano-mode-ipc-addendum.md` | nano 模式与 IPC 的补充结论 |
 | `docs/aot-compiler-nano-fix.md` | `--nano` 编译缺陷的源码级根因与修法 |

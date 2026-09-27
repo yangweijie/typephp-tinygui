@@ -48,6 +48,15 @@
 保留原始 provenance 头）；README 验证表的 **406ms 与证据不符**（实为 416/370/415ms，已按证据改）。
 `evidence/win/21e-MANIFEST.txt` 可随版本演进用 `REGEN=1` 重算，不必回 Windows 机重跑驱动。
 
+①b **把这套流程写成 `test/win/README.md`** ✅（2026-09-27，本轮）：`test/win/` 此前只有两支脚本没有
+README（而 `test/posix/` 有），主 README 的目录树也漏了 `test/win/`。补文档时又抓出两个真问题：
+**README 第 16 行给的核对命令是错的**（`bash collect-evidence.sh REGEN=1 OUT=…` 把变量当 argv 传，
+静默无效 —— 实跑 RC=2 且什么都没写），env 前缀形式才对；**`REGEN=1` 会把上一次自己追加的
+`# re-derived` 头当原始 provenance 读回来**，跑两次就累积两个 stamp（改为在第一个 `# re-derived` 处截断）。
+据此把"第三方复核"从"REGEN + 人眼看 git diff"改成 **`CHECK=1`**：只重算、只比对派生块、**不写盘**、
+RC=1 报 DRIFT 并打出 diff。两条判别力都在本机验过：对真 `evidence/win/` 出 SAME(RC=0) 且工作树零改动，
+对临时副本里手动改成 `CALL=9` 的清单出 DRIFT(RC=1)。
+
 剩余候选按代价从低到高：② Linux 真桌面会话验收（容器只有 Xvfb，证不了合成器/WM/托盘/HiDPI）；
 ③ mac 分发签名（Developer ID + 公证，见 Errors #20；外部卷 `bind()` 挂起见 #21）；
 ④ `--nano` 单文件聚合入口（Errors #22 的能力边界）；

@@ -6,10 +6,10 @@
 # /tmp/tpgui-21e) — on Git Bash that is %LOCALAPPDATA%\Temp, i.e. a directory
 # that dies with the box. Every other platform acceptance in this repo has its
 #现场 checked into `evidence/<os>/` (21b -> evidence/mac/dev-21b.log, 22c/22d ->
-# evidence/linux/*), so README's Windows row currently has prose but no stored
-# evidence. This script copies the driver's artifacts into evidence/win/ AND
+# evidence/linux/*), so the 21e PASS would otherwise be prose without a stored
+# 现场. This script copies the driver's artifacts into evidence/win/ AND
 # derives a self-describing manifest, so the evidence can be re-checked without
-# re-running anything:
+# re-running anything (see test/win/README.md for the full workflow):
 #
 #   * per-cycle CALL/RET counts and the named pipe, split on the shim's
 #     `[shell] transport=` headers (same log discipline as the driver);
@@ -22,6 +22,16 @@
 #   WORK=/some/other/dir bash test/win/collect-evidence.sh
 #   OUT=/tmp/dryrun bash test/win/collect-evidence.sh   # dry run, touch nothing in the repo
 # then:  git add evidence/win && git commit && git push
+#
+# usage (any machine, to re-check already-filed evidence without a Windows box):
+#   CHECK=1 OUT="$PWD/evidence/win" bash test/win/collect-evidence.sh
+#   -> re-derives every block from the stored 21e-* files and diffs them against
+#      the filed manifest's body. Writes NOTHING. rc 0 = SAME, 1 = DRIFT.
+#      Use this to confirm a README number has a source, or after the parser evolves.
+#   REGEN=1 OUT="$PWD/evidence/win" bash test/win/collect-evidence.sh
+#   -> same re-derivation, but overwrites 21e-MANIFEST.txt (the original provenance
+#      header is kept; a # re-derived stamp is appended). Body is byte-identical to
+#      CHECK=1's, so run CHECK first and REGEN only when you mean to re-file it.
 # ===========================================================================
 set -u
 
@@ -32,20 +42,23 @@ WORK="${WORK:-/tmp/tpgui-21e}"
 OUT="${OUT:-$ROOT/evidence/win}"
 
 REGEN="${REGEN:-0}"
+CHECK="${CHECK:-0}"
 
 need() { [ -f "$WORK/$1" ] || { echo "!! $WORK/$1 missing — the driver did not finish, refusing to file partial evidence"; exit 2; }; }
 
-if [ "$REGEN" = 1 ]; then
-  # Re-derive the manifest from files ALREADY filed in $OUT. Used when the parser
-  # itself is fixed after a run was filed: the provenance header (host, repo rev,
-  # collection time) is kept verbatim, because it describes the machine where the
-  # driver actually ran — a later machine must not overwrite it with its own.
-  [ -f "$OUT/21e-shim.log" ] || { echo "!! REGEN=1 needs $OUT/21e-shim.log"; exit 2; }
+if [ "$REGEN" = 1 ] || [ "$CHECK" = 1 ]; then
+  # Re-derive from files ALREADY filed in $OUT. Used when the parser itself is
+  # fixed after a run was filed: the provenance header (host, repo rev, collection
+  # time) is kept verbatim, because it describes the machine where the driver
+  # actually ran — a later machine must not overwrite it with its own.
+  [ -f "$OUT/21e-shim.log" ] || { echo "!! REGEN/CHECK need $OUT/21e-shim.log"; exit 2; }
   HDR="$OUT/.21e-header"
-  awk '/^#/{print; next} {exit}' "$OUT/21e-MANIFEST.txt" > "$HDR" 2>/dev/null || : > "$HDR"
+  # Stop at the first `# re-derived` — otherwise each REGEN run would feed its own
+  # stamp back in as provenance and the header would grow one block per re-check.
+  awk '/^# re-derived/{exit} /^#/{print; next} {exit}' "$OUT/21e-MANIFEST.txt" > "$HDR" 2>/dev/null || : > "$HDR"
   COPIED=""
   for f in $(cd "$OUT" && ls 21e-* 2>/dev/null | grep -v 'MANIFEST'); do COPIED="$COPIED $f"; done
-  [ -n "$COPIED" ] || { echo "!! REGEN=1 found no 21e-* files in $OUT"; exit 2; }
+  [ -n "$COPIED" ] || { echo "!! REGEN/CHECK found no 21e-* files in $OUT"; exit 2; }
 else
   [ -d "$WORK" ] || { echo "!! no evidence dir at $WORK — run test/win/dev-bounce.sh first (or pass WORK=...)"; exit 2; }
   need shim.log
@@ -112,8 +125,15 @@ proc_counts() {
 }
 
 MAN="$OUT/21e-MANIFEST.txt"
+# CHECK mode must not touch the filed manifest: derive into a temp file and diff
+# only the body (everything after the provenance header, which legitimately differs
+# per machine).
+if [ "$CHECK" = 1 ]; then
+  MAN="$(mktemp "${TMPDIR:-/tmp}/21e-check.XXXXXX")" || exit 2
+  trap 'rm -f "$MAN"' EXIT
+fi
 {
-  if [ "$REGEN" = 1 ]; then
+  if [ "$REGEN" = 1 ] || [ "$CHECK" = 1 ]; then
     # Keep the original provenance (the Windows box's host string, its repo rev,
     # the collection timestamp) and stamp on top of it what was recomputed where.
     cat "$HDR"
@@ -160,7 +180,29 @@ MAN="$OUT/21e-MANIFEST.txt"
     printf '   %s  %s  %sB\n' "$(digest "$OUT/$f")" "$f" "$(wc -c < "$OUT/$f" | tr -d ' ')"
   done
 } > "$MAN"
-[ "$REGEN" = 1 ] && rm -f "$HDR"
+# The header scratch file is an implementation detail — never leave it in $OUT,
+# or a CHECK run would dirty the evidence directory it is supposed to only read.
+{ [ "$REGEN" = 1 ] || [ "$CHECK" = 1 ]; } && rm -f "$HDR"
+
+# body = everything after the first blank line (the provenance header above it
+# carries host / timestamp / repo rev, which legitimately differ per machine).
+body_of() { awk 'f {print} /^$/ {f = 1}' "$1"; }
+
+if [ "$CHECK" = 1 ]; then
+  DIFF="$(mktemp "${TMPDIR:-/tmp}/21e-drift.XXXXXX")" || exit 2
+  if diff -u <(body_of "$OUT/21e-MANIFEST.txt") <(body_of "$MAN") > "$DIFF" 2>&1; then
+    echo "== CHECK: SAME — every derived block in $OUT/21e-MANIFEST.txt reproduces"
+    echo "   from the stored 21e-* files ($(grep -c . "$MAN" | tr -d ' ') manifest lines)."
+    rc=0
+  else
+    echo "== CHECK: DRIFT — the filed manifest does NOT match its own raw files:"
+    sed 's/^/   /' "$DIFF"
+    echo "   Fix: re-file it with REGEN=1 (or re-run the driver if the raw files are wrong)."
+    rc=1
+  fi
+  rm -f "$DIFF"
+  exit $rc
+fi
 
 VERB=collected; [ "$REGEN" = 1 ] && VERB=re-derived
 echo "== $VERB into $OUT"

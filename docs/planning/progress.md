@@ -709,3 +709,36 @@ session 14 立下的规矩——**一个 kit 资产只有在"它被分发到的�
   host/rev/collected 时间，另盖一行 `# re-derived: … on Darwin … rev e3171a4`），所以这次修 parser 不需要
   再麻烦 Windows 机重跑一次驱动；`.21e-header` 临时文件写完即删。REGEN 全程在 `/tmp` 副本上试跑过再落到
   `evidence/win/`。
+
+## Session 2026-09-27 (10) — 把 21e 的验收流程写成 `test/win/README.md`（顺带修掉文档命令与 REGEN 自污染）
+
+- **本轮动机**：计划 24/24 全绿、上一轮"补 21e 证据入库"已闭环，剩余四个候选（Linux 真桌面 / mac 签名 /
+  `--nano` 聚合入口 / demo 文案）都要用户先定方向。于是按仓库约定做了一步无需新决策的收尾：
+  `test/posix/` 有 README，`test/win/` 两支脚本**没有**，主 README 目录树里也只有 `test/posix/`。
+- **新增 `test/win/README.md`**：说清两支脚本的分工，以及**为什么承重断言不是"窗口开出来了"** ——
+  Windows 上被 kill 的进程不跑 `atexit`，`launcher-win.cc` 的 `terminate_typephp_backend()` 因此从不触发，
+  而 `dev_reap_shim()` 是 Linux-only（`[ "$OS" = Linux ] || return 0`），所以**命名管道 EOF 是唯一的收尸者**；
+  一次 bounce 不够（泄漏按轮次累积、单样本看不出来；管道名复用则说明老实例根本没死）。同时如实写明它
+  **不证明**什么：Windows 后端是 tpc 编出的 `app.exe`，`touch src/backend.php` 只改 mtime ⇒ 证明的是重启
+  机制而不是逻辑热更新；驱动在非 `MINGW*|MSYS*|CYGWIN*` 上直接 RC=2，不能在本机演练。
+- **写文档时抓出两个真 bug（都不是文字问题）**：
+  1. **主 README 第 16 行给出的核对命令是无效的** —— `bash test/win/collect-evidence.sh REGEN=1 OUT=…`
+     把 `REGEN=1` / `OUT=…` 当位置参数传了，环境变量根本没设上。实跑确认 **RC=2**、什么也没写
+     （`!! no evidence dir at /tmp/tpgui-21e`），也就是说这条"复核指引"从来没复核过任何东西。已改成
+     env 前缀形式。教训：**文档里的命令要跑一遍**，"看起来像用法"不等于用法。
+  2. **`REGEN=1` 会吃进自己上次写的头** —— 它用 `awk '/^#/…'` 保留 provenance，可 `# re-derived` 也是
+     `#` 开头的，于是第二次 REGEN 会把第一轮的 re-derived stamp 当原始来源留下、再追加一条，
+     头越跑越长。改为在**第一个 `# re-derived` 处截断**；验过连跑两次只剩 1 条 stamp。
+- **把"第三方复核"从 REGEN + 人眼看 diff 改成 `CHECK=1`**：REGEN 会盖时间戳/主机/rev，所以
+  `git diff --stat` 永远非空 —— 我原先在 README 里写的"diff 为空即一致"是错的。新增 `CHECK=1`：
+  走同一套重算逻辑，但输出到 `mktemp`，只比对**第一个空行之后的派生块**（头部本就按机器不同），
+  **不写盘**，一致打印 `SAME` + RC=0，不一致打印 `DRIFT` + 内联 diff + RC=1。顺手修掉 CHECK 会把
+  `.21e-header` 留在证据目录里的自污染（现在 REGEN/CHECK 都写完即删）。
+- **判别力两条都实测过（临时副本，`evidence/win/` 未被改动，`git status` 已核）**：对真实
+  `evidence/win/` 跑 `CHECK=1` → **SAME / RC=0，39 行清单，工作树零改动**；把 `/tmp` 副本里
+  cycle 1 的 `CALL=13` 手改成 `9` → **DRIFT / RC=1** 并精确指出那一行。
+- **回写**：`test/win/README.md`（新）+ 主 README（目录树补 `test/win/`、第 16 行命令改 `CHECK=1`、
+  相关文档表补一行）+ `collect-evidence.sh` 头部用法注释（补 CHECK/REGEN 两段、修掉"REGEN + diff 为空"
+  的错误说法、去掉"README 尚无落库证据"这句已失效的自述）。`bash -n` 过。
+- **本文件仍未提交**：`test/win/README.md`（新）、`test/win/collect-evidence.sh`、`README.md`。
+  下一轮方向还是那四个候选，等用户选。
