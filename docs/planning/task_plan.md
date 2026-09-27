@@ -31,22 +31,26 @@
 **21e 已于 2026-09-27 在 Windows 真桌面（无 Xvfb）闭环，本文件 24 个阶段全部完成、0 个进行中。**
 真机跑 `test/win/dev-bounce.sh` → 7/7 绿：cycle1 13/13 + marker、touch→bounce 换新 pipe 再 13/13、
 **两次 bounce 后 launcher/shim/app 仍 1/1/1 无泄漏**、关窗零残留（README 验证表 Windows 开发方向行，
-`WINDOW-E2E OK ping=pong in 406ms`）；顺带修掉只有真机能暴露的 **WebView2 共享 UDF 锁死**（每次 launch
+`WINDOW-E2E OK ping=pong in 416ms`，三次弹窗 416/370/415ms，现场见 `evidence/win/`）；顺带修掉只有真机能暴露的 **WebView2 共享 UDF 锁死**（每次 launch
 独立 `%TEMP%/tinyjs-typephp-<pid>-<rand>`）与 `build-launcher.sh` 的 tiny.js 路径 + webview 头 staged
 缺失（融合后 Windows 构建在干净状态实际已断，现可复现）。
 
-**下一轮没有"排好的下一步"了** —— 新开阶段需要用户选定方向。候选按代价从低到高：
-① **补 21e 证据入库**（本仓库约定 `evidence/<os>/`：22c/22d 有 `evidence/linux/*`、21b 有
-`evidence/mac/dev-21b.log`，**21e 的证据目前只在 Windows 那台机器的 `/tmp/tpgui-21e`**，不取回即丢）；
-  - 工具已就位（2026-09-27）：`test/win/collect-evidence.sh` —— 完整性守卫（缺 `shim.log`/`tgui.out`/
-    任一 `tasklist.*.txt` 就 RC=2 拒收半截证据）→ 拷成 `evidence/win/21e-*` → 自行推导
-    `21e-MANIFEST.txt`（分周期的 pipe/CALL/RET、跨周期管道去重、三份 tasklist 的 1/1/1 计数、
-    每文件 sha256+字节、host 串与运行时 commit）。判别力已在临时目录验过：管道复用能判 MISMATCH、
-    缺文件能拒收；仓库未被演练写入。**剩下的动作只能在跑过驱动的那台 Windows 机上执行**
-    （`bash test/win/collect-evidence.sh` → `git add evidence/win` → push，本机再 pull），
-    落库后把 README 第 16 行与 progress session (8) 的"证据 `/tmp/tpgui-21e`"改成 `evidence/win/…`。
-② Linux 真桌面会话验收（容器只有 Xvfb，证不了合成器/WM/托盘/HiDPI）；③ mac 分发签名（Developer ID +
-公证，见 Errors #20；外部卷 `bind()` 挂起见 #21）；④ `--nano` 单文件聚合入口（Errors #22 的能力边界）；
+**下一轮没有"排好的下一步"了** —— 新开阶段需要用户选定方向。已选定并做完的一项：
+① **补 21e 证据入库** ✅（2026-09-27 闭环）：`test/win/collect-evidence.sh`（完整性守卫：缺 `shim.log`/
+`tgui.out`/任一 `tasklist.*.txt` 就 RC=2 拒收半截证据 → 拷成 `evidence/win/21e-*` → 自行推导
+`21e-MANIFEST.txt`）在 Windows 机上跑过并 push（`e3171a4`），本机 pull 后**逐条独立复核**：sha256 全对上、
+3 个周期各 **13 CALL / 13 RET**、三条管道 19188/16508/37156 无复用、marker **416/370/415ms**、
+`[shell] done`×3 + `launcher closed`、`shot.png` 1920×1080 真屏、`tasklist.teardown.txt` 0 字节 = 零残留；
+`21e-shim-build.log` 存在且空 ⇒ 驱动 [2/7] 的 g++ 分支零输出 ⇒ **shim `_WIN32` 分支在真机 `-Wall -Wextra`
+0 warning 编过**，21a/22c 那笔"Windows 侧没重编"的账一并闭掉。复核还抓出两个错并都修了：收集器
+`proc_counts` 按 CSV 引号形态匹配、而驱动 `win_rows()` 已 `tr -d '"'`，导致入库清单把真实 **1/1/1 写成
+0/0/0**（改为第一字段等值比较 + "非空却不匹配任何名字 → 打 UNPARSED"护栏，并用 `REGEN=1` 只重算派生块、
+保留原始 provenance 头）；README 验证表的 **406ms 与证据不符**（实为 416/370/415ms，已按证据改）。
+`evidence/win/21e-MANIFEST.txt` 可随版本演进用 `REGEN=1` 重算，不必回 Windows 机重跑驱动。
+
+剩余候选按代价从低到高：② Linux 真桌面会话验收（容器只有 Xvfb，证不了合成器/WM/托盘/HiDPI）；
+③ mac 分发签名（Developer ID + 公证，见 Errors #20；外部卷 `bind()` 挂起见 #21）；
+④ `--nano` 单文件聚合入口（Errors #22 的能力边界）；
 ⑤ demo 页"调用链"文案写死 Windows 措辞（外观遗留，非缺陷）。
 
 ## 关键约束（已探明）

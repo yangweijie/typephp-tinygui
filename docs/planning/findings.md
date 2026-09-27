@@ -936,3 +936,27 @@ staged 步骤。同理脚本里 `$HOST/runtime/tiny.js` 路径错（应为 `$ROO
 MinGW 上 `stdbuf.exe` 可能在 PATH 而它的 `libstdbuf.dll` 不在，于是 `stdbuf -oL bash …` 整条
 命令起不来（报 `failed to find 'libstdbuf.dll'`），外层表现为"CLI 提前退出、CALL=0"。守护要
 **功能性探测**（`stdbuf -oL true` 返回非 0 即视为不可用），不是存在性探测。
+
+---
+
+## 证据入库这一步真正值钱的不是"归档"，是"逼第二次独立重算"（2026-09-27，21e）
+
+驱动跑完 PASS、结论写进 README 之后，把现场从 `%LOCALAPPDATA%\Temp` 收进 `evidence/win/` 看似只是归档杂务。
+实际结果是：**两个已经写进文档的数字被证伪**。
+
+**1. 自报清单必须能用原始文件重算，否则它是第二份自说自话。**
+`21e-MANIFEST.txt` 第一版把三份 `tasklist` 全部记成 `launcher=0 shim=0 app=0`，而真实数据是 1/1/1。根因在
+我自己的解析器：按 `tasklist /FO CSV` 的引号形态写 `^"name.exe"`，可驱动的 `win_rows()` 早用 `tr -d '"'`
+剥掉引号、输出 `name pid`。最坏的地方在于**错的方向是"通过"**（0/0/0 看着像"零残留"），所以它不会被任何
+退出码拦下。修法两层：解析放宽到第一字段等值比较（CSV 与空格分隔都吃）；再加语义护栏 —— 文件非空却三条
+名字都不匹配时打 `UNPARSED: N non-empty line(s) matched none of the 3 names`，绝不允许静默回落成 0。
+**凡是"计数型断言"，都要区分"数到 0"和"没数到"。**
+
+**2. 复核对上了外部文档，README 的 406ms 也不成立了。**
+落库日志里三周期的 marker 是 416 / 370 / 415ms，README 验证表写的是 406ms（应是另一轮跑的数被顺手抄进
+定稿）。现在清单里多了"WINDOW-E2E marker timings, in cycle order"一节，README 的数字有了可指认的出处。
+
+**3. 修解析器不该要求目标平台重跑一次驱动 —— 给清单加 `REGEN=1`。**
+只从已入库的 `21e-*` 重算派生块，并**原样保留** provenance 头（跑驱动那台机器的 host 串、运行时 rev、
+collection 时间），另盖一行 `# re-derived: <date> on <this host> rev <this rev>`。这样"证据的推导逻辑"可以
+随版本演进，而"事实现场"永远是当初那份，审计链不断。跨机协作里这比"再麻烦对方跑一次"成本低得多。

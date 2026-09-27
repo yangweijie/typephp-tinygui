@@ -13,7 +13,7 @@ require __DIR__ . '/../gui/php/src/Tiny/Gui/bootstrap.php';
 | 验证项 | 结果 |
 |---|---|
 | POSIX 套件（host probe + tier1/2 + 启动模式 + stderr 隔离） | **50 PASS / 0 FAIL** |
-| Windows 开发方向（`tgui dev`，Phase 21e 真机复验） | 窗口正常，**13 CALL / 13 RET**，`WINDOW-E2E OK ping=pong in 406ms`；`touch` 后端文件 → CLI 打 `sources changed — bouncing` → 新 pipe 重发、整窗 bounce（再 13/13）、launcher/shim/app 仍 1/1/1 无泄漏；关窗零残留（`test/win/dev-bounce.sh` **PASS**，真实桌面、无 Xvfb） |
+| Windows 开发方向（`tgui dev`，Phase 21e 真机复验） | 窗口正常，**13 CALL / 13 RET**，`WINDOW-E2E OK ping=pong in 416ms`（三次弹窗分别 416 / 370 / 415ms）；`touch` 后端文件 → CLI 打 `sources changed — bouncing` → 新 pipe 重发、整窗 bounce（再 13/13）、launcher/shim/app 仍 1/1/1 无泄漏；关窗零残留（`test/win/dev-bounce.sh` **PASS**，真实桌面、无 Xvfb；现场见 `evidence/win/`，`bash test/win/collect-evidence.sh REGEN=1 OUT="$PWD/evidence/win"` 可从入库文件重算核对） |
 | Windows 打包方向（双击 `dist\<App>.exe`） | 窗口正常，**13 CALL / 13 RET**，`WINDOW-E2E OK ping=pong in 430ms`（融合后真机复验，含 PE 补丁后的入口） |
 | macOS 打包方向（`tools/build-macos.sh --run`，WKWebView + 系统 PHP 后端） | 窗口正常，**13 CALL / 13 RET**，`WINDOW-E2E OK ping=pong in 48ms`；POSIX 套件 **ALL TIERS OK**（Apple Silicon 实机） |
 | macOS 开发方向（`tgui dev`，launcher-macos `--typephp`，Phase 21b） | 窗口正常，**13 CALL / 13 RET**，`WINDOW-E2E OK ping=pong in 56ms`；改后端文件 → 窗口闪一下重启（实测新 shim 实例再 13/13）；关窗/退出零残留（Apple Silicon 实机） |

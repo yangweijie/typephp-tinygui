@@ -653,7 +653,7 @@ session 14 立下的规矩——**一个 kit 资产只有在"它被分发到的�
 ## Session 2026-09-27 (8) — 21e 真机闭环（Windows 真桌面，无 Xvfb）
 
 - **结论**：`test/win/dev-bounce.sh` **PASS（7/7 步绿）**。Phase 21 全部完成，README 单发注记已删，task_plan 21e Status→complete、自检计数 24/24/0。
-- **跑法**：本机即 Windows（MINGW64 + MSVC BuildTools + WebView2 Runtime）。`bash test/win/dev-bounce.sh` → cycle1 13/13 + WINDOW-E2E + 整 1 launcher + `shot.png` 渲染；bounce（touch `src/backend.php`）→ `sources changed — bouncing`、新 pipe（`\\.\pipe\tinyjs-typephp-<新pid>`）、cycle2 再 13/13 + marker；**两次 bounce 后 launcher/shim/app 仍 1/1/1 无泄漏**；cycle3 同；关窗零残留。证据 `/tmp/tpgui-21e`（tgui.out / shim.log 3 cycles / tasklist 三段 / shot.png）。
+- **跑法**：本机即 Windows（MINGW64 + MSVC BuildTools + WebView2 Runtime）。`bash test/win/dev-bounce.sh` → cycle1 13/13 + WINDOW-E2E + 整 1 launcher + `shot.png` 渲染；bounce（touch `src/backend.php`）→ `sources changed — bouncing`、新 pipe（`\\.\pipe\tinyjs-typephp-<新pid>`）、cycle2 再 13/13 + marker；**两次 bounce 后 launcher/shim/app 仍 1/1/1 无泄漏**；cycle3 同；关窗零残留。证据 `/tmp/tpgui-21e`（tgui.out / shim.log 3 cycles / tasklist 三段 / shot.png）—— **现已收进 `evidence/win/`（见 session (9) 末）**。
 - **撞出的两个真机才暴露的缺陷（已修）**：
   1. **WebView2 重发失败（核心 blocker）**：被硬杀的旧 host 留下的 `msedgewebview2.exe` 锁住共享的 per-exe 用户数据目录（原 UDF = `PathCombine(APPDATA, <exe名>)`），下一发 `CreateCoreWebView2Controller` 一直 `ERROR_INVALID_STATE`、60 次重试（12s）全败 → `webview_create` 返回 null → `launcher: failed to create webview`。修复：每次 launch 用独立 `%TEMP%/tinyjs-typephp-<pid>-<rand>` UDF。`launcher-win.cc` 新增 `tinyjs_prepare_webview_udf()`（建目录 + 启动时 best-effort 清掉旧 `tinyjs-typephp-*` 目录 + 置 `TINY_WEBVIEW_UDF`）；`gui/host/include/webview/detail/backends/win32_edge.hh` 的 `embed()` 读取该变量（未设回退原行为）。与库既有的 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` 读取同构。
   2. **`build-launcher.sh` 构建缺陷（干净状态不可复现）**：① `$HOST/runtime/tiny.js` 路径错（实为 `$ROOT/gui/runtime/tiny.js`）→ 改成正确路径；② 缺 webview 头文件的 staged 步骤 → 新增 `[2b/5]` 把 `gui/host/include/webview` 拷进 `build/include/webview`（此前 webview 头靠手工存在，融合后无人下载，f8202d0 后构建实际已断）。现在 Windows 从干净状态可完整复现。
@@ -690,3 +690,22 @@ session 14 立下的规矩——**一个 kit 资产只有在"它被分发到的�
   `%LOCALAPPDATA%\Temp`；本机 `git reflog` 显示 21e 的提交是 `pull origin/main` 进来的，说明两机分开、
   无法从这里取文件）。取回后再把 README 第 16 行与 session (8) 的"证据 `/tmp/tpgui-21e`"改成
   `evidence/win/…` 落库路径。
+- **Windows 侧执行完毕并 push，本机 pull 到 `e3171a4 evidence(win): Phase 21e dev-bounce 真机现场`**，
+  `evidence/win/` 落了 7 个文件（`21e-shim.log` 18,434B / `21e-tgui.out` 377B / `21e-tasklist.{before,
+  after-cycle2}.txt` 各 55B / `21e-tasklist.teardown.txt` 0B / `21e-shot.png` 297,879B（1920×1080 真屏）/
+  `21e-shim-build.log` 0B）+ `21e-MANIFEST.txt`。
+- **本机对入库文件独立复核（不依赖清单自报）**：`sha256` 逐条对上清单；`[shell] transport=` 计 3 个周期，
+  每周期 **CALL=13 / RET=13**；三条 `pipe=` 分别是 19188 / 16508 / 37156（无复用）；marker 为
+  **416ms / 370ms / 415ms**；`[shell] done` 三次 + `launcher closed` 一次（每周期的 shim 都自己走完了 EOF
+  拆除）；`21e-tgui.out` 里两条 `sources changed — bouncing`。`21e-shim-build.log` 存在且 0 字节 ⇒
+  驱动 [2/7] 的 g++ 分支被进入且零输出 ⇒ **shim 的 `_WIN32` 分支在真机 `-Wall -Wextra` 下 0 warning 编过**，
+  21a/22c 那笔"Windows 侧没重编"的账同时闭掉。
+- **抓出两个只有"复核"才能抓出的错，都已修**：① **我自己收集器的解析 bug** —— `proc_counts` 按 tasklist 的
+  CSV 引号形态 `^"name.exe"` 匹配，而驱动的 `win_rows()` 早用 `tr -d '"'` 把引号剥了、输出 `name pid`，
+  于是入库清单把真实的 **1/1/1 写成了 0/0/0**（假数字、方向还是"通过"，比崩溃更危险）。改成按第一字段
+  等值比较（两种形态都吃），并加"非空却三条名字都不匹配 → 打 `UNPARSED` 而非 0"的护栏。② **README 的
+  406ms 与证据不符** —— 落库日志是 416/370/415ms，验证表已改为 `416ms`（并注明三次）。
+- **清单重建方式**：新增 `REGEN=1` 模式（只对已入库的 `21e-*` 重算派生块，**保留**原始 provenance 头
+  host/rev/collected 时间，另盖一行 `# re-derived: … on Darwin … rev e3171a4`），所以这次修 parser 不需要
+  再麻烦 Windows 机重跑一次驱动；`.21e-header` 临时文件写完即删。REGEN 全程在 `/tmp` 副本上试跑过再落到
+  `evidence/win/`。
